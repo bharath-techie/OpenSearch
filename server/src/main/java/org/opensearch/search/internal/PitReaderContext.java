@@ -24,19 +24,26 @@ public class PitReaderContext extends ReaderContext {
 
     private final ShardRouting shardRouting;
     private final List<Segment> segments;
+    private final String pitId;
 
     public PitReaderContext(ShardSearchContextId id, IndexService indexService,
                             IndexShard indexShard, Engine.SearcherSupplier searcherSupplier,
                             long keepAliveInMillis, boolean singleSession,
-                            ShardRouting shardRouting, List<Segment> nonVerboseSegments) {
+                            ShardRouting shardRouting, List<Segment> nonVerboseSegments, String pitId) {
         super(id, indexService, indexShard, searcherSupplier, keepAliveInMillis, singleSession);
         this.shardRouting = shardRouting;
         segments = nonVerboseSegments;
+        this.pitId = pitId;
     }
 
     public List<Segment> getSegments() {
         return segments;
     }
+
+    public String getPitId() {
+        return "pitId";
+    }
+
 
 
 }

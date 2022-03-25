@@ -327,21 +327,7 @@ import org.opensearch.action.ingest.SimulatePipelineAction;
 import org.opensearch.action.ingest.SimulatePipelineRequest;
 import org.opensearch.action.ingest.SimulatePipelineRequestBuilder;
 import org.opensearch.action.ingest.SimulatePipelineResponse;
-import org.opensearch.action.search.ClearScrollAction;
-import org.opensearch.action.search.ClearScrollRequest;
-import org.opensearch.action.search.ClearScrollRequestBuilder;
-import org.opensearch.action.search.ClearScrollResponse;
-import org.opensearch.action.search.MultiSearchAction;
-import org.opensearch.action.search.MultiSearchRequest;
-import org.opensearch.action.search.MultiSearchRequestBuilder;
-import org.opensearch.action.search.MultiSearchResponse;
-import org.opensearch.action.search.SearchAction;
-import org.opensearch.action.search.SearchRequest;
-import org.opensearch.action.search.SearchRequestBuilder;
-import org.opensearch.action.search.SearchResponse;
-import org.opensearch.action.search.SearchScrollAction;
-import org.opensearch.action.search.SearchScrollRequest;
-import org.opensearch.action.search.SearchScrollRequestBuilder;
+import org.opensearch.action.search.*;
 import org.opensearch.action.support.PlainActionFuture;
 import org.opensearch.action.support.master.AcknowledgedResponse;
 import org.opensearch.action.termvectors.MultiTermVectorsAction;
@@ -368,6 +354,8 @@ import org.opensearch.common.bytes.BytesReference;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.common.xcontent.XContentType;
+import org.opensearch.rest.action.search.GetAllPITRequest;
+import org.opensearch.rest.action.search.GetAllPITResponse;
 import org.opensearch.tasks.TaskId;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -669,6 +657,11 @@ public abstract class AbstractClient implements Client {
     @Override
     public FieldCapabilitiesRequestBuilder prepareFieldCaps(String... indices) {
         return new FieldCapabilitiesRequestBuilder(this, FieldCapabilitiesAction.INSTANCE, indices);
+    }
+
+    @Override
+    public void getAllPits(GetAllPITNodesRequest request, ActionListener<GetAllPITNodesResponse> listener) {
+        execute(GetAllPITsAction.INSTANCE, request, listener);
     }
 
     static class Admin implements AdminClient {
