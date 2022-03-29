@@ -32,23 +32,26 @@
 package org.opensearch.search;
 
 import com.carrotsearch.hppc.IntArrayList;
+import com.carrotsearch.hppc.cursors.ObjectCursor;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.store.AlreadyClosedException;
+import org.opensearch.action.ActionFuture;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.OriginalIndices;
+import org.opensearch.action.admin.cluster.state.ClusterStateRequest;
+import org.opensearch.action.admin.cluster.state.ClusterStateResponse;
+import org.opensearch.action.admin.indices.segments.IndicesSegmentResponse;
+import org.opensearch.action.admin.indices.segments.IndicesSegmentsAction;
+import org.opensearch.action.admin.indices.segments.IndicesSegmentsRequest;
 import org.opensearch.action.index.IndexResponse;
-import org.opensearch.action.search.ClearScrollRequest;
-import org.opensearch.action.search.SearchPhaseExecutionException;
-import org.opensearch.action.search.SearchRequest;
-import org.opensearch.action.search.SearchResponse;
-import org.opensearch.action.search.SearchShardTask;
-import org.opensearch.action.search.SearchType;
+import org.opensearch.action.search.*;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.PlainActionFuture;
 import org.opensearch.action.support.WriteRequest;
+import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.Strings;
 import org.opensearch.common.UUIDs;
 import org.opensearch.common.io.stream.StreamInput;
@@ -78,7 +81,11 @@ import org.opensearch.indices.IndicesService;
 import org.opensearch.indices.settings.InternalOrPrivateSettingsPlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.SearchPlugin;
+import org.opensearch.rest.BaseRestHandler;
+import org.opensearch.rest.RestResponse;
 import org.opensearch.rest.RestStatus;
+import org.opensearch.rest.action.RestActionListener;
+import org.opensearch.rest.action.RestResponseListener;
 import org.opensearch.script.MockScriptEngine;
 import org.opensearch.script.MockScriptPlugin;
 import org.opensearch.script.Script;
@@ -89,6 +96,7 @@ import org.opensearch.search.aggregations.MultiBucketConsumerService;
 import org.opensearch.search.aggregations.bucket.global.GlobalAggregationBuilder;
 import org.opensearch.search.aggregations.bucket.terms.TermsAggregationBuilder;
 import org.opensearch.search.aggregations.support.ValueType;
+import org.opensearch.search.builder.PointInTimeBuilder;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.fetch.FetchSearchResult;
 import org.opensearch.search.fetch.ShardFetchRequest;
@@ -104,13 +112,7 @@ import org.opensearch.threadpool.ThreadPool;
 import org.junit.Before;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
@@ -1421,5 +1423,77 @@ public class SearchServiceTests extends OpenSearchSingleNodeTestCase {
             randomNonNegativeLong(),
             false
         );
+    }
+
+    public void testPIT() throws ExecutionException, InterruptedException {
+
+        createIndex("index", Settings.builder().put("index.number_of_shards", 2).put("index.number_of_replicas", 0).build());
+        client().prepareIndex("index").setId("1").setSource("field", "value").setRefreshPolicy(IMMEDIATE).get();
+
+        PITRequest request = new PITRequest(TimeValue.timeValueDays(1));
+        request.setIndices(new String[]{"index"});
+        ActionFuture<PITResponse> execute = client().execute(CreatePITAction.INSTANCE, request);
+        PITResponse pitResponse = execute.get();
+        client().prepareIndex("index").setId("2").setSource("field", "value").setRefreshPolicy(IMMEDIATE).get();
+        SearchResponse searchResponse = client().prepareSearch("index")
+            .setSize(2).setPointInTime(new PointInTimeBuilder(pitResponse.getId()).setKeepAlive(TimeValue.timeValueDays(1))).get();
+        assertHitCount(searchResponse, 1);
+
+        final ClusterStateRequest clusterStateRequest = new ClusterStateRequest();
+        clusterStateRequest.local(false);
+        //clusterStateRequest.masterNodeTimeout(request.paramAsTime("master_timeout", clusterStateRequest.masterNodeTimeout()));
+        ActionFuture<IndicesSegmentResponse> e;
+        clusterStateRequest.clear().nodes(true).routingTable(true).indices("*");
+        ClusterStateResponse clusterStateResponse = client().admin().cluster().state(clusterStateRequest).get();
+        final List<DiscoveryNode> nodes = new LinkedList<>();
+        for (ObjectCursor<DiscoveryNode> cursor : clusterStateResponse.getState().nodes().getDataNodes().values()) {
+            DiscoveryNode node = cursor.value;
+            nodes.add(node);
+        }
+        DiscoveryNode[] disNodesArr = new DiscoveryNode[nodes.size()];
+        nodes.toArray(disNodesArr);
+        GetAllPITNodesRequest getAllPITNodesRequest = new GetAllPITNodesRequest(disNodesArr);
+
+        ActionFuture<GetAllPITNodesResponse> execute1 = client().execute(GetAllPITsAction.INSTANCE, getAllPITNodesRequest);
+        GetAllPITNodesResponse response = execute1.get();
+
+//        BaseRestHandler.RestChannelConsumer r = channel -> client().admin().cluster().state(clusterStateRequest, new RestActionListener<ClusterStateResponse>(channel) {
+//            @Override
+//            public void processResponse(final ClusterStateResponse clusterStateResponse) throws IOException {
+//                final List<DiscoveryNode> nodes = new LinkedList<>();
+//                for (ObjectCursor<DiscoveryNode> cursor : clusterStateResponse.getState().nodes().getDataNodes().values()) {
+//                    DiscoveryNode node = cursor.value;
+//                    nodes.add(node);
+//                }
+//                DiscoveryNode[] disNodesArr = new DiscoveryNode[nodes.size()];
+//                nodes.toArray(disNodesArr);
+//                GetAllPITNodesRequest getAllPITNodesRequest = new GetAllPITNodesRequest(disNodesArr);
+//                client().execute(GetAllPITsAction.INSTANCE, getAllPITNodesRequest, new RestResponseListener<GetAllPITNodesResponse>(channel) {
+//                    @Override
+//                    public RestResponse buildResponse(final GetAllPITNodesResponse getAllPITNodesResponse) throws Exception {
+//                        GetAllPITNodesResponse response = getAllPITNodesResponse;
+//                        return  null;
+//                    }
+//                });
+//            }
+//        });
+
+
+
+            //SearchService service = new SearchService();
+//        ActionFuture<GetAllPITNodesResponse> execute1 = client().execute(GetAllPITsAction.INSTANCE, new GetAllPITNodesRequest());
+//        GetAllPITNodesResponse response = execute1.get();
+        SearchService service = getInstanceFromNode(SearchService.class);
+//        PitSegmentsRequest request1 = new PitSegmentsRequest();
+//        request1.setPitIds(Arrays.asList(pitResponse.getId()));
+//        client().prepareIndex("index", "type", "2").setSource("field", "value").setRefreshPolicy(IMMEDIATE).get();
+//        ActionFuture<IndicesSegmentResponse> e = client().execute(PitSegmentsAction.INSTANCE, request1);
+//        IndicesSegmentResponse pitSegmentsResponse = e.get();
+//        IndicesSegmentResponse indicesSegmentResponse = client().execute(IndicesSegmentsAction.INSTANCE, new IndicesSegmentsRequest("index")).get();
+//        assertEquals(2, service.getActiveContexts());
+//        client().execute(DeletePITAction.INSTANCE,new DeletePITRequest(pitResponse.getId()));
+//
+//        assertEquals(0, service.getActiveContexts());
+        service.doClose(); // this kills the keep-alive reaper we have to reset the node after this test
     }
 }

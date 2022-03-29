@@ -130,12 +130,7 @@ import org.opensearch.threadpool.ThreadPool.Names;
 import org.opensearch.transport.TransportRequest;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -387,6 +382,17 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
     protected ReaderContext removeReaderContext(long id) {
         return activeReaders.remove(id);
+    }
+
+    public List<String> getAllPITReaderContexts() {
+        final List<String> pitContexts = new ArrayList<>();
+        for (ReaderContext ctx : activeReaders.values()) {
+            if (ctx instanceof PitReaderContext) {
+                final PitReaderContext pitReaderContext = (PitReaderContext) ctx;
+                pitContexts.add(pitReaderContext.getPitId());
+            }
+        }
+        return pitContexts;
     }
 
     @Override
@@ -819,8 +825,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 shard.routingEntry();
                 final ShardSearchContextId id = new ShardSearchContextId(sessionId, idGenerator.incrementAndGet());
                 readerContext = new PitReaderContext(id, indexService, shard, searcherSupplier, keepAlive.millis(), false,
-                    shard.routingEntry(),nonVerboseSegments);
-                readerContext = new ReaderContext(id, indexService, shard, searcherSupplier, keepAlive.millis(), false);
+                    shard.routingEntry(),nonVerboseSegments, null);
                 final ReaderContext finalReaderContext = readerContext;
                 searcherSupplier = null; // transfer ownership to reader context
 
