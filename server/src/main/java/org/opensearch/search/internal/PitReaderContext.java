@@ -24,6 +24,7 @@ public class PitReaderContext extends ReaderContext {
 
     private final ShardRouting shardRouting;
     private final List<Segment> segments;
+    private String pitId;
 
     public PitReaderContext(ShardSearchContextId id, IndexService indexService,
                             IndexShard indexShard, Engine.SearcherSupplier searcherSupplier,
@@ -38,5 +39,8 @@ public class PitReaderContext extends ReaderContext {
         return segments;
     }
 
+    public void updatePitId(final String pitId) {
+        this.pitId = pitId;
+    }
 
 }

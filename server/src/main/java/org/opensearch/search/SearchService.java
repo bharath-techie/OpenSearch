@@ -41,9 +41,7 @@ import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.OriginalIndices;
-import org.opensearch.action.search.SearchRequest;
-import org.opensearch.action.search.SearchShardTask;
-import org.opensearch.action.search.SearchType;
+import org.opensearch.action.search.*;
 import org.opensearch.action.support.TransportActions;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.service.ClusterService;
@@ -820,7 +818,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 final ShardSearchContextId id = new ShardSearchContextId(sessionId, idGenerator.incrementAndGet());
                 readerContext = new PitReaderContext(id, indexService, shard, searcherSupplier, keepAlive.millis(), false,
                     shard.routingEntry(),nonVerboseSegments);
-                readerContext = new ReaderContext(id, indexService, shard, searcherSupplier, keepAlive.millis(), false);
                 final ReaderContext finalReaderContext = readerContext;
                 searcherSupplier = null; // transfer ownership to reader context
 
@@ -958,6 +955,23 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             }
         }
         return false;
+    }
+
+    public void updatePitIdAndKeepAlive(TransportCreatePITAction.UpdatePITReaderRequest request,
+                                        ActionListener<TransportCreatePITAction.UpdatePitContextResponse> listener) {
+        if (getReaderContext(request.getSearchContextId()) != null) {
+            try {
+                PitReaderContext readerContext = getPitReaderContext(request.getSearchContextId());
+                if(readerContext == null) {
+                    throw new SearchContextMissingException(request.getSearchContextId());
+                }
+                readerContext.updatePitId(request.getPitId());
+                readerContext.tryUpdateKeepAlive(maxKeepAlive);
+                listener.onResponse(new TransportCreatePITAction.UpdatePitContextResponse(request.getPitId()));
+            } catch(Exception e) {
+                listener.onFailure(e);
+            }
+        }
     }
 
     public void freeAllScrollContexts() {
@@ -1290,8 +1304,13 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     public PitReaderContext getPitReaderContext(ShardSearchContextId id) {
-        ReaderContext readerContext = getReaderContext(id);
-        return (PitReaderContext) readerContext;
+        for(Map.Entry<Long, ReaderContext> context : activeReaders.entrySet()) {
+            if(context.getValue() instanceof PitReaderContext) {
+                if(context.getKey() == id.getId())  return (PitReaderContext) context.getValue();
+            }
+        }
+
+        return null;
     }
 
     class Reaper implements Runnable {
