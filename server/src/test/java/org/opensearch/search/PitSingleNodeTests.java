@@ -8,23 +8,31 @@
 
 package org.opensearch.search;
 
+import org.hamcrest.Matchers;
 import org.opensearch.action.ActionFuture;
 import org.opensearch.action.search.CreatePITAction;
 import org.opensearch.action.search.CreatePITRequest;
 import org.opensearch.action.search.CreatePITResponse;
 import org.opensearch.action.search.SearchPhaseExecutionException;
 import org.opensearch.action.search.SearchResponse;
+import org.opensearch.common.Priority;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.index.IndexNotFoundException;
 import org.opensearch.search.builder.PointInTimeBuilder;
+import org.opensearch.search.sort.SortOrder;
 import org.opensearch.test.OpenSearchSingleNodeTestCase;
 
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.opensearch.action.support.WriteRequest.RefreshPolicy.IMMEDIATE;
+import static org.opensearch.common.xcontent.XContentFactory.jsonBuilder;
+import static org.opensearch.index.query.QueryBuilders.matchAllQuery;
+import static org.opensearch.index.query.QueryBuilders.queryStringQuery;
+import static org.opensearch.index.query.QueryBuilders.termQuery;
 import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertHitCount;
 
 public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
@@ -155,6 +163,19 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         SearchService service = getInstanceFromNode(SearchService.class);
         assertEquals(0, service.getActiveContexts());
         service.doClose();
+    }
+
+    public void testClearIllegalPitId() {
+        createIndex("idx");
+        String id = "c2Nhbjs2OzM0NDg1ODpzRlBLc0FXNlNyNm5JWUc1";
+        IllegalArgumentException e = expectThrows(
+            IllegalArgumentException.class,
+            () -> client().prepareSearch("index")
+                .setSize(2)
+                .setPointInTime(new PointInTimeBuilder(id).setKeepAlive(TimeValue.timeValueDays(1)))
+                .get()
+        );
+        assertEquals("Cannot parse pit id", e.getMessage());
     }
 
     public void testPitSearchOnCloseIndex() throws ExecutionException, InterruptedException {
@@ -339,6 +360,174 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         }
         assertThat(service.getActiveContexts(), equalTo(maxPitContexts));
         service.doClose();
+    }
+
+    public void testPitAfterUpdateIndex() throws Exception {
+        client().admin().indices().prepareCreate("test").setSettings(Settings.builder().put("index.number_of_shards", 5)).get();
+        client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID).setWaitForGreenStatus().get();
+
+        for (int i = 0; i < 50; i++) {
+            client().prepareIndex("test")
+                .setId(Integer.toString(i))
+                .setSource(
+                    jsonBuilder().startObject()
+                        .field("user", "foobar")
+                        .field("postDate", System.currentTimeMillis())
+                        .field("message", "test")
+                        .endObject()
+                )
+                .get();
+        }
+        client().admin().indices().prepareRefresh().get();
+
+        // create pit
+        CreatePITRequest request = new CreatePITRequest(TimeValue.timeValueMinutes(2), true);
+        request.setIndices(new String[] { "test" });
+        ActionFuture<CreatePITResponse> execute = client().execute(CreatePITAction.INSTANCE, request);
+        CreatePITResponse pitResponse = execute.get();
+        SearchService service = getInstanceFromNode(SearchService.class);
+
+        assertThat(
+            client().prepareSearch()
+                .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                .setSize(0)
+                .setQuery(matchAllQuery())
+                .get()
+                .getHits()
+                .getTotalHits().value,
+            Matchers.equalTo(50L)
+        );
+
+        assertThat(
+            client().prepareSearch()
+                .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                .setSize(0)
+                .setQuery(termQuery("message", "test"))
+                .get()
+                .getHits()
+                .getTotalHits().value,
+            Matchers.equalTo(50L)
+        );
+        assertThat(
+            client().prepareSearch()
+                .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                .setSize(0)
+                .setQuery(termQuery("message", "test"))
+                .get()
+                .getHits()
+                .getTotalHits().value,
+            Matchers.equalTo(50L)
+        );
+        assertThat(
+            client().prepareSearch()
+                .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                .setSize(0)
+                .setQuery(termQuery("message", "update"))
+                .get()
+                .getHits()
+                .getTotalHits().value,
+            Matchers.equalTo(0L)
+        );
+        assertThat(
+            client().prepareSearch()
+                .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                .setSize(0)
+                .setQuery(termQuery("message", "update"))
+                .get()
+                .getHits()
+                .getTotalHits().value,
+            Matchers.equalTo(0L)
+        );
+
+        // update index
+        SearchResponse searchResponse = client().prepareSearch()
+            .setQuery(queryStringQuery("user:foobar"))
+            .setSize(50)
+            .addSort("postDate", SortOrder.ASC)
+            .get();
+        try {
+            do {
+                for (SearchHit searchHit : searchResponse.getHits().getHits()) {
+                    Map<String, Object> map = searchHit.getSourceAsMap();
+                    map.put("message", "update");
+                    client().prepareIndex("test").setId(searchHit.getId()).setSource(map).get();
+                }
+                searchResponse = client().prepareSearch().setSize(0).setQuery(termQuery("message", "test")).get();
+
+            } while (searchResponse.getHits().getHits().length > 0);
+
+            client().admin().indices().prepareRefresh().get();
+            assertThat(
+                client().prepareSearch().setSize(0).setQuery(matchAllQuery()).get().getHits().getTotalHits().value,
+                Matchers.equalTo(50L)
+            );
+            /**
+             * assert without point in time
+             */
+
+            assertThat(
+                client().prepareSearch().setSize(0).setQuery(termQuery("message", "test")).get().getHits().getTotalHits().value,
+                Matchers.equalTo(0L)
+            );
+            assertThat(
+                client().prepareSearch().setSize(0).setQuery(termQuery("message", "test")).get().getHits().getTotalHits().value,
+                Matchers.equalTo(0L)
+            );
+            assertThat(
+                client().prepareSearch().setSize(0).setQuery(termQuery("message", "update")).get().getHits().getTotalHits().value,
+                Matchers.equalTo(50L)
+            );
+            assertThat(
+                client().prepareSearch().setSize(0).setQuery(termQuery("message", "update")).get().getHits().getTotalHits().value,
+                Matchers.equalTo(50L)
+            );
+            /**
+             * using point in time id will have the old search results before update
+             */
+            assertThat(
+                client().prepareSearch()
+                    .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                    .setSize(0)
+                    .setQuery(termQuery("message", "test"))
+                    .get()
+                    .getHits()
+                    .getTotalHits().value,
+                Matchers.equalTo(50L)
+            );
+            assertThat(
+                client().prepareSearch()
+                    .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                    .setSize(0)
+                    .setQuery(termQuery("message", "test"))
+                    .get()
+                    .getHits()
+                    .getTotalHits().value,
+                Matchers.equalTo(50L)
+            );
+            assertThat(
+                client().prepareSearch()
+                    .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                    .setSize(0)
+                    .setQuery(termQuery("message", "update"))
+                    .get()
+                    .getHits()
+                    .getTotalHits().value,
+                Matchers.equalTo(0L)
+            );
+            assertThat(
+                client().prepareSearch()
+                    .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                    .setSize(0)
+                    .setQuery(termQuery("message", "update"))
+                    .get()
+                    .getHits()
+                    .getTotalHits().value,
+                Matchers.equalTo(0L)
+            );
+        } finally {
+            service.doClose();
+            assertEquals(0, service.getActiveContexts());
+        }
     }
 
 }
