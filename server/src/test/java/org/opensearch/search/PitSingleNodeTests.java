@@ -154,7 +154,7 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         client().admin().indices().prepareDelete("index").get();
 
         IndexNotFoundException ex = expectThrows(IndexNotFoundException.class, () -> {
-            client().prepareSearch("index")
+            client().prepareSearch()
                 .setSize(2)
                 .setPointInTime(new PointInTimeBuilder(pitResponse.getId()).setKeepAlive(TimeValue.timeValueDays(1)))
                 .get();
@@ -165,12 +165,12 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         service.doClose();
     }
 
-    public void testClearIllegalPitId() {
+    public void testIllegalPitId() {
         createIndex("idx");
         String id = "c2Nhbjs2OzM0NDg1ODpzRlBLc0FXNlNyNm5JWUc1";
         IllegalArgumentException e = expectThrows(
             IllegalArgumentException.class,
-            () -> client().prepareSearch("index")
+            () -> client().prepareSearch()
                 .setSize(2)
                 .setPointInTime(new PointInTimeBuilder(id).setKeepAlive(TimeValue.timeValueDays(1)))
                 .get()
@@ -190,7 +190,7 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         assertEquals(2, service.getActiveContexts());
         client().admin().indices().prepareClose("index").get();
         SearchPhaseExecutionException ex = expectThrows(SearchPhaseExecutionException.class, () -> {
-            SearchResponse searchResponse = client().prepareSearch("index")
+            SearchResponse searchResponse = client().prepareSearch()
                 .setSize(2)
                 .setPointInTime(new PointInTimeBuilder(pitResponse.getId()).setKeepAlive(TimeValue.timeValueDays(1)))
                 .get();
@@ -201,7 +201,7 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         // PIT reader contexts are lost after close, verifying it with open index api
         client().admin().indices().prepareOpen("index").get();
         ex = expectThrows(SearchPhaseExecutionException.class, () -> {
-            client().prepareSearch("index")
+            client().prepareSearch()
                 .setSize(2)
                 .setPointInTime(new PointInTimeBuilder(pitResponse.getId()).setKeepAlive(TimeValue.timeValueDays(1)))
                 .get();
@@ -227,7 +227,7 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         client().prepareIndex("index").setId("2").setSource("field", "value").setRefreshPolicy(IMMEDIATE).get();
 
         SearchPhaseExecutionException ex = expectThrows(SearchPhaseExecutionException.class, () -> {
-            client().prepareSearch("index")
+            client().prepareSearch()
                 .setSize(2)
                 .setPointInTime(new PointInTimeBuilder(pitResponse.getId()).setKeepAlive(TimeValue.timeValueDays(1)))
                 .get();
@@ -252,7 +252,7 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         assertEquals(0, service.getActiveContexts());
         client().prepareIndex("index").setId("2").setSource("field", "value").setRefreshPolicy(IMMEDIATE).get();
         SearchPhaseExecutionException ex = expectThrows(SearchPhaseExecutionException.class, () -> {
-            client().prepareSearch("index")
+            client().prepareSearch()
                 .setSize(2)
                 .setPointInTime(new PointInTimeBuilder(pitResponse.getId()).setKeepAlive(TimeValue.timeValueDays(1)))
                 .get();
@@ -270,7 +270,7 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         CreatePITResponse pitResponse = execute.get();
         SearchService service = getInstanceFromNode(SearchService.class);
         assertEquals(2, service.getActiveContexts());
-        client().prepareSearch("index")
+        client().prepareSearch()
             .setSize(2)
             .setPointInTime(new PointInTimeBuilder(pitResponse.getId()).setKeepAlive(TimeValue.timeValueSeconds(3)))
             .get();
