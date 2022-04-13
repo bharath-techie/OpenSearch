@@ -21,7 +21,6 @@ import org.opensearch.search.builder.PointInTimeBuilder;
 import org.opensearch.test.InternalTestCluster;
 import org.opensearch.test.OpenSearchIntegTestCase;
 
-import java.io.IOException;
 import java.util.concurrent.ExecutionException;
 
 import static org.hamcrest.Matchers.containsString;

@@ -327,24 +327,7 @@ import org.opensearch.action.ingest.SimulatePipelineAction;
 import org.opensearch.action.ingest.SimulatePipelineRequest;
 import org.opensearch.action.ingest.SimulatePipelineRequestBuilder;
 import org.opensearch.action.ingest.SimulatePipelineResponse;
-import org.opensearch.action.search.ClearScrollAction;
-import org.opensearch.action.search.ClearScrollRequest;
-import org.opensearch.action.search.ClearScrollRequestBuilder;
-import org.opensearch.action.search.ClearScrollResponse;
-import org.opensearch.action.search.CreatePITAction;
-import org.opensearch.action.search.CreatePITRequest;
-import org.opensearch.action.search.CreatePITResponse;
-import org.opensearch.action.search.MultiSearchAction;
-import org.opensearch.action.search.MultiSearchRequest;
-import org.opensearch.action.search.MultiSearchRequestBuilder;
-import org.opensearch.action.search.MultiSearchResponse;
-import org.opensearch.action.search.SearchAction;
-import org.opensearch.action.search.SearchRequest;
-import org.opensearch.action.search.SearchRequestBuilder;
-import org.opensearch.action.search.SearchResponse;
-import org.opensearch.action.search.SearchScrollAction;
-import org.opensearch.action.search.SearchScrollRequest;
-import org.opensearch.action.search.SearchScrollRequestBuilder;
+import org.opensearch.action.search.*;
 import org.opensearch.action.support.PlainActionFuture;
 import org.opensearch.action.support.master.AcknowledgedResponse;
 import org.opensearch.action.termvectors.MultiTermVectorsAction;
@@ -582,6 +565,11 @@ public abstract class AbstractClient implements Client {
     @Override
     public void createPit(final CreatePITRequest createPITRequest, final ActionListener<CreatePITResponse> listener) {
         execute(CreatePITAction.INSTANCE, createPITRequest, listener);
+    }
+
+    @Override
+    public void deletePit(final DeletePITRequest deletePITRequest, final ActionListener<DeletePITResponse> listener) {
+        execute(DeletePITAction.INSTANCE, deletePITRequest, listener);
     }
 
     @Override

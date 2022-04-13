@@ -1,0 +1,80 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+
+package org.opensearch.action.search;
+
+import org.opensearch.action.ActionResponse;
+import org.opensearch.common.ParseField;
+import org.opensearch.common.io.stream.StreamInput;
+import org.opensearch.common.io.stream.StreamOutput;
+import org.opensearch.common.xcontent.*;
+import org.opensearch.rest.RestStatus;
+
+import java.io.IOException;
+
+import static org.opensearch.common.xcontent.ConstructingObjectParser.constructorArg;
+import static org.opensearch.rest.RestStatus.NOT_FOUND;
+import static org.opensearch.rest.RestStatus.OK;
+
+public class DeletePITResponse extends ActionResponse implements StatusToXContentObject {
+
+    private final boolean succeeded;
+
+    public DeletePITResponse(boolean succeeded) {
+        this.succeeded = succeeded;
+    }
+
+    public DeletePITResponse(StreamInput in) throws IOException {
+        super(in);
+        succeeded = in.readBoolean();
+    }
+
+    /**
+     * @return Whether the attempt to delete PIT was successful.
+     */
+    public boolean isSucceeded() {
+        return succeeded;
+    }
+
+    @Override
+    public RestStatus status() {
+        return succeeded ? OK : NOT_FOUND;
+    }
+
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        out.writeBoolean(succeeded);
+    }
+
+    private static final ParseField SUCCEEDED = new ParseField("succeeded");
+
+    private static final ConstructingObjectParser<DeletePITResponse, Void> PARSER = new ConstructingObjectParser<>(
+        "delete_pit",
+        true,
+        a -> new DeletePITResponse((boolean) a[0])
+    );
+    static {
+        PARSER.declareField(constructorArg(), (parser, context) -> parser.booleanValue(), SUCCEEDED, ObjectParser.ValueType.BOOLEAN);
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, ToXContent.Params params) throws IOException {
+        builder.startObject();
+        builder.field(SUCCEEDED.getPreferredName(), succeeded);
+        builder.endObject();
+        return builder;
+    }
+
+    /**
+     * Parse the delete PIT response body into a new {@link DeletePITResponse} object
+     */
+    public static DeletePITResponse fromXContent(XContentParser parser) throws IOException {
+        return PARSER.apply(parser, null);
+    }
+
+}
