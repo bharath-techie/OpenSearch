@@ -29,6 +29,9 @@ import static org.opensearch.action.ValidateActions.addValidationError;
  */
 public class DeletePITRequest extends ActionRequest implements ToXContentObject {
 
+    /**
+     * List of PIT IDs to be deleted , and use "_all" to delete all PIT reader contexts
+     */
     private List<String> pitIds;
 
     public DeletePITRequest(StreamInput in) throws IOException {

@@ -21,7 +21,7 @@ import java.util.List;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.unmodifiableList;
-import static org.opensearch.rest.RestRequest.Method.*;
+import static org.opensearch.rest.RestRequest.Method.DELETE;
 
 public class RestDeletePITAction extends BaseRestHandler {
 
@@ -50,6 +50,6 @@ public class RestDeletePITAction extends BaseRestHandler {
 
     @Override
     public List<Route> routes() {
-        return unmodifiableList(asList(new Route(DELETE, "/_pit"), new Route(DELETE, "/_pit/{id}")));
+        return unmodifiableList(asList(new Route(DELETE, "/_search/_point_in_time"), new Route(DELETE, "/_search/_point_in_time/{id}")));
     }
 }

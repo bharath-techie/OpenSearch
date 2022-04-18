@@ -10,6 +10,7 @@ package org.opensearch.action.search;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.StepListener;
@@ -33,6 +34,9 @@ import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 
+/**
+ * Transport action for deleting pit reader context - supports deleting list and all pit contexts
+ */
 public class TransportDeletePITAction extends HandledTransportAction<DeletePITRequest, DeletePITResponse> {
     private SearchService searchService;
     private final NamedWriteableRegistry namedWriteableRegistry;
@@ -74,15 +78,21 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
                 if (r == contexts.size()) {
                     listener.onResponse(new DeletePITResponse(true));
                 } else {
+                    logger.debug(
+                        () -> new ParameterizedMessage("Delete PITs failed. " + "Cleared {} contexts out of {}", r, contexts.size())
+                    );
                     listener.onResponse(new DeletePITResponse(false));
                 }
             }, e -> {
-                logger.debug("Delete PIT failed ", e);
+                logger.debug("Delete PITs failed ", e);
                 listener.onResponse(new DeletePITResponse(false));
             }));
         }
     }
 
+    /**
+     * Delete all active PIT reader contexts
+     */
     void deleteAllPits(ActionListener<DeletePITResponse> listener) {
         int size = clusterService.state().getNodes().getSize();
         ActionListener groupedActionListener = getGroupedListener(listener, size);
@@ -96,11 +106,17 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
         }
     }
 
+    /**
+     * Delete list of pits, return success if all reader contexts are deleted ( or not found ).
+     */
     void deletePits(List<SearchContextIdForNode> contexts, ActionListener<Integer> listener) {
         final StepListener<BiFunction<String, String, DiscoveryNode>> lookupListener = getLookupListener(contexts);
         lookupListener.whenComplete(nodeLookup -> {
             final GroupedActionListener<Boolean> groupedListener = new GroupedActionListener<>(
-                ActionListener.delegateFailure(listener, (l, rs) -> l.onResponse(Math.toIntExact(rs.stream().filter(r -> r).count()))),
+                ActionListener.delegateFailure(
+                    listener,
+                    (l, result) -> l.onResponse(Math.toIntExact(result.stream().filter(r -> r).count()))
+                ),
                 contexts.size()
             );
 
@@ -117,6 +133,7 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
                             ActionListener.wrap(r -> groupedListener.onResponse(r.isFreed()), e -> groupedListener.onResponse(false))
                         );
                     } catch (Exception e) {
+                        logger.debug("Delete PIT failed ", e);
                         groupedListener.onResponse(false);
                     }
                 }

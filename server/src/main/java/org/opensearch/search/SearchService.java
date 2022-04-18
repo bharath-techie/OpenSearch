@@ -1025,7 +1025,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     /**
-     * Free reader context if found otherwise return false
+     * Free reader context if found , return false if delete reader fails
      */
     public boolean freeReaderContextIfFound(ShardSearchContextId contextId) {
         try {

@@ -12,7 +12,12 @@ import org.opensearch.action.ActionResponse;
 import org.opensearch.common.ParseField;
 import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;
-import org.opensearch.common.xcontent.*;
+import org.opensearch.common.xcontent.ConstructingObjectParser;
+import org.opensearch.common.xcontent.ObjectParser;
+import org.opensearch.common.xcontent.StatusToXContentObject;
+import org.opensearch.common.xcontent.ToXContent;
+import org.opensearch.common.xcontent.XContentBuilder;
+import org.opensearch.common.xcontent.XContentParser;
 import org.opensearch.rest.RestStatus;
 
 import java.io.IOException;
@@ -23,6 +28,9 @@ import static org.opensearch.rest.RestStatus.OK;
 
 public class DeletePITResponse extends ActionResponse implements StatusToXContentObject {
 
+    /**
+     * This will be true if all PIT reader contexts are deleted.
+     */
     private final boolean succeeded;
 
     public DeletePITResponse(boolean succeeded) {
