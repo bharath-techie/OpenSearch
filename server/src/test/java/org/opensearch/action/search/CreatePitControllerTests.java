@@ -28,7 +28,11 @@ import org.opensearch.index.query.MatchAllQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.TermQueryBuilder;
 import org.opensearch.index.shard.ShardId;
-import org.opensearch.search.*;
+import org.opensearch.search.SearchHit;
+import org.opensearch.search.SearchHits;
+import org.opensearch.search.SearchPhaseResult;
+import org.opensearch.search.SearchService;
+import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.aggregations.InternalAggregations;
 import org.opensearch.search.internal.AliasFilter;
 import org.opensearch.search.internal.InternalSearchResponse;
@@ -37,7 +41,11 @@ import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskId;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.Transport;
-import java.util.*;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import static org.mockito.Mockito.mock;
@@ -126,8 +134,12 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         when(state.getNodes()).thenReturn(nodes);
     }
 
+    /**
+     * Test if transport call for update pit is made to all nodes present as part of PIT ID returned from phase one of create pit
+     */
     public void testUpdatePitAfterCreatePitSuccess() throws InterruptedException {
         List<DiscoveryNode> updateNodesInvoked = new CopyOnWriteArrayList<>();
+        List<DiscoveryNode> deleteNodesInvoked = new CopyOnWriteArrayList<>();
         SearchTransportService searchTransportService = new SearchTransportService(null, null) {
             @Override
             public void updatePitContext(
@@ -137,6 +149,20 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             ) {
                 updateNodesInvoked.add(connection.getNode());
                 Thread t = new Thread(() -> listener.onResponse(new UpdatePitContextResponse("pitid", 500000, 500000)));
+                t.start();
+            }
+
+            /**
+             * Test if cleanup request is called
+             */
+            @Override
+            public void sendFreeContext(
+                Transport.Connection connection,
+                ShardSearchContextId contextId,
+                ActionListener<SearchFreeContextResponse> listener
+            ) {
+                deleteNodesInvoked.add(connection.getNode());
+                Thread t = new Thread(() -> listener.onResponse(new SearchFreeContextResponse(true)));
                 t.start();
             }
 
@@ -181,10 +207,15 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         createListener.onResponse(createPITResponse);
         latch.await();
         assertEquals(3, updateNodesInvoked.size());
+        assertEquals(0, deleteNodesInvoked.size());
     }
 
+    /**
+     * If create phase results in failure, update pit phase should not proceed and propagate the exception
+     */
     public void testUpdatePitAfterCreatePitFailure() throws InterruptedException {
         List<DiscoveryNode> updateNodesInvoked = new CopyOnWriteArrayList<>();
+        List<DiscoveryNode> deleteNodesInvoked = new CopyOnWriteArrayList<>();
         SearchTransportService searchTransportService = new SearchTransportService(null, null) {
             @Override
             public void updatePitContext(
@@ -200,6 +231,17 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             @Override
             public Transport.Connection getConnection(String clusterAlias, DiscoveryNode node) {
                 return new SearchAsyncActionTests.MockConnection(node);
+            }
+
+            @Override
+            public void sendFreeContext(
+                Transport.Connection connection,
+                ShardSearchContextId contextId,
+                ActionListener<SearchFreeContextResponse> listener
+            ) {
+                deleteNodesInvoked.add(connection.getNode());
+                Thread t = new Thread(() -> listener.onResponse(new SearchFreeContextResponse(true)));
+                t.start();
             }
         };
 
@@ -236,10 +278,18 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         createListener.onFailure(new Exception("Exception occurred in phase 1"));
         latch.await();
         assertEquals(0, updateNodesInvoked.size());
+        /**
+         * cleanup is not called on create pit phase one failure
+         */
+        assertEquals(0, deleteNodesInvoked.size());
     }
 
+    /**
+     * Testing that any update pit failures fails the request
+     */
     public void testUpdatePitFailureForNodeDrop() throws InterruptedException {
         List<DiscoveryNode> updateNodesInvoked = new CopyOnWriteArrayList<>();
+        List<DiscoveryNode> deleteNodesInvoked = new CopyOnWriteArrayList<>();
         SearchTransportService searchTransportService = new SearchTransportService(null, null) {
             @Override
             public void updatePitContext(
@@ -256,6 +306,17 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
                     Thread t = new Thread(() -> listener.onResponse(new UpdatePitContextResponse("pitid", 500000, 500000)));
                     t.start();
                 }
+            }
+
+            @Override
+            public void sendFreeContext(
+                Transport.Connection connection,
+                ShardSearchContextId contextId,
+                ActionListener<SearchFreeContextResponse> listener
+            ) {
+                deleteNodesInvoked.add(connection.getNode());
+                Thread t = new Thread(() -> listener.onResponse(new SearchFreeContextResponse(true)));
+                t.start();
             }
 
             @Override
@@ -295,10 +356,15 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         createListener.onResponse(createPITResponse);
         latch.await();
         assertEquals(3, updateNodesInvoked.size());
+        /**
+         * check if cleanup is called for all nodes in case of update pit failure
+         */
+        assertEquals(3, deleteNodesInvoked.size());
     }
 
     public void testUpdatePitFailureWhereAllNodesDown() throws InterruptedException {
         List<DiscoveryNode> updateNodesInvoked = new CopyOnWriteArrayList<>();
+        List<DiscoveryNode> deleteNodesInvoked = new CopyOnWriteArrayList<>();
         SearchTransportService searchTransportService = new SearchTransportService(null, null) {
             @Override
             public void updatePitContext(
@@ -308,6 +374,17 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             ) {
                 updateNodesInvoked.add(connection.getNode());
                 Thread t = new Thread(() -> listener.onFailure(new Exception("node down")));
+                t.start();
+            }
+
+            @Override
+            public void sendFreeContext(
+                Transport.Connection connection,
+                ShardSearchContextId contextId,
+                ActionListener<SearchFreeContextResponse> listener
+            ) {
+                deleteNodesInvoked.add(connection.getNode());
+                Thread t = new Thread(() -> listener.onResponse(new SearchFreeContextResponse(true)));
                 t.start();
             }
 
@@ -348,6 +425,11 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         createListener.onResponse(createPITResponse);
         latch.await();
         assertEquals(3, updateNodesInvoked.size());
+        /**
+         * check if cleanup is called for all nodes in case of update pit failure
+         */
+        assertEquals(3, deleteNodesInvoked.size());
+
     }
 
     QueryBuilder randomQueryBuilder() {
