@@ -31,6 +31,9 @@ public class CreatePITResponse extends ActionResponse implements StatusToXConten
     private final ShardSearchFailure[] shardFailures;
 
     public CreatePITResponse(SearchResponse searchResponse) {
+        if (searchResponse.pointInTimeId() == null || searchResponse.pointInTimeId().isEmpty()) {
+            throw new IllegalArgumentException("Point in time ID is empty");
+        }
         this.id = searchResponse.pointInTimeId();
         this.totalShards = searchResponse.getTotalShards();
         this.successfulShards = searchResponse.getSuccessfulShards();

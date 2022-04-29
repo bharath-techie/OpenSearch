@@ -29,6 +29,7 @@ import org.opensearch.tasks.Task;
 import org.opensearch.transport.Transport;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiFunction;
@@ -37,10 +38,7 @@ import java.util.stream.Collectors;
 import static org.opensearch.common.unit.TimeValue.timeValueSeconds;
 
 /**
- * Controller for creating PIT reader context
- * Phase 1 of create PIT request : Create PIT reader contexts in the associated shards with a temporary keep alive
- * Phase 2 of create PIT : Update PIT reader context with PIT ID and keep alive from request and
- * fail user request if any of the updates in this phase are failed - we clean up PITs in case of such failures
+ * Controller to handle PIT related logic
  */
 public class PITController implements Runnable {
     private final Runnable runner;
@@ -81,6 +79,12 @@ public class PITController implements Runnable {
         return CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING.get(clusterService.getSettings());
     }
 
+    /**
+     * Method for creating PIT reader context
+     * Phase 1 of create PIT request : Create PIT reader contexts in the associated shards with a temporary keep alive
+     * Phase 2 of create PIT : Update PIT reader context with PIT ID and keep alive from request and
+     * fail user request if any of the updates in this phase are failed - we clean up PITs in case of such failures
+     */
     public void executeCreatePit() {
         SearchRequest searchRequest = new SearchRequest(request.getIndices());
         searchRequest.preference(request.getPreference());
@@ -94,7 +98,7 @@ public class PITController implements Runnable {
             task.getAction(),
             () -> task.getDescription(),
             task.getParentTaskId(),
-            task.getHeaders()
+            new HashMap<>()
         );
 
         final StepListener<SearchResponse> createPitListener = new StepListener<>();
@@ -118,6 +122,7 @@ public class PITController implements Runnable {
      * Creates PIT reader context with temporary keep alive
      */
     void executeCreatePit(Task task, SearchRequest searchRequest, StepListener<SearchResponse> createPitListener) {
+        logger.debug("Creating PIT context");
         transportSearchAction.executeRequest(
             task,
             searchRequest,
@@ -152,6 +157,7 @@ public class PITController implements Runnable {
         ActionListener<CreatePITResponse> updatePitIdListener
     ) {
         createPitListener.whenComplete(searchResponse -> {
+            logger.debug("Updating PIT context with PIT ID, creation time and keep alive");
             CreatePITResponse createPITResponse = new CreatePITResponse(searchResponse);
             SearchContextId contextId = SearchContextId.decode(namedWriteableRegistry, createPITResponse.getId());
             final StepListener<BiFunction<String, String, DiscoveryNode>> lookupListener = getConnectionLookupListener(contextId);
@@ -166,7 +172,7 @@ public class PITController implements Runnable {
                  * store the create time ( same create time for all PIT contexts across shards ) to be used
                  * for list PIT api
                  */
-                long createTime = System.currentTimeMillis();
+                final long createTime = System.currentTimeMillis();
                 for (Map.Entry<ShardId, SearchContextIdForNode> entry : contextId.shards().entrySet()) {
                     DiscoveryNode node = nodelookup.apply(entry.getValue().getClusterAlias(), entry.getValue().getNode());
                     try {
@@ -205,10 +211,10 @@ public class PITController implements Runnable {
 
         final StepListener<BiFunction<String, String, DiscoveryNode>> lookupListener = new StepListener<>();
 
-        if (clusters.isEmpty() == false) {
-            searchTransportService.getRemoteClusterService().collectNodes(clusters, lookupListener);
-        } else {
+        if (clusters.isEmpty()) {
             lookupListener.onResponse((cluster, nodeId) -> state.getNodes().get(nodeId));
+        } else {
+            searchTransportService.getRemoteClusterService().collectNodes(clusters, lookupListener);
         }
         return lookupListener;
     }
@@ -246,7 +252,7 @@ public class PITController implements Runnable {
 
             @Override
             public void onFailure(Exception e) {
-                logger.debug("Cleaning up PIT contexts failed ", e);
+                logger.error("Cleaning up PIT contexts failed ", e);
             }
         };
         ClearScrollController.closeContexts(clusterService.state().getNodes(), searchTransportService, contexts, deleteListener);
