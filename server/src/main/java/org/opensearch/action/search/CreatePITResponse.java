@@ -19,7 +19,7 @@ import org.opensearch.rest.action.RestActions;
 import java.io.IOException;
 
 /**
- * Create point in time response with point in time id and success / failures
+ * Create point in time response with point in time id and shard success / failures
  */
 public class CreatePITResponse extends ActionResponse implements StatusToXContentObject {
     // point in time id
@@ -31,6 +31,9 @@ public class CreatePITResponse extends ActionResponse implements StatusToXConten
     private final ShardSearchFailure[] shardFailures;
 
     public CreatePITResponse(SearchResponse searchResponse) {
+        if (searchResponse.pointInTimeId() == null || searchResponse.pointInTimeId().isEmpty()) {
+            throw new IllegalArgumentException("Point in time ID is empty");
+        }
         this.id = searchResponse.pointInTimeId();
         this.totalShards = searchResponse.getTotalShards();
         this.successfulShards = searchResponse.getSuccessfulShards();

@@ -153,7 +153,6 @@ import java.util.function.LongSupplier;
 import static org.opensearch.common.unit.TimeValue.timeValueHours;
 import static org.opensearch.common.unit.TimeValue.timeValueMillis;
 import static org.opensearch.common.unit.TimeValue.timeValueMinutes;
-import static org.opensearch.common.unit.TimeValue.timeValueSeconds;
 
 public class SearchService extends AbstractLifecycleComponent implements IndexEventListener {
     private static final Logger logger = LogManager.getLogger(SearchService.class);
@@ -180,11 +179,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     public static final Setting<TimeValue> KEEPALIVE_INTERVAL_SETTING = Setting.positiveTimeSetting(
         "search.keep_alive_interval",
         timeValueMinutes(1),
-        Property.NodeScope
-    );
-    public static final Setting<TimeValue> CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING = Setting.positiveTimeSetting(
-        "pit.temporary.keep_alive_interval",
-        timeValueSeconds(30),
         Property.NodeScope
     );
     public static final Setting<Boolean> ALLOW_EXPENSIVE_QUERIES = Setting.boolSetting(
@@ -1330,8 +1324,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         }
 
         if (source.slice() != null) {
-            if (context.scrollContext() == null) {
-                throw new SearchException(shardTarget, "`slice` cannot be used outside of a scroll context");
+            if (context.scrollContext() == null || context.readerContext() instanceof PitReaderContext) {
+                throw new SearchException(shardTarget, "`slice` cannot be used outside of a scroll context or PIT context");
             }
             context.sliceBuilder(source.slice());
         }

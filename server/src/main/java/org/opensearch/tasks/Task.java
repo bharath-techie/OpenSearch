@@ -32,8 +32,6 @@
 
 package org.opensearch.tasks;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.opensearch.action.ActionResponse;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.io.stream.NamedWriteable;
@@ -52,8 +50,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * Current task information
  */
 public class Task {
-
-    private static final Logger logger = LogManager.getLogger(Task.class);
 
     /**
      * The request header to mark tasks with specific ids
@@ -289,7 +285,7 @@ public class Task {
                 );
             }
         }
-        threadResourceInfoList.add(new ThreadResourceInfo(statsType, resourceUsageMetrics));
+        threadResourceInfoList.add(new ThreadResourceInfo(threadId, statsType, resourceUsageMetrics));
     }
 
     /**
@@ -337,6 +333,17 @@ public class Task {
     }
 
     /**
+     * Individual tasks can override this if they want to support task resource tracking. We just need to make sure that
+     * the ThreadPool on which the task runs on have runnable wrapper similar to
+     * {@link org.opensearch.common.util.concurrent.OpenSearchExecutors#newAutoQueueFixed}
+     *
+     * @return true if resource tracking is supported by the task
+     */
+    public boolean supportsResourceTracking() {
+        return false;
+    }
+
+    /**
      * Report of the internal status of a task. These can vary wildly from task
      * to task because each task is implemented differently but we should try
      * to keep each task consistent from version to version where possible.
@@ -355,10 +362,6 @@ public class Task {
      */
     public String getHeader(String header) {
         return headers.get(header);
-    }
-
-    public Map<String, String> getHeaders() {
-        return headers;
     }
 
     public TaskResult result(DiscoveryNode node, Exception error) throws IOException {

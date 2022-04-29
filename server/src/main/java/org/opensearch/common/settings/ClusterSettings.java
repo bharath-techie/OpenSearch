@@ -32,7 +32,7 @@
 package org.opensearch.common.settings;
 
 import org.apache.logging.log4j.LogManager;
-import org.opensearch.action.main.TransportMainAction;
+import org.opensearch.action.search.PITController;
 import org.opensearch.cluster.routing.allocation.decider.NodeLoadAwareAllocationDecider;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
@@ -40,6 +40,7 @@ import org.opensearch.index.IndexingPressure;
 import org.opensearch.index.ShardIndexingPressureMemoryManager;
 import org.opensearch.index.ShardIndexingPressureSettings;
 import org.opensearch.index.ShardIndexingPressureStore;
+import org.opensearch.tasks.TaskResourceTrackingService;
 import org.opensearch.watcher.ResourceWatcherService;
 import org.opensearch.action.admin.cluster.configuration.TransportAddVotingConfigExclusionsAction;
 import org.opensearch.action.admin.indices.close.TransportCloseIndexAction;
@@ -465,7 +466,7 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 SearchService.ALLOW_EXPENSIVE_QUERIES,
                 SearchService.MAX_OPEN_PIT_CONTEXT,
                 SearchService.MAX_PIT_KEEPALIVE_SETTING,
-                SearchService.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING,
+                PITController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING,
                 MultiBucketConsumerService.MAX_BUCKET_SETTING,
                 SearchService.LOW_LEVEL_CANCELLATION_SETTING,
                 SearchService.MAX_OPEN_SCROLL_CONTEXT,
@@ -555,7 +556,6 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 FsHealthService.REFRESH_INTERVAL_SETTING,
                 FsHealthService.SLOW_PATH_LOGGING_THRESHOLD_SETTING,
                 FsHealthService.HEALTHY_TIMEOUT_SETTING,
-                TransportMainAction.OVERRIDE_MAIN_RESPONSE_VERSION,
                 NodeLoadAwareAllocationDecider.CLUSTER_ROUTING_ALLOCATION_LOAD_AWARENESS_PROVISIONED_CAPACITY_SETTING,
                 NodeLoadAwareAllocationDecider.CLUSTER_ROUTING_ALLOCATION_LOAD_AWARENESS_SKEW_FACTOR_SETTING,
                 NodeLoadAwareAllocationDecider.CLUSTER_ROUTING_ALLOCATION_LOAD_AWARENESS_ALLOW_UNASSIGNED_PRIMARIES_SETTING,
@@ -571,7 +571,8 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 ShardIndexingPressureMemoryManager.THROUGHPUT_DEGRADATION_LIMITS,
                 ShardIndexingPressureMemoryManager.SUCCESSFUL_REQUEST_ELAPSED_TIMEOUT,
                 ShardIndexingPressureMemoryManager.MAX_OUTSTANDING_REQUESTS,
-                IndexingPressure.MAX_INDEXING_BYTES
+                IndexingPressure.MAX_INDEXING_BYTES,
+                TaskResourceTrackingService.TASK_RESOURCE_TRACKING_ENABLED
             )
         )
     );
