@@ -32,12 +32,11 @@
 
 package org.opensearch.search.slice;
 
+import org.opensearch.action.ActionFuture;
 import org.opensearch.action.admin.indices.alias.IndicesAliasesRequest;
 
 import org.opensearch.action.index.IndexRequestBuilder;
-import org.opensearch.action.search.SearchPhaseExecutionException;
-import org.opensearch.action.search.SearchRequestBuilder;
-import org.opensearch.action.search.SearchResponse;
+import org.opensearch.action.search.*;
 import org.opensearch.common.Strings;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
@@ -46,6 +45,8 @@ import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.search.Scroll;
 import org.opensearch.search.SearchException;
 import org.opensearch.search.SearchHit;
+import org.opensearch.search.SearchService;
+import org.opensearch.search.builder.PointInTimeBuilder;
 import org.opensearch.search.sort.SortBuilders;
 import org.opensearch.test.OpenSearchIntegTestCase;
 
@@ -126,6 +127,36 @@ public class SearchSliceIT extends OpenSearchIntegTestCase {
                 .addSort(SortBuilders.fieldSort("random_int"))
                 .setSize(fetchSize);
             assertSearchSlicesWithScroll(request, field, max, numDocs);
+        }
+    }
+
+    public void testSearchSortWithPIT() throws Exception {
+        int numShards = randomIntBetween(1, 7);
+        int numDocs = randomIntBetween(100, 1000);
+        setupIndex(numDocs, numShards);
+        int max = randomIntBetween(2, numShards * 3);
+        CreatePITRequest pitRequest = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+        pitRequest.setIndices(new String[] { "test" });
+        ActionFuture<CreatePITResponse> execute = client().execute(CreatePITAction.INSTANCE, pitRequest);
+        CreatePITResponse pitResponse = execute.get();
+        for (String field : new String[] { "_id", "random_int", "static_int" }) {
+            int fetchSize = randomIntBetween(10, 100);
+
+            // test _doc sort
+            SearchRequestBuilder request = client().prepareSearch("test")
+                    .setQuery(matchAllQuery())
+                    .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                    .setSize(10000)
+                    .addSort(SortBuilders.fieldSort("_doc"));
+            assertSearchSlicesWithPIT(request, field, max, numDocs);
+
+            // test numeric sort
+            request = client().prepareSearch("test")
+                    .setQuery(matchAllQuery())
+                    .setPointInTime(new PointInTimeBuilder(pitResponse.getId()))
+                    .setSize(10000)
+                    .addSort(SortBuilders.fieldSort("random_int"));
+            assertSearchSlicesWithPIT(request, field, max, numDocs);
         }
     }
 
@@ -233,6 +264,16 @@ public class SearchSliceIT extends OpenSearchIntegTestCase {
             for (SearchHit hit : searchResponse.getHits().getHits()) {
                 assertTrue(keys.add(hit.getId()));
             }
+            // num docs = 400
+            // slice num = 4
+            // each slice total results = 100
+            // search . slice ( 0 ) . size (50 ) . scroll (scrollid)
+            // we have to do this twice to fetch full results of slice ( 50 + 50 )
+            // search.scroll(scrollid)
+
+
+            // search. slice (0) .from(50) .pitid(pitid)
+
             while (searchResponse.getHits().getHits().length > 0) {
                 searchResponse = client().prepareSearchScroll("test")
                     .setScrollId(scrollId)
@@ -248,6 +289,46 @@ public class SearchSliceIT extends OpenSearchIntegTestCase {
             assertThat(numSliceResults, equalTo(expectedSliceResults));
             clearScroll(scrollId);
         }
+        assertThat(totalResults, equalTo(numDocs));
+        assertThat(keys.size(), equalTo(numDocs));
+        assertThat(new HashSet(keys).size(), equalTo(numDocs));
+    }
+
+    private void assertSearchSlicesWithPIT(SearchRequestBuilder request, String field, int numSlice, int numDocs) {
+        int totalResults = 0;
+        List<String> keys = new ArrayList<>();
+        for (int id = 0; id < numSlice; id++) {
+            SliceBuilder sliceBuilder = new SliceBuilder(field, id, numSlice);
+            SearchResponse searchResponse = request.slice(sliceBuilder).get();
+            totalResults += searchResponse.getHits().getHits().length;
+            int expectedSliceResults = (int) searchResponse.getHits().getTotalHits().value;
+            int numSliceResults = searchResponse.getHits().getHits().length;
+            String pitId = searchResponse.pointInTimeId();
+            for (SearchHit hit : searchResponse.getHits().getHits()) {
+                assertTrue(keys.add(hit.getId()));
+            }
+            while (searchResponse.getHits().getHits().length > 0) {
+                searchResponse = client().prepareSearch("test")
+                        .setPointInTime(new PointInTimeBuilder(pitId))
+                        .setFrom(numSliceResults)
+                        .slice(sliceBuilder)
+                        .get();
+                pitId = searchResponse.pointInTimeId();
+                totalResults += searchResponse.getHits().getHits().length;
+                numSliceResults += searchResponse.getHits().getHits().length;
+                for (SearchHit hit : searchResponse.getHits().getHits()) {
+                    assertTrue(keys.add(hit.getId()));
+                }
+            }
+           assertThat(numSliceResults, equalTo(expectedSliceResults));
+        }
+        // 4 slices 400 docs ==> unique with hit ids -- correct
+        // 1 slice -- 100 docs
+        // size as 50
+        // 50 docs
+        // 50 docs
+        // using size
+        // the search results
         assertThat(totalResults, equalTo(numDocs));
         assertThat(keys.size(), equalTo(numDocs));
         assertThat(new HashSet(keys).size(), equalTo(numDocs));
