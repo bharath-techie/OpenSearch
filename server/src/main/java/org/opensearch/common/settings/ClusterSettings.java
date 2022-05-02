@@ -32,7 +32,7 @@
 package org.opensearch.common.settings;
 
 import org.apache.logging.log4j.LogManager;
-import org.opensearch.action.search.PITController;
+import org.opensearch.action.search.CreatePITController;
 import org.opensearch.cluster.routing.allocation.decider.NodeLoadAwareAllocationDecider;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
@@ -40,7 +40,6 @@ import org.opensearch.index.IndexingPressure;
 import org.opensearch.index.ShardIndexingPressureMemoryManager;
 import org.opensearch.index.ShardIndexingPressureSettings;
 import org.opensearch.index.ShardIndexingPressureStore;
-import org.opensearch.tasks.TaskResourceTrackingService;
 import org.opensearch.watcher.ResourceWatcherService;
 import org.opensearch.action.admin.cluster.configuration.TransportAddVotingConfigExclusionsAction;
 import org.opensearch.action.admin.indices.close.TransportCloseIndexAction;
@@ -466,7 +465,7 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 SearchService.ALLOW_EXPENSIVE_QUERIES,
                 SearchService.MAX_OPEN_PIT_CONTEXT,
                 SearchService.MAX_PIT_KEEPALIVE_SETTING,
-                PITController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING,
+                CreatePITController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING,
                 MultiBucketConsumerService.MAX_BUCKET_SETTING,
                 SearchService.LOW_LEVEL_CANCELLATION_SETTING,
                 SearchService.MAX_OPEN_SCROLL_CONTEXT,
@@ -571,8 +570,7 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 ShardIndexingPressureMemoryManager.THROUGHPUT_DEGRADATION_LIMITS,
                 ShardIndexingPressureMemoryManager.SUCCESSFUL_REQUEST_ELAPSED_TIMEOUT,
                 ShardIndexingPressureMemoryManager.MAX_OUTSTANDING_REQUESTS,
-                IndexingPressure.MAX_INDEXING_BYTES,
-                TaskResourceTrackingService.TASK_RESOURCE_TRACKING_ENABLED
+                IndexingPressure.MAX_INDEXING_BYTES
             )
         )
     );

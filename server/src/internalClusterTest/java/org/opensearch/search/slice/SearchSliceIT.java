@@ -134,6 +134,20 @@ public class SearchSliceIT extends OpenSearchIntegTestCase {
         }
     }
 
+    public void testSearchSortWithoutPitOrScroll() throws Exception {
+        int numShards = randomIntBetween(1, 7);
+        int numDocs = randomIntBetween(100, 1000);
+        setupIndex(numDocs, numShards);
+        int fetchSize = randomIntBetween(10, 100);
+        SearchRequestBuilder request = client().prepareSearch("test")
+            .setQuery(matchAllQuery())
+            .setSize(fetchSize)
+            .addSort(SortBuilders.fieldSort("_doc"));
+        SliceBuilder sliceBuilder = new SliceBuilder("_id", 0, 4);
+        SearchPhaseExecutionException ex = expectThrows(SearchPhaseExecutionException.class, () -> request.slice(sliceBuilder).get());
+        assertTrue(ex.getMessage().contains("all shards failed"));
+    }
+
     public void testSearchSortWithPIT() throws Exception {
         int numShards = randomIntBetween(1, 7);
         int numDocs = randomIntBetween(100, 1000);
