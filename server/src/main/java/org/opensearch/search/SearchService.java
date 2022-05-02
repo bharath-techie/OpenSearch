@@ -1019,6 +1019,34 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     /**
+     * Free reader context if found otherwise return false
+     */
+    public boolean freeReaderContextIfFound(ShardSearchContextId contextId) {
+        try {
+            if (getReaderContext(contextId) != null) {
+                try (ReaderContext context = removeReaderContext(contextId.getId())) {
+                    return context != null;
+                }
+            }
+        } catch (SearchContextMissingException e) {
+            return true;
+        }
+        return true;
+    }
+
+
+    /**
+     * Free all active pit contexts
+     */
+    public void freeAllPitContexts() {
+        for (ReaderContext readerContext : activeReaders.values()) {
+            if (readerContext instanceof PitReaderContext) {
+                freeReaderContextIfFound(readerContext.id());
+            }
+        }
+    }
+
+    /**
      * Update PIT reader with pit id, keep alive and created time etc
      */
     public void updatePitIdAndKeepAlive(UpdatePITContextRequest request, ActionListener<UpdatePitContextResponse> listener) {
