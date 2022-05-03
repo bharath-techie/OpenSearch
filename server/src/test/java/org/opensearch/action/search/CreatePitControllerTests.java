@@ -69,7 +69,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         node1 = new DiscoveryNode("node_1", buildNewFakeTransportAddress(), Version.CURRENT);
         node2 = new DiscoveryNode("node_2", buildNewFakeTransportAddress(), Version.CURRENT);
         node3 = new DiscoveryNode("node_3", buildNewFakeTransportAddress(), Version.CURRENT);
-        setPitId();
+        pitId = getPitId();
         namedWriteableRegistry = new NamedWriteableRegistry(
             Arrays.asList(
                 new NamedWriteableRegistry.Entry(QueryBuilder.class, TermQueryBuilder.NAME, TermQueryBuilder::new),
@@ -431,7 +431,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
 
     }
 
-    QueryBuilder randomQueryBuilder() {
+    public static QueryBuilder randomQueryBuilder() {
         if (randomBoolean()) {
             return new TermQueryBuilder(randomAlphaOfLength(10), randomAlphaOfLength(10));
         } else if (randomBoolean()) {
@@ -441,21 +441,21 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         }
     }
 
-    private void setPitId() {
+    public static String getPitId() {
         AtomicArray<SearchPhaseResult> array = new AtomicArray<>(3);
         SearchAsyncActionTests.TestSearchPhaseResult testSearchPhaseResult1 = new SearchAsyncActionTests.TestSearchPhaseResult(
             new ShardSearchContextId("a", 1),
-            node1
+            null
         );
         testSearchPhaseResult1.setSearchShardTarget(new SearchShardTarget("node_1", new ShardId("idx", "uuid1", 2), null, null));
         SearchAsyncActionTests.TestSearchPhaseResult testSearchPhaseResult2 = new SearchAsyncActionTests.TestSearchPhaseResult(
             new ShardSearchContextId("b", 12),
-            node2
+            null
         );
         testSearchPhaseResult2.setSearchShardTarget(new SearchShardTarget("node_2", new ShardId("idy", "uuid2", 42), null, null));
         SearchAsyncActionTests.TestSearchPhaseResult testSearchPhaseResult3 = new SearchAsyncActionTests.TestSearchPhaseResult(
             new ShardSearchContextId("c", 42),
-            node3
+            null
         );
         testSearchPhaseResult3.setSearchShardTarget(new SearchShardTarget("node_3", new ShardId("idy", "uuid2", 43), null, null));
         array.setOnce(0, testSearchPhaseResult1);
@@ -477,7 +477,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
                 aliasFilters.put(result.getSearchShardTarget().getShardId().getIndex().getUUID(), aliasFilter);
             }
         }
-        pitId = SearchContextId.encode(array.asList(), aliasFilters, version);
+        return SearchContextId.encode(array.asList(), aliasFilters, version);
     }
 
 }

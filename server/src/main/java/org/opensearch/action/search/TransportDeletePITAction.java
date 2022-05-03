@@ -11,6 +11,7 @@ package org.opensearch.action.search;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.lucene.util.SetOnce;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.StepListener;
@@ -22,7 +23,6 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.Strings;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.io.stream.NamedWriteableRegistry;
-import org.opensearch.search.SearchService;
 import org.opensearch.tasks.Task;
 import org.opensearch.transport.Transport;
 import org.opensearch.transport.TransportService;
@@ -38,7 +38,6 @@ import java.util.stream.Collectors;
  * Transport action for deleting pit reader context - supports deleting list and all pit contexts
  */
 public class TransportDeletePITAction extends HandledTransportAction<DeletePITRequest, DeletePITResponse> {
-    private SearchService searchService;
     private final NamedWriteableRegistry namedWriteableRegistry;
     private TransportSearchAction transportSearchAction;
     private final ClusterService clusterService;
@@ -47,7 +46,6 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
 
     @Inject
     public TransportDeletePITAction(
-        SearchService searchService,
         TransportService transportService,
         ActionFilters actionFilters,
         NamedWriteableRegistry namedWriteableRegistry,
@@ -56,7 +54,6 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
         SearchTransportService searchTransportService
     ) {
         super(DeletePITAction.NAME, transportService, actionFilters, DeletePITRequest::new);
-        this.searchService = searchService;
         this.namedWriteableRegistry = namedWriteableRegistry;
         this.transportSearchAction = transportSearchAction;
         this.clusterService = clusterService;
@@ -95,11 +92,33 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
      */
     void deleteAllPits(ActionListener<DeletePITResponse> listener) {
         int size = clusterService.state().getNodes().getSize();
-        ActionListener groupedActionListener = getGroupedListener(listener, size);
+        ActionListener groupedActionListener = new GroupedActionListener<SearchTransportService.SearchFreeContextResponse>(
+            new ActionListener<>() {
+                @Override
+                public void onResponse(final Collection<SearchTransportService.SearchFreeContextResponse> responses) {
+                    final SetOnce<Boolean> succeeded = new SetOnce<>();
+                    for (SearchTransportService.SearchFreeContextResponse response : responses) {
+                        if (!response.isFreed()) {
+                            succeeded.set(false);
+                            break;
+                        }
+                    }
+                    succeeded.trySet(true);
+                    listener.onResponse(new DeletePITResponse(succeeded.get()));
+                }
+
+                @Override
+                public void onFailure(final Exception e) {
+                    logger.debug("Delete all PITs failed ", e);
+                    listener.onResponse(new DeletePITResponse(false));
+                }
+            },
+            size
+        );
         for (final DiscoveryNode node : clusterService.state().getNodes()) {
             try {
                 Transport.Connection connection = searchTransportService.getConnection(null, node);
-                searchTransportService.sendDeleteAllPitContexts(connection, groupedActionListener);
+                searchTransportService.sendFreeAllPitContexts(connection, groupedActionListener);
             } catch (Exception e) {
                 groupedActionListener.onFailure(e);
             }
@@ -123,11 +142,11 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
             for (SearchContextIdForNode contextId : contexts) {
                 final DiscoveryNode node = nodeLookup.apply(contextId.getClusterAlias(), contextId.getNode());
                 if (node == null) {
-                    groupedListener.onFailure(new OpenSearchException("node not connected"));
+                    groupedListener.onFailure(new OpenSearchException("node not found"));
                 } else {
                     try {
                         final Transport.Connection connection = searchTransportService.getConnection(contextId.getClusterAlias(), node);
-                        searchTransportService.sendPitFreeContext(
+                        searchTransportService.sendFreePITContext(
                             connection,
                             contextId.getSearchContextId(),
                             ActionListener.wrap(r -> groupedListener.onResponse(r.isFreed()), e -> groupedListener.onResponse(false))
@@ -153,20 +172,5 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
             lookupListener.onResponse((cluster, nodeId) -> clusterService.state().getNodes().get(nodeId));
         }
         return lookupListener;
-    }
-
-    private ActionListener<DeletePITResponse> getGroupedListener(ActionListener<DeletePITResponse> deletePitListener, int size) {
-        return new GroupedActionListener<>(new ActionListener<>() {
-            @Override
-            public void onResponse(final Collection<DeletePITResponse> responses) {
-                deletePitListener.onResponse(new DeletePITResponse(true));
-            }
-
-            @Override
-            public void onFailure(final Exception e) {
-                logger.debug("Delete all PITs failed ", e);
-                deletePitListener.onResponse(new DeletePITResponse(false));
-            }
-        }, size);
     }
 }

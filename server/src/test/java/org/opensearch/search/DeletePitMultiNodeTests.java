@@ -76,6 +76,24 @@ public class DeletePitMultiNodeTests extends OpenSearchIntegTestCase {
 
     }
 
+    public void testDeleteAllPits() throws Exception {
+        createPitOnIndex("index");
+        createIndex("index1", Settings.builder().put("index.number_of_shards", 5).put("index.number_of_replicas", 1).build());
+        client().prepareIndex("index1").setId("1").setSource("field", "value").setRefreshPolicy(IMMEDIATE).execute().get();
+        ensureGreen();
+        createPitOnIndex("index1");
+        DeletePITRequest deletePITRequest = new DeletePITRequest("_all");
+
+        /**
+         * When we invoke delete again, returns success after clearing the remaining readers. Asserting reader context
+         * not found exceptions don't result in failures ( as deletion in one node is successful )
+         */
+        ActionFuture<DeletePITResponse> execute = client().execute(DeletePITAction.INSTANCE, deletePITRequest);
+        DeletePITResponse deletePITResponse = execute.get();
+        assertTrue(deletePITResponse.isSucceeded());
+        client().admin().indices().prepareDelete("index1").get();
+    }
+
     public void testDeletePitWhileNodeDrop() throws Exception {
         CreatePITResponse pitResponse = createPitOnIndex("index");
         createIndex("index1", Settings.builder().put("index.number_of_shards", 5).put("index.number_of_replicas", 1).build());

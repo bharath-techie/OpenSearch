@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.util.SetOnce;
 import org.opensearch.LegacyESVersion;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
@@ -1034,16 +1035,21 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         return true;
     }
 
-
     /**
      * Free all active pit contexts
      */
-    public void freeAllPitContexts() {
+    public boolean freeAllPitContexts() {
+        final SetOnce<Boolean> isFreed = new SetOnce<>();
         for (ReaderContext readerContext : activeReaders.values()) {
             if (readerContext instanceof PitReaderContext) {
-                freeReaderContextIfFound(readerContext.id());
+                final boolean succeeded = freeReaderContextIfFound(readerContext.id());
+                if (!succeeded) {
+                    isFreed.trySet(false);
+                }
             }
         }
+        isFreed.trySet(true);
+        return isFreed.get();
     }
 
     /**
