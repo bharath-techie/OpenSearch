@@ -31,6 +31,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.opensearch.action.support.WriteRequest.RefreshPolicy.IMMEDIATE;
 
+/**
+ * Multi node integration tests for delete PIT use cases
+ */
 @OpenSearchIntegTestCase.ClusterScope(scope = OpenSearchIntegTestCase.Scope.SUITE, numDataNodes = 2)
 public class DeletePitMultiNodeTests extends OpenSearchIntegTestCase {
 

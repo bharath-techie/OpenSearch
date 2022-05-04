@@ -27,6 +27,9 @@ import java.util.Collections;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
 
+/**
+ * Tests to verify the behavior of rest delete pit action for list delete and delete all PIT endpoints
+ */
 public class RestDeletePitActionTests extends OpenSearchTestCase {
     public void testParseDeletePitRequestWithInvalidJsonThrowsException() throws Exception {
         RestDeletePITAction action = new RestDeletePITAction();
@@ -38,7 +41,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
         assertThat(e.getMessage(), equalTo("Failed to parse request body"));
     }
 
-    public void testBodyParamsOverrideQueryStringParams() throws Exception {
+    public void testDeletePitWithBody() throws Exception {
         SetOnce<Boolean> pitCalled = new SetOnce<>();
         try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
             @Override
@@ -49,9 +52,10 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
             }
         }) {
             RestDeletePITAction action = new RestDeletePITAction();
-            RestRequest request = new FakeRestRequest.Builder(xContentRegistry()).withParams(
-                Collections.singletonMap("pit_id", "QUERY_STRING")
-            ).withContent(new BytesArray("{\"pit_id\": [\"BODY\"]}"), XContentType.JSON).build();
+            RestRequest request = new FakeRestRequest.Builder(xContentRegistry()).withContent(
+                new BytesArray("{\"pit_id\": [\"BODY\"]}"),
+                XContentType.JSON
+            ).build();
             FakeRestChannel channel = new FakeRestChannel(request, false, 0);
             action.handleRequest(request, channel, nodeClient);
 
@@ -59,7 +63,51 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
         }
     }
 
-    public void testDeletePitQueryStringParams() throws Exception {
+    public void testDeleteAllPit() throws Exception {
+        SetOnce<Boolean> pitCalled = new SetOnce<>();
+        try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
+            @Override
+            public void deletePit(DeletePITRequest request, ActionListener<DeletePITResponse> listener) {
+                pitCalled.set(true);
+                assertThat(request.getPitIds(), hasSize(1));
+                assertThat(request.getPitIds().get(0), equalTo("_all"));
+            }
+        }) {
+            RestDeletePITAction action = new RestDeletePITAction();
+            RestRequest request = new FakeRestRequest.Builder(xContentRegistry()).withPath("/_all").build();
+            FakeRestChannel channel = new FakeRestChannel(request, false, 0);
+            action.handleRequest(request, channel, nodeClient);
+
+            assertThat(pitCalled.get(), equalTo(true));
+        }
+    }
+
+    public void testDeleteAllPitWithBody() throws Exception {
+        SetOnce<Boolean> pitCalled = new SetOnce<>();
+        try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
+            @Override
+            public void deletePit(DeletePITRequest request, ActionListener<DeletePITResponse> listener) {
+                pitCalled.set(true);
+                assertThat(request.getPitIds(), hasSize(1));
+                assertThat(request.getPitIds().get(0), equalTo("_all"));
+            }
+        }) {
+            RestDeletePITAction action = new RestDeletePITAction();
+            RestRequest request = new FakeRestRequest.Builder(xContentRegistry()).withContent(
+                new BytesArray("{\"pit_id\": [\"BODY\"]}"),
+                XContentType.JSON
+            ).withPath("/_all").build();
+            FakeRestChannel channel = new FakeRestChannel(request, false, 0);
+
+            IllegalArgumentException ex = expectThrows(
+                IllegalArgumentException.class,
+                () -> action.handleRequest(request, channel, nodeClient)
+            );
+            assertTrue(ex.getMessage().contains("request [GET /_all] does not support having a body"));
+        }
+    }
+
+    public void testDeletePitQueryStringParamsShouldThrowException() {
         SetOnce<Boolean> pitCalled = new SetOnce<>();
         try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
             @Override
@@ -75,9 +123,11 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
                 Collections.singletonMap("pit_id", "QUERY_STRING,QUERY_STRING_1")
             ).build();
             FakeRestChannel channel = new FakeRestChannel(request, false, 0);
-            action.handleRequest(request, channel, nodeClient);
-
-            assertThat(pitCalled.get(), equalTo(true));
+            IllegalArgumentException ex = expectThrows(
+                IllegalArgumentException.class,
+                () -> action.handleRequest(request, channel, nodeClient)
+            );
+            assertTrue(ex.getMessage().contains("unrecognized param"));
         }
     }
 }

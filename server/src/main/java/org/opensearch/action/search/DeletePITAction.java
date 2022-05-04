@@ -10,6 +10,9 @@ package org.opensearch.action.search;
 
 import org.opensearch.action.ActionType;
 
+/**
+ * Action type for deleting PIT reader contexts
+ */
 public class DeletePITAction extends ActionType<DeletePITResponse> {
 
     public static final DeletePITAction INSTANCE = new DeletePITAction();
