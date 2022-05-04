@@ -51,6 +51,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.opensearch.action.support.PlainActionFuture.newFuture;
 
+/**
+ * Functional tests for transport delete pit action
+ */
 public class TransportDeletePITActionTests extends OpenSearchTestCase {
 
     DiscoveryNode node1 = null;

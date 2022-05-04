@@ -26,6 +26,9 @@ import static org.opensearch.common.xcontent.ConstructingObjectParser.constructo
 import static org.opensearch.rest.RestStatus.NOT_FOUND;
 import static org.opensearch.rest.RestStatus.OK;
 
+/**
+ * Response class for delete pit flow which returns if the contexts are freed
+ */
 public class DeletePITResponse extends ActionResponse implements StatusToXContentObject {
 
     /**
