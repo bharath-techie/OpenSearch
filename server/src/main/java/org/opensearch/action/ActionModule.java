@@ -236,13 +236,13 @@ import org.opensearch.action.ingest.SimulatePipelineTransportAction;
 import org.opensearch.action.main.MainAction;
 import org.opensearch.action.main.TransportMainAction;
 import org.opensearch.action.search.ClearScrollAction;
-import org.opensearch.action.search.CreatePITAction;
+import org.opensearch.action.search.CreatePitAction;
 import org.opensearch.action.search.DeletePITAction;
 import org.opensearch.action.search.MultiSearchAction;
 import org.opensearch.action.search.SearchAction;
 import org.opensearch.action.search.SearchScrollAction;
 import org.opensearch.action.search.TransportClearScrollAction;
-import org.opensearch.action.search.TransportCreatePITAction;
+import org.opensearch.action.search.TransportCreatePitAction;
 import org.opensearch.action.search.TransportDeletePITAction;
 import org.opensearch.action.search.TransportMultiSearchAction;
 import org.opensearch.action.search.TransportSearchAction;
@@ -404,7 +404,7 @@ import org.opensearch.rest.action.ingest.RestPutPipelineAction;
 import org.opensearch.rest.action.ingest.RestSimulatePipelineAction;
 import org.opensearch.rest.action.search.RestClearScrollAction;
 import org.opensearch.rest.action.search.RestCountAction;
-import org.opensearch.rest.action.search.RestCreatePITAction;
+import org.opensearch.rest.action.search.RestCreatePitAction;
 import org.opensearch.rest.action.search.RestDeletePITAction;
 import org.opensearch.rest.action.search.RestExplainAction;
 import org.opensearch.rest.action.search.RestMultiSearchAction;
@@ -666,7 +666,7 @@ public class ActionModule extends AbstractModule {
         actions.register(ImportDanglingIndexAction.INSTANCE, TransportImportDanglingIndexAction.class);
         actions.register(DeleteDanglingIndexAction.INSTANCE, TransportDeleteDanglingIndexAction.class);
         actions.register(FindDanglingIndexAction.INSTANCE, TransportFindDanglingIndexAction.class);
-        actions.register(CreatePITAction.INSTANCE, TransportCreatePITAction.class);
+        actions.register(CreatePitAction.INSTANCE, TransportCreatePitAction.class);
         actions.register(DeletePITAction.INSTANCE, TransportDeletePITAction.class);
 
         return unmodifiableMap(actions.getRegistry());
@@ -842,7 +842,7 @@ public class ActionModule extends AbstractModule {
         registerHandler.accept(new RestTemplatesAction());
 
         // Point in time API
-        registerHandler.accept(new RestCreatePITAction());
+        registerHandler.accept(new RestCreatePitAction());
         registerHandler.accept(new RestDeletePITAction());
         for (ActionPlugin plugin : actionPlugins) {
             for (RestHandler handler : plugin.getRestHandlers(

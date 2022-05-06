@@ -45,7 +45,7 @@ import org.opensearch.action.OriginalIndices;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
-import org.opensearch.action.search.UpdatePITContextRequest;
+import org.opensearch.action.search.UpdatePitContextRequest;
 import org.opensearch.action.search.UpdatePitContextResponse;
 import org.opensearch.action.support.TransportActions;
 import org.opensearch.cluster.ClusterState;
@@ -171,6 +171,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         Property.NodeScope,
         Property.Dynamic
     );
+    /**
+     * This setting will help validate the max keep alive that can be set during creation or extension for a PIT reader context
+     */
     public static final Setting<TimeValue> MAX_PIT_KEEPALIVE_SETTING = Setting.positiveTimeSetting(
         "pit.max_keep_alive",
         timeValueHours(24),
@@ -223,6 +226,10 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         Property.NodeScope
     );
 
+    /**
+     * This setting defines the maximum number of active PIT reader contexts in the node , since each PIT context
+     * has a resource cost attached to it
+     */
     public static final Setting<Integer> MAX_OPEN_PIT_CONTEXT = Setting.intSetting(
         "search.max_open_pit_context",
         500,
@@ -1055,7 +1062,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     /**
      * Update PIT reader with pit id, keep alive and created time etc
      */
-    public void updatePitIdAndKeepAlive(UpdatePITContextRequest request, ActionListener<UpdatePitContextResponse> listener) {
+    public void updatePitIdAndKeepAlive(UpdatePitContextRequest request, ActionListener<UpdatePitContextResponse> listener) {
         checkPitKeepAliveLimit(request.getKeepAlive());
         PitReaderContext readerContext = getPitReaderContext(request.getSearchContextId());
         if (readerContext == null) {
@@ -1428,12 +1435,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     public PitReaderContext getPitReaderContext(ShardSearchContextId id) {
-        for (Map.Entry<Long, ReaderContext> context : activeReaders.entrySet()) {
-            if (context.getValue() instanceof PitReaderContext) {
-                if (context.getKey() == id.getId()) {
-                    return (PitReaderContext) context.getValue();
-                }
-            }
+        ReaderContext context = activeReaders.get(id.getId());
+        if (context instanceof PitReaderContext) {
+            return (PitReaderContext) context;
         }
         return null;
     }

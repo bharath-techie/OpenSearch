@@ -10,11 +10,14 @@ package org.opensearch.action.search;
 
 import org.opensearch.action.ActionType;
 
-public class CreatePITAction extends ActionType<CreatePITResponse> {
-    public static final CreatePITAction INSTANCE = new CreatePITAction();
+/**
+ * Action type for creating PIT reader context
+ */
+public class CreatePitAction extends ActionType<CreatePitResponse> {
+    public static final CreatePitAction INSTANCE = new CreatePitAction();
     public static final String NAME = "indices:data/write/pit";
 
-    private CreatePITAction() {
-        super(NAME, CreatePITResponse::new);
+    private CreatePitAction() {
+        super(NAME, CreatePitResponse::new);
     }
 }

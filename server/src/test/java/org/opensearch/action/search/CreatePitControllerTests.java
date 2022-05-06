@@ -50,6 +50,10 @@ import java.util.concurrent.CountDownLatch;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+/**
+ * Functional tests for various methods in create pit controller. Covers update pit phase specifically since
+ * integration tests don't cover it.
+ */
 public class CreatePitControllerTests extends OpenSearchTestCase {
 
     DiscoveryNode node1 = null;
@@ -61,7 +65,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
     DiscoveryNodes nodes = null;
     NamedWriteableRegistry namedWriteableRegistry = null;
     SearchResponse searchResponse = null;
-    ActionListener<CreatePITResponse> createPitListener = null;
+    ActionListener<CreatePitResponse> createPitListener = null;
     ClusterService clusterServiceMock = null;
 
     @Before
@@ -107,9 +111,9 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             SearchResponse.Clusters.EMPTY,
             pitId
         );
-        createPitListener = new ActionListener<CreatePITResponse>() {
+        createPitListener = new ActionListener<CreatePitResponse>() {
             @Override
-            public void onResponse(CreatePITResponse createPITResponse) {
+            public void onResponse(CreatePitResponse createPITResponse) {
                 assertEquals(3, createPITResponse.getTotalShards());
             }
 
@@ -123,7 +127,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
         ClusterState state = mock(ClusterState.class);
 
         final Settings keepAliveSettings = Settings.builder()
-            .put(CreatePITController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING.getKey(), 30000)
+            .put(CreatePitController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING.getKey(), 30000)
             .build();
         when(clusterServiceMock.getSettings()).thenReturn(keepAliveSettings);
 
@@ -143,7 +147,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             @Override
             public void updatePitContext(
                 Transport.Connection connection,
-                UpdatePITContextRequest request,
+                UpdatePitContextRequest request,
                 ActionListener<UpdatePitContextResponse> listener
             ) {
                 updateNodesInvoked.add(connection.getNode());
@@ -173,10 +177,10 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
 
         CountDownLatch latch = new CountDownLatch(1);
 
-        CreatePITRequest request = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+        CreatePitRequest request = new CreatePitRequest(TimeValue.timeValueDays(1), true);
         request.setIndices(new String[] { "index" });
 
-        CreatePITController controller = new CreatePITController(
+        CreatePitController controller = new CreatePitController(
             request,
             searchTransportService,
             clusterServiceMock,
@@ -186,11 +190,11 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             createPitListener
         );
 
-        CreatePITResponse createPITResponse = new CreatePITResponse(searchResponse, System.currentTimeMillis());
+        CreatePitResponse createPITResponse = new CreatePitResponse(searchResponse, System.currentTimeMillis());
 
-        ActionListener<CreatePITResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePITResponse>() {
+        ActionListener<CreatePitResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePitResponse>() {
             @Override
-            public void onResponse(CreatePITResponse createPITResponse) {
+            public void onResponse(CreatePitResponse createPITResponse) {
                 assertEquals(3, createPITResponse.getTotalShards());
             }
 
@@ -219,7 +223,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             @Override
             public void updatePitContext(
                 Transport.Connection connection,
-                UpdatePITContextRequest request,
+                UpdatePitContextRequest request,
                 ActionListener<UpdatePitContextResponse> listener
             ) {
                 updateNodesInvoked.add(connection.getNode());
@@ -246,10 +250,10 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
 
         CountDownLatch latch = new CountDownLatch(1);
 
-        CreatePITRequest request = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+        CreatePitRequest request = new CreatePitRequest(TimeValue.timeValueDays(1), true);
         request.setIndices(new String[] { "index" });
 
-        CreatePITController controller = new CreatePITController(
+        CreatePitController controller = new CreatePitController(
             request,
             searchTransportService,
             clusterServiceMock,
@@ -259,9 +263,9 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             createPitListener
         );
 
-        ActionListener<CreatePITResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePITResponse>() {
+        ActionListener<CreatePitResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePitResponse>() {
             @Override
-            public void onResponse(CreatePITResponse createPITResponse) {
+            public void onResponse(CreatePitResponse createPITResponse) {
                 throw new AssertionError("on response is called");
             }
 
@@ -293,7 +297,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             @Override
             public void updatePitContext(
                 Transport.Connection connection,
-                UpdatePITContextRequest request,
+                UpdatePitContextRequest request,
                 ActionListener<UpdatePitContextResponse> listener
             ) {
 
@@ -323,9 +327,9 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
                 return new SearchAsyncActionTests.MockConnection(node);
             }
         };
-        CreatePITRequest request = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+        CreatePitRequest request = new CreatePitRequest(TimeValue.timeValueDays(1), true);
         request.setIndices(new String[] { "index" });
-        CreatePITController controller = new CreatePITController(
+        CreatePitController controller = new CreatePitController(
             request,
             searchTransportService,
             clusterServiceMock,
@@ -335,12 +339,12 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             createPitListener
         );
 
-        CreatePITResponse createPITResponse = new CreatePITResponse(searchResponse, System.currentTimeMillis());
+        CreatePitResponse createPITResponse = new CreatePitResponse(searchResponse, System.currentTimeMillis());
         CountDownLatch latch = new CountDownLatch(1);
 
-        ActionListener<CreatePITResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePITResponse>() {
+        ActionListener<CreatePitResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePitResponse>() {
             @Override
-            public void onResponse(CreatePITResponse createPITResponse) {
+            public void onResponse(CreatePitResponse createPITResponse) {
                 throw new AssertionError("response is called");
             }
 
@@ -368,7 +372,7 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             @Override
             public void updatePitContext(
                 Transport.Connection connection,
-                UpdatePITContextRequest request,
+                UpdatePitContextRequest request,
                 ActionListener<UpdatePitContextResponse> listener
             ) {
                 updateNodesInvoked.add(connection.getNode());
@@ -392,9 +396,9 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
                 return new SearchAsyncActionTests.MockConnection(node);
             }
         };
-        CreatePITRequest request = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+        CreatePitRequest request = new CreatePitRequest(TimeValue.timeValueDays(1), true);
         request.setIndices(new String[] { "index" });
-        CreatePITController controller = new CreatePITController(
+        CreatePitController controller = new CreatePitController(
             request,
             searchTransportService,
             clusterServiceMock,
@@ -404,12 +408,12 @@ public class CreatePitControllerTests extends OpenSearchTestCase {
             createPitListener
         );
 
-        CreatePITResponse createPITResponse = new CreatePITResponse(searchResponse, System.currentTimeMillis());
+        CreatePitResponse createPITResponse = new CreatePitResponse(searchResponse, System.currentTimeMillis());
         CountDownLatch latch = new CountDownLatch(1);
 
-        ActionListener<CreatePITResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePITResponse>() {
+        ActionListener<CreatePitResponse> updatelistener = new LatchedActionListener<>(new ActionListener<CreatePitResponse>() {
             @Override
-            public void onResponse(CreatePITResponse createPITResponse) {
+            public void onResponse(CreatePitResponse createPITResponse) {
                 throw new AssertionError("response is called");
             }
 
