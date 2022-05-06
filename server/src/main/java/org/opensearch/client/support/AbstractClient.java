@@ -334,9 +334,9 @@ import org.opensearch.action.search.ClearScrollResponse;
 import org.opensearch.action.search.CreatePitAction;
 import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.search.CreatePitResponse;
-import org.opensearch.action.search.DeletePITAction;
-import org.opensearch.action.search.DeletePITRequest;
-import org.opensearch.action.search.DeletePITResponse;
+import org.opensearch.action.search.DeletePitAction;
+import org.opensearch.action.search.DeletePitRequest;
+import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.action.search.MultiSearchAction;
 import org.opensearch.action.search.MultiSearchRequest;
 import org.opensearch.action.search.MultiSearchRequestBuilder;
@@ -588,8 +588,8 @@ public abstract class AbstractClient implements Client {
     }
 
     @Override
-    public void deletePit(final DeletePITRequest deletePITRequest, final ActionListener<DeletePITResponse> listener) {
-        execute(DeletePITAction.INSTANCE, deletePITRequest, listener);
+    public void deletePit(final DeletePitRequest deletePITRequest, final ActionListener<DeletePitResponse> listener) {
+        execute(DeletePitAction.INSTANCE, deletePITRequest, listener);
     }
 
     @Override

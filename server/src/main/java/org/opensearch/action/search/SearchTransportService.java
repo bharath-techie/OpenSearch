@@ -208,7 +208,7 @@ public class SearchTransportService {
         transportService.sendRequest(
             connection,
             FREE_PIT_CONTEXT_ACTION_NAME,
-            new PITFreeContextRequest(contextId),
+            new PitFreeContextRequest(contextId),
             TransportRequestOptions.EMPTY,
             new ActionListenerResponseHandler<>(listener, SearchFreeContextResponse::new)
         );
@@ -389,14 +389,14 @@ public class SearchTransportService {
 
     }
 
-    static class PITFreeContextRequest extends TransportRequest {
+    static class PitFreeContextRequest extends TransportRequest {
         private ShardSearchContextId contextId;
 
-        PITFreeContextRequest(ShardSearchContextId contextId) {
+        PitFreeContextRequest(ShardSearchContextId contextId) {
             this.contextId = Objects.requireNonNull(contextId);
         }
 
-        PITFreeContextRequest(StreamInput in) throws IOException {
+        PitFreeContextRequest(StreamInput in) throws IOException {
             super(in);
             contextId = new ShardSearchContextId(in);
         }
@@ -491,7 +491,7 @@ public class SearchTransportService {
         transportService.registerRequestHandler(
             FREE_PIT_CONTEXT_ACTION_NAME,
             ThreadPool.Names.SAME,
-            PITFreeContextRequest::new,
+            PitFreeContextRequest::new,
             (request, channel, task) -> {
                 boolean freed = searchService.freeReaderContextIfFound(request.id());
                 channel.sendResponse(new SearchFreeContextResponse(freed));

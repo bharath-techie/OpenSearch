@@ -54,7 +54,7 @@ import static org.opensearch.action.support.PlainActionFuture.newFuture;
 /**
  * Functional tests for transport delete pit action
  */
-public class TransportDeletePITActionTests extends OpenSearchTestCase {
+public class TransportDeletePitActionTests extends OpenSearchTestCase {
 
     DiscoveryNode node1 = null;
     DiscoveryNode node2 = null;
@@ -103,7 +103,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
         ClusterState state = mock(ClusterState.class);
 
         final Settings keepAliveSettings = Settings.builder()
-            .put(CreatePITController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING.getKey(), 30000)
+            .put(CreatePitController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING.getKey(), 30000)
             .build();
         when(clusterServiceMock.getSettings()).thenReturn(keepAliveSettings);
 
@@ -156,7 +156,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -164,10 +164,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest(pitId);
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest(pitId);
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(true, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
@@ -209,7 +209,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -217,10 +217,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest("_all");
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest("_all");
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(true, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
@@ -273,7 +273,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -281,10 +281,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest(pitId);
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest(pitId);
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(false, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
@@ -331,7 +331,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -339,10 +339,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest(pitId);
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest(pitId);
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(false, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
@@ -395,7 +395,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -403,10 +403,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest(pitId);
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest(pitId);
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(false, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
@@ -453,7 +453,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -461,10 +461,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest("_all");
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest("_all");
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(false, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
@@ -507,7 +507,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -515,10 +515,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest("_all");
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest("_all");
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(false, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
@@ -565,7 +565,7 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                     return taskManager;
                 }
             };
-            TransportDeletePITAction action = new TransportDeletePITAction(
+            TransportDeletePitAction action = new TransportDeletePitAction(
                 transportService,
                 actionFilters,
                 namedWriteableRegistry,
@@ -573,10 +573,10 @@ public class TransportDeletePITActionTests extends OpenSearchTestCase {
                 clusterServiceMock,
                 searchTransportService
             );
-            DeletePITRequest deletePITRequest = new DeletePITRequest("_all");
-            PlainActionFuture<DeletePITResponse> future = newFuture();
+            DeletePitRequest deletePITRequest = new DeletePitRequest("_all");
+            PlainActionFuture<DeletePitResponse> future = newFuture();
             action.execute(task, deletePITRequest, future);
-            DeletePITResponse dr = future.get();
+            DeletePitResponse dr = future.get();
             assertEquals(false, dr.isSucceeded());
             assertEquals(3, deleteNodesInvoked.size());
         } finally {
