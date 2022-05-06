@@ -54,6 +54,6 @@ public class RestDeletePITAction extends BaseRestHandler {
 
     @Override
     public List<Route> routes() {
-        return unmodifiableList(asList(new Route(DELETE, "/_search/_point_in_time"), new Route(DELETE, "/_search/_point_in_time/_all")));
+        return unmodifiableList(asList(new Route(DELETE, "/_search/point_in_time"), new Route(DELETE, "/_search/point_in_time/_all")));
     }
 }
