@@ -18,17 +18,17 @@ import java.io.IOException;
 /**
  * Request to get all active PITs in a node
  */
-public class GetAllPITNodeRequest extends BaseNodeRequest {
-    GetAllPITNodesRequest request;
+public class GetAllPitNodeRequest extends BaseNodeRequest {
+    GetAllPitNodesRequest request;
 
     @Inject
-    public GetAllPITNodeRequest(GetAllPITNodesRequest request) {
+    public GetAllPitNodeRequest(GetAllPitNodesRequest request) {
         this.request = request;
     }
 
-    public GetAllPITNodeRequest(StreamInput in) throws IOException {
+    public GetAllPitNodeRequest(StreamInput in) throws IOException {
         super(in);
-        request = new GetAllPITNodesRequest(in);
+        request = new GetAllPitNodesRequest(in);
     }
 
     @Override

@@ -11,9 +11,9 @@ package org.opensearch.rest.action.search;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import org.opensearch.action.admin.cluster.state.ClusterStateRequest;
 import org.opensearch.action.admin.cluster.state.ClusterStateResponse;
-import org.opensearch.action.search.GetAllPITNodesRequest;
-import org.opensearch.action.search.GetAllPITNodesResponse;
-import org.opensearch.action.search.GetAllPITsAction;
+import org.opensearch.action.search.GetAllPitNodesRequest;
+import org.opensearch.action.search.GetAllPitNodesResponse;
+import org.opensearch.action.search.GetAllPitsAction;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.xcontent.XContentBuilder;
@@ -36,7 +36,7 @@ import static org.opensearch.rest.RestRequest.Method.GET;
 /**
  * Rest action for retrieving all active PIT IDs across all nodes
  */
-public class RestGetAllPITsAction extends BaseRestHandler {
+public class RestGetAllPitsAction extends BaseRestHandler {
     @Override
     public String getName() {
         return "get_all_pit_action";
@@ -58,10 +58,10 @@ public class RestGetAllPITsAction extends BaseRestHandler {
                 }
                 DiscoveryNode[] disNodesArr = new DiscoveryNode[nodes.size()];
                 nodes.toArray(disNodesArr);
-                GetAllPITNodesRequest getAllPITNodesRequest = new GetAllPITNodesRequest(disNodesArr);
-                client.execute(GetAllPITsAction.INSTANCE, getAllPITNodesRequest, new RestResponseListener<GetAllPITNodesResponse>(channel) {
+                GetAllPitNodesRequest getAllPITNodesRequest = new GetAllPitNodesRequest(disNodesArr);
+                client.execute(GetAllPitsAction.INSTANCE, getAllPITNodesRequest, new RestResponseListener<GetAllPitNodesResponse>(channel) {
                     @Override
-                    public RestResponse buildResponse(final GetAllPITNodesResponse getAllPITNodesResponse) throws Exception {
+                    public RestResponse buildResponse(final GetAllPitNodesResponse getAllPITNodesResponse) throws Exception {
                         try (XContentBuilder builder = channel.newBuilder()) {
                             builder.startObject();
                             builder.field("pitIds", getAllPITNodesResponse.getPITIDs());

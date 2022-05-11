@@ -23,21 +23,21 @@ import java.util.List;
 /**
  * Response which holds information about all PIT contexts in a node
  */
-public class GetAllPITNodeResponse extends BaseNodeResponse implements ToXContentFragment {
+public class GetAllPitNodeResponse extends BaseNodeResponse implements ToXContentFragment {
     private List<PitInfo> pitsInfo;
 
     @Inject
-    public GetAllPITNodeResponse(StreamInput in, List<PitInfo> pitsInfo) throws IOException {
+    public GetAllPitNodeResponse(StreamInput in, List<PitInfo> pitsInfo) throws IOException {
         super(in);
         this.pitsInfo = pitsInfo;
     }
 
-    public GetAllPITNodeResponse(DiscoveryNode node, List<PitInfo> pitsInfo) {
+    public GetAllPitNodeResponse(DiscoveryNode node, List<PitInfo> pitsInfo) {
         super(node);
         this.pitsInfo = pitsInfo;
     }
 
-    public GetAllPITNodeResponse(StreamInput in) throws IOException {
+    public GetAllPitNodeResponse(StreamInput in) throws IOException {
         super(in);
         this.pitsInfo = Collections.unmodifiableList(in.readList(PitInfo::new));
     }

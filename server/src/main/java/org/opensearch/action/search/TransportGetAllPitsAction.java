@@ -24,16 +24,16 @@ import java.util.List;
 /**
  * Transport action to get all PIT contexts
  */
-public class TransportGetAllPITsAction extends TransportNodesAction<
-    GetAllPITNodesRequest,
-    GetAllPITNodesResponse,
-    GetAllPITNodeRequest,
-    GetAllPITNodeResponse> {
+public class TransportGetAllPitsAction extends TransportNodesAction<
+    GetAllPitNodesRequest,
+    GetAllPitNodesResponse,
+    GetAllPitNodeRequest,
+    GetAllPitNodeResponse> {
 
     private final SearchService searchService;
 
     @Inject
-    public TransportGetAllPITsAction(
+    public TransportGetAllPitsAction(
         ThreadPool threadPool,
         ClusterService clusterService,
         TransportService transportService,
@@ -41,44 +41,44 @@ public class TransportGetAllPITsAction extends TransportNodesAction<
         SearchService searchService
     ) {
         super(
-            GetAllPITsAction.NAME,
+            GetAllPitsAction.NAME,
             threadPool,
             clusterService,
             transportService,
             actionFilters,
-            GetAllPITNodesRequest::new,
-            GetAllPITNodeRequest::new,
+            GetAllPitNodesRequest::new,
+            GetAllPitNodeRequest::new,
             ThreadPool.Names.SAME,
-            GetAllPITNodeResponse.class
+            GetAllPitNodeResponse.class
         );
         this.searchService = searchService;
     }
 
     @Override
-    protected GetAllPITNodesResponse newResponse(
-        GetAllPITNodesRequest request,
-        List<GetAllPITNodeResponse> getAllPITNodeResponses,
+    protected GetAllPitNodesResponse newResponse(
+        GetAllPitNodesRequest request,
+        List<GetAllPitNodeResponse> getAllPitNodeRespons,
         List<FailedNodeException> failures
     ) {
-        return new GetAllPITNodesResponse(clusterService.getClusterName(), getAllPITNodeResponses, failures);
+        return new GetAllPitNodesResponse(clusterService.getClusterName(), getAllPitNodeRespons, failures);
     }
 
     @Override
-    protected GetAllPITNodeRequest newNodeRequest(GetAllPITNodesRequest request) {
-        return new GetAllPITNodeRequest(request);
+    protected GetAllPitNodeRequest newNodeRequest(GetAllPitNodesRequest request) {
+        return new GetAllPitNodeRequest(request);
     }
 
     @Override
-    protected GetAllPITNodeResponse newNodeResponse(StreamInput in) throws IOException {
-        return new GetAllPITNodeResponse(in);
+    protected GetAllPitNodeResponse newNodeResponse(StreamInput in) throws IOException {
+        return new GetAllPitNodeResponse(in);
     }
 
     /**
      * This node specific operation retrieves all node specific information
      */
     @Override
-    protected GetAllPITNodeResponse nodeOperation(GetAllPITNodeRequest request) {
-        GetAllPITNodeResponse nodeResponse = new GetAllPITNodeResponse(
+    protected GetAllPitNodeResponse nodeOperation(GetAllPitNodeRequest request) {
+        GetAllPitNodeResponse nodeResponse = new GetAllPitNodeResponse(
             transportService.getLocalNode(),
             searchService.getAllPITReaderContexts()
         );

@@ -27,24 +27,24 @@ import java.util.stream.Collectors;
 /**
  * Response structure to hold all active PIT contexts information from all nodes
  */
-public class GetAllPITNodesResponse extends BaseNodesResponse<GetAllPITNodeResponse> implements ToXContentObject {
+public class GetAllPitNodesResponse extends BaseNodesResponse<GetAllPitNodeResponse> implements ToXContentObject {
 
     List<PitInfo> pitsInfo = new ArrayList<>();
 
     @Inject
-    public GetAllPITNodesResponse(StreamInput in) throws IOException {
+    public GetAllPitNodesResponse(StreamInput in) throws IOException {
         super(in);
     }
 
-    public GetAllPITNodesResponse(
+    public GetAllPitNodesResponse(
         ClusterName clusterName,
-        List<GetAllPITNodeResponse> getAllPITNodeResponses,
+        List<GetAllPitNodeResponse> getAllPitNodeRespons,
         List<FailedNodeException> failures
     ) {
-        super(clusterName, getAllPITNodeResponses, failures);
+        super(clusterName, getAllPitNodeRespons, failures);
         Set<String> uniquePitIds = new HashSet<>();
         pitsInfo.addAll(
-            getAllPITNodeResponses.stream()
+            getAllPitNodeRespons.stream()
                 .flatMap(p -> p.getPitsInfo().stream().filter(t -> uniquePitIds.add(t.getPitId())))
                 .collect(Collectors.toList())
         );
@@ -63,12 +63,12 @@ public class GetAllPITNodesResponse extends BaseNodesResponse<GetAllPITNodeRespo
     }
 
     @Override
-    public List<GetAllPITNodeResponse> readNodesFrom(StreamInput in) throws IOException {
-        return in.readList(GetAllPITNodeResponse::new);
+    public List<GetAllPitNodeResponse> readNodesFrom(StreamInput in) throws IOException {
+        return in.readList(GetAllPitNodeResponse::new);
     }
 
     @Override
-    public void writeNodesTo(StreamOutput out, List<GetAllPITNodeResponse> nodes) throws IOException {
+    public void writeNodesTo(StreamOutput out, List<GetAllPitNodeResponse> nodes) throws IOException {
         out.writeList(nodes);
     }
 

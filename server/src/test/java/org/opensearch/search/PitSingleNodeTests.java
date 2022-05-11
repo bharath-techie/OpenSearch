@@ -237,6 +237,10 @@ public class PitSingleNodeTests extends OpenSearchSingleNodeTestCase {
         service.doClose();
     }
 
+    private void assertWithGetAllPits(int size) {
+
+    }
+
     public void testSearchWithPitSecondPhaseKeepAliveExpiry() throws ExecutionException, InterruptedException {
         createIndex("index", Settings.builder().put("index.number_of_shards", 2).put("index.number_of_replicas", 0).build());
         client().prepareIndex("index").setId("1").setSource("field", "value").setRefreshPolicy(IMMEDIATE).get();

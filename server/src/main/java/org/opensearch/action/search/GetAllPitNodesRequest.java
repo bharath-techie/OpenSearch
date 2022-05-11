@@ -19,13 +19,13 @@ import java.io.IOException;
 /**
  * Request to get all active PIT IDs in set of nodes
  */
-public class GetAllPITNodesRequest extends BaseNodesRequest<GetAllPITNodesRequest> {
+public class GetAllPitNodesRequest extends BaseNodesRequest<GetAllPitNodesRequest> {
     @Inject
-    public GetAllPITNodesRequest(DiscoveryNode... concreteNodes) {
+    public GetAllPitNodesRequest(DiscoveryNode... concreteNodes) {
         super(concreteNodes);
     }
 
-    public GetAllPITNodesRequest(StreamInput in) throws IOException {
+    public GetAllPitNodesRequest(StreamInput in) throws IOException {
         super(in);
     }
 

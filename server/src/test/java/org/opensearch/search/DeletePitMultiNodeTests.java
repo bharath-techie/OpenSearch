@@ -11,9 +11,9 @@ package org.opensearch.search;
 import org.junit.After;
 import org.junit.Before;
 import org.opensearch.action.ActionFuture;
-import org.opensearch.action.search.CreatePITAction;
-import org.opensearch.action.search.CreatePITRequest;
-import org.opensearch.action.search.CreatePITResponse;
+import org.opensearch.action.search.CreatePitAction;
+import org.opensearch.action.search.CreatePitRequest;
+import org.opensearch.action.search.CreatePitResponse;
 import org.opensearch.action.search.DeletePitAction;
 import org.opensearch.action.search.DeletePitRequest;
 import org.opensearch.action.search.DeletePitResponse;
@@ -49,21 +49,21 @@ public class DeletePitMultiNodeTests extends OpenSearchIntegTestCase {
         client().admin().indices().prepareDelete("index").get();
     }
 
-    private CreatePITResponse createPitOnIndex(String index) throws ExecutionException, InterruptedException {
-        CreatePITRequest request = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+    private CreatePitResponse createPitOnIndex(String index) throws ExecutionException, InterruptedException {
+        CreatePitRequest request = new CreatePitRequest(TimeValue.timeValueDays(1), true);
         request.setIndices(new String[] { index });
-        ActionFuture<CreatePITResponse> execute = client().execute(CreatePITAction.INSTANCE, request);
+        ActionFuture<CreatePitResponse> execute = client().execute(CreatePitAction.INSTANCE, request);
         return execute.get();
     }
 
     public void testDeletePit() throws Exception {
-        CreatePITRequest request = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+        CreatePitRequest request = new CreatePitRequest(TimeValue.timeValueDays(1), true);
         request.setIndices(new String[] { "index" });
-        ActionFuture<CreatePITResponse> execute = client().execute(CreatePITAction.INSTANCE, request);
-        CreatePITResponse pitResponse = execute.get();
+        ActionFuture<CreatePitResponse> execute = client().execute(CreatePitAction.INSTANCE, request);
+        CreatePitResponse pitResponse = execute.get();
         List<String> pitIds = new ArrayList<>();
         pitIds.add(pitResponse.getId());
-        execute = client().execute(CreatePITAction.INSTANCE, request);
+        execute = client().execute(CreatePitAction.INSTANCE, request);
         pitResponse = execute.get();
         pitIds.add(pitResponse.getId());
         DeletePitRequest deletePITRequest = new DeletePitRequest(pitIds);
@@ -98,13 +98,13 @@ public class DeletePitMultiNodeTests extends OpenSearchIntegTestCase {
     }
 
     public void testDeletePitWhileNodeDrop() throws Exception {
-        CreatePITResponse pitResponse = createPitOnIndex("index");
+        CreatePitResponse pitResponse = createPitOnIndex("index");
         createIndex("index1", Settings.builder().put("index.number_of_shards", 5).put("index.number_of_replicas", 1).build());
         client().prepareIndex("index1").setId("1").setSource("field", "value").setRefreshPolicy(IMMEDIATE).execute().get();
         ensureGreen();
         List<String> pitIds = new ArrayList<>();
         pitIds.add(pitResponse.getId());
-        CreatePITResponse pitResponse1 = createPitOnIndex("index1");
+        CreatePitResponse pitResponse1 = createPitOnIndex("index1");
         pitIds.add(pitResponse1.getId());
         DeletePitRequest deletePITRequest = new DeletePitRequest(pitIds);
         internalCluster().restartRandomDataNode(new InternalTestCluster.RestartCallback() {
@@ -156,7 +156,7 @@ public class DeletePitMultiNodeTests extends OpenSearchIntegTestCase {
     }
 
     public void testDeleteWhileSearch() throws Exception {
-        CreatePITResponse pitResponse = createPitOnIndex("index");
+        CreatePitResponse pitResponse = createPitOnIndex("index");
         ensureGreen();
         List<String> pitIds = new ArrayList<>();
         pitIds.add(pitResponse.getId());
