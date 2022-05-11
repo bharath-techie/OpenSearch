@@ -36,9 +36,9 @@ import org.opensearch.action.ActionFuture;
 import org.opensearch.action.admin.indices.alias.IndicesAliasesRequest;
 
 import org.opensearch.action.index.IndexRequestBuilder;
-import org.opensearch.action.search.CreatePITAction;
-import org.opensearch.action.search.CreatePITRequest;
-import org.opensearch.action.search.CreatePITResponse;
+import org.opensearch.action.search.CreatePitAction;
+import org.opensearch.action.search.CreatePitRequest;
+import org.opensearch.action.search.CreatePitResponse;
 import org.opensearch.action.search.SearchPhaseExecutionException;
 import org.opensearch.action.search.SearchRequestBuilder;
 import org.opensearch.action.search.SearchResponse;
@@ -91,7 +91,12 @@ public class SearchSliceIT extends OpenSearchIntegTestCase {
             client().admin()
                 .indices()
                 .prepareCreate("test")
-                .setSettings(Settings.builder().put("number_of_shards", numberOfShards).put("index.max_slices_per_scroll", 10000))
+                .setSettings(
+                    Settings.builder()
+                        .put("number_of_shards", numberOfShards)
+                        .put("index.max_slices_per_scroll", 10000)
+                        .put("index.max_slices_per_pit", 10000)
+                )
                 .setMapping(mapping)
         );
         ensureGreen();
@@ -153,10 +158,10 @@ public class SearchSliceIT extends OpenSearchIntegTestCase {
         int numDocs = randomIntBetween(100, 1000);
         setupIndex(numDocs, numShards);
         int max = randomIntBetween(2, numShards * 3);
-        CreatePITRequest pitRequest = new CreatePITRequest(TimeValue.timeValueDays(1), true);
+        CreatePitRequest pitRequest = new CreatePitRequest(TimeValue.timeValueDays(1), true);
         pitRequest.setIndices(new String[] { "test" });
-        ActionFuture<CreatePITResponse> execute = client().execute(CreatePITAction.INSTANCE, pitRequest);
-        CreatePITResponse pitResponse = execute.get();
+        ActionFuture<CreatePitResponse> execute = client().execute(CreatePitAction.INSTANCE, pitRequest);
+        CreatePitResponse pitResponse = execute.get();
         for (String field : new String[] { "_id", "random_int", "static_int" }) {
             int fetchSize = randomIntBetween(10, 100);
 
@@ -176,6 +181,7 @@ public class SearchSliceIT extends OpenSearchIntegTestCase {
                 .addSort(SortBuilders.fieldSort("random_int"));
             assertSearchSlicesWithPIT(request, field, max, numDocs);
         }
+        client().admin().indices().prepareDelete("test").get();
     }
 
     private void assertSearchSlicesWithPIT(SearchRequestBuilder request, String field, int numSlice, int numDocs) {

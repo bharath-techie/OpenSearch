@@ -8,8 +8,8 @@
 
 package org.opensearch.rest.action.search;
 
-import org.opensearch.action.search.DeletePITRequest;
-import org.opensearch.action.search.DeletePITResponse;
+import org.opensearch.action.search.DeletePitRequest;
+import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.rest.BaseRestHandler;
 import org.opensearch.rest.RestRequest;
@@ -25,7 +25,7 @@ import static org.opensearch.rest.RestRequest.Method.DELETE;
 /**
  * Rest action for deleting PIT contexts
  */
-public class RestDeletePITAction extends BaseRestHandler {
+public class RestDeletePitAction extends BaseRestHandler {
 
     @Override
     public String getName() {
@@ -35,7 +35,7 @@ public class RestDeletePITAction extends BaseRestHandler {
     @Override
     public RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) throws IOException {
         String allPitIdsQualifier = "_all";
-        DeletePITRequest deletePITRequest = new DeletePITRequest();
+        DeletePitRequest deletePITRequest = new DeletePitRequest();
         if (request.path().contains(allPitIdsQualifier)) {
             deletePITRequest.setPitIds(asList(allPitIdsQualifier));
         } else {
@@ -49,7 +49,7 @@ public class RestDeletePITAction extends BaseRestHandler {
                 }
             }));
         }
-        return channel -> client.deletePit(deletePITRequest, new RestStatusToXContentListener<DeletePITResponse>(channel));
+        return channel -> client.deletePit(deletePITRequest, new RestStatusToXContentListener<DeletePitResponse>(channel));
     }
 
     @Override

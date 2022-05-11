@@ -146,7 +146,7 @@ public class SearchTransportService {
 
     public void updatePitContext(
         Transport.Connection connection,
-        UpdatePITContextRequest request,
+        UpdatePitContextRequest request,
         ActionListener<UpdatePitContextResponse> actionListener
     ) {
         transportService.sendRequest(
@@ -160,9 +160,9 @@ public class SearchTransportService {
 
     public void createPitContext(
         Transport.Connection connection,
-        TransportCreatePITAction.CreateReaderContextRequest request,
+        TransportCreatePitAction.CreateReaderContextRequest request,
         SearchTask task,
-        ActionListener<TransportCreatePITAction.CreateReaderContextResponse> actionListener
+        ActionListener<TransportCreatePitAction.CreateReaderContextResponse> actionListener
     ) {
         transportService.sendChildRequest(
             connection,
@@ -170,7 +170,7 @@ public class SearchTransportService {
             request,
             task,
             TransportRequestOptions.EMPTY,
-            new ActionListenerResponseHandler<>(actionListener, TransportCreatePITAction.CreateReaderContextResponse::new)
+            new ActionListenerResponseHandler<>(actionListener, TransportCreatePitAction.CreateReaderContextResponse::new)
         );
     }
 
@@ -208,7 +208,7 @@ public class SearchTransportService {
         transportService.sendRequest(
             connection,
             FREE_PIT_CONTEXT_ACTION_NAME,
-            new PITFreeContextRequest(contextId),
+            new PitFreeContextRequest(contextId),
             TransportRequestOptions.EMPTY,
             new ActionListenerResponseHandler<>(listener, SearchFreeContextResponse::new)
         );
@@ -389,14 +389,14 @@ public class SearchTransportService {
 
     }
 
-    static class PITFreeContextRequest extends TransportRequest {
+    static class PitFreeContextRequest extends TransportRequest {
         private ShardSearchContextId contextId;
 
-        PITFreeContextRequest(ShardSearchContextId contextId) {
+        PitFreeContextRequest(ShardSearchContextId contextId) {
             this.contextId = Objects.requireNonNull(contextId);
         }
 
-        PITFreeContextRequest(StreamInput in) throws IOException {
+        PitFreeContextRequest(StreamInput in) throws IOException {
             super(in);
             contextId = new ShardSearchContextId(in);
         }
@@ -491,7 +491,7 @@ public class SearchTransportService {
         transportService.registerRequestHandler(
             FREE_PIT_CONTEXT_ACTION_NAME,
             ThreadPool.Names.SAME,
-            PITFreeContextRequest::new,
+            PitFreeContextRequest::new,
             (request, channel, task) -> {
                 boolean freed = searchService.freeReaderContextIfFound(request.id());
                 channel.sendResponse(new SearchFreeContextResponse(freed));
@@ -657,11 +657,11 @@ public class SearchTransportService {
         transportService.registerRequestHandler(
             CREATE_READER_CONTEXT_ACTION_NAME,
             ThreadPool.Names.SAME,
-            TransportCreatePITAction.CreateReaderContextRequest::new,
+            TransportCreatePitAction.CreateReaderContextRequest::new,
             (request, channel, task) -> {
                 ChannelActionListener<
-                    TransportCreatePITAction.CreateReaderContextResponse,
-                    TransportCreatePITAction.CreateReaderContextRequest> listener = new ChannelActionListener<>(
+                    TransportCreatePitAction.CreateReaderContextResponse,
+                    TransportCreatePitAction.CreateReaderContextRequest> listener = new ChannelActionListener<>(
                         channel,
                         CREATE_READER_CONTEXT_ACTION_NAME,
                         request
@@ -670,7 +670,7 @@ public class SearchTransportService {
                     request.getShardId(),
                     request.getKeepAlive(),
                     ActionListener.wrap(
-                        r -> listener.onResponse(new TransportCreatePITAction.CreateReaderContextResponse(r)),
+                        r -> listener.onResponse(new TransportCreatePitAction.CreateReaderContextResponse(r)),
                         listener::onFailure
                     )
                 );
@@ -679,15 +679,15 @@ public class SearchTransportService {
         TransportActionProxy.registerProxyAction(
             transportService,
             CREATE_READER_CONTEXT_ACTION_NAME,
-            TransportCreatePITAction.CreateReaderContextResponse::new
+            TransportCreatePitAction.CreateReaderContextResponse::new
         );
 
         transportService.registerRequestHandler(
             UPDATE_READER_CONTEXT_ACTION_NAME,
             ThreadPool.Names.SAME,
-            UpdatePITContextRequest::new,
+            UpdatePitContextRequest::new,
             (request, channel, task) -> {
-                ChannelActionListener<UpdatePitContextResponse, UpdatePITContextRequest> listener = new ChannelActionListener<>(
+                ChannelActionListener<UpdatePitContextResponse, UpdatePitContextRequest> listener = new ChannelActionListener<>(
                     channel,
                     UPDATE_READER_CONTEXT_ACTION_NAME,
                     request

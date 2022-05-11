@@ -8,7 +8,7 @@
 
 package org.opensearch.rest.action.search;
 
-import org.opensearch.action.search.CreatePITRequest;
+import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.common.Strings;
@@ -24,7 +24,13 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.unmodifiableList;
 import static org.opensearch.rest.RestRequest.Method.POST;
 
-public class RestCreatePITAction extends BaseRestHandler {
+/**
+ * Rest action for creating PIT context
+ */
+public class RestCreatePitAction extends BaseRestHandler {
+    public static String ALLOW_PARTIAL_PIT_CREATION = "allow_partial_pit_creation";
+    public static String KEEP_ALIVE = "keep_alive";
+
     @Override
     public String getName() {
         return "create_pit_action";
@@ -32,10 +38,10 @@ public class RestCreatePITAction extends BaseRestHandler {
 
     @Override
     public RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) throws IOException {
-        boolean allowPartialPitCreation = request.paramAsBoolean("allow_partial_pit_creation", true);
+        boolean allowPartialPitCreation = request.paramAsBoolean(ALLOW_PARTIAL_PIT_CREATION, true);
         String[] indices = Strings.splitStringByCommaToArray(request.param("index"));
-        TimeValue keepAlive = request.paramAsTime("keep_alive", null);
-        CreatePITRequest createPitRequest = new CreatePITRequest(keepAlive, allowPartialPitCreation, indices);
+        TimeValue keepAlive = request.paramAsTime(KEEP_ALIVE, null);
+        CreatePitRequest createPitRequest = new CreatePitRequest(keepAlive, allowPartialPitCreation, indices);
         createPitRequest.setIndicesOptions(IndicesOptions.fromRequest(request, createPitRequest.indicesOptions()));
         createPitRequest.setPreference(request.param("preference"));
         createPitRequest.setRouting(request.param("routing"));

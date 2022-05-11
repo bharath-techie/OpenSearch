@@ -66,9 +66,9 @@ public class ReaderContext implements Releasable {
     private final boolean singleSession;
 
     private final AtomicLong keepAlive;
-    protected final AtomicLong lastAccessTime;
+    private final AtomicLong lastAccessTime;
     // For reference why we use RefCounted here see https://github.com/elastic/elasticsearch/pull/20095.
-    protected final AbstractRefCounted refCounted;
+    private final AbstractRefCounted refCounted;
 
     private final List<Releasable> onCloses = new CopyOnWriteArrayList<>();
 
@@ -107,6 +107,14 @@ public class ReaderContext implements Releasable {
         return indexShard.getThreadPool().relativeTimeInMillis();
     }
 
+    protected AbstractRefCounted getRefCounted() {
+        return refCounted;
+    }
+
+    protected AtomicLong getLastAccessTime() {
+        return lastAccessTime;
+    }
+
     @Override
     public final void close() {
         if (closed.compareAndSet(false, true)) {
@@ -138,6 +146,9 @@ public class ReaderContext implements Releasable {
         return searcherSupplier.acquireSearcher(source);
     }
 
+    /**
+     * Update keep alive if it is greater than current keep alive
+     */
     public void tryUpdateKeepAlive(long keepAlive) {
         this.keepAlive.updateAndGet(curr -> Math.max(curr, keepAlive));
     }

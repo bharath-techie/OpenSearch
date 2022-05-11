@@ -37,15 +37,15 @@ import java.util.stream.Collectors;
 /**
  * Transport action for deleting pit reader context - supports deleting list and all pit contexts
  */
-public class TransportDeletePITAction extends HandledTransportAction<DeletePITRequest, DeletePITResponse> {
+public class TransportDeletePitAction extends HandledTransportAction<DeletePitRequest, DeletePitResponse> {
     private final NamedWriteableRegistry namedWriteableRegistry;
     private TransportSearchAction transportSearchAction;
     private final ClusterService clusterService;
     private final SearchTransportService searchTransportService;
-    private static final Logger logger = LogManager.getLogger(TransportDeletePITAction.class);
+    private static final Logger logger = LogManager.getLogger(TransportDeletePitAction.class);
 
     @Inject
-    public TransportDeletePITAction(
+    public TransportDeletePitAction(
         TransportService transportService,
         ActionFilters actionFilters,
         NamedWriteableRegistry namedWriteableRegistry,
@@ -53,7 +53,7 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
         ClusterService clusterService,
         SearchTransportService searchTransportService
     ) {
-        super(DeletePITAction.NAME, transportService, actionFilters, DeletePITRequest::new);
+        super(DeletePitAction.NAME, transportService, actionFilters, DeletePitRequest::new);
         this.namedWriteableRegistry = namedWriteableRegistry;
         this.transportSearchAction = transportSearchAction;
         this.clusterService = clusterService;
@@ -61,7 +61,7 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
     }
 
     @Override
-    protected void doExecute(Task task, DeletePITRequest request, ActionListener<DeletePITResponse> listener) {
+    protected void doExecute(Task task, DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
         List<SearchContextIdForNode> contexts = new ArrayList<>();
         List<String> pitIds = request.getPitIds();
         if (pitIds.size() == 1 && "_all".equals(pitIds.get(0))) {
@@ -73,16 +73,16 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
             }
             deletePits(contexts, ActionListener.wrap(r -> {
                 if (r == contexts.size()) {
-                    listener.onResponse(new DeletePITResponse(true));
+                    listener.onResponse(new DeletePitResponse(true));
                 } else {
                     logger.debug(
                         () -> new ParameterizedMessage("Delete PITs failed. " + "Cleared {} contexts out of {}", r, contexts.size())
                     );
-                    listener.onResponse(new DeletePITResponse(false));
+                    listener.onResponse(new DeletePitResponse(false));
                 }
             }, e -> {
                 logger.debug("Delete PITs failed ", e);
-                listener.onResponse(new DeletePITResponse(false));
+                listener.onResponse(new DeletePitResponse(false));
             }));
         }
     }
@@ -90,7 +90,7 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
     /**
      * Delete all active PIT reader contexts
      */
-    void deleteAllPits(ActionListener<DeletePITResponse> listener) {
+    void deleteAllPits(ActionListener<DeletePitResponse> listener) {
         int size = clusterService.state().getNodes().getSize();
         ActionListener groupedActionListener = new GroupedActionListener<SearchTransportService.SearchFreeContextResponse>(
             new ActionListener<>() {
@@ -104,13 +104,13 @@ public class TransportDeletePITAction extends HandledTransportAction<DeletePITRe
                         }
                     }
                     succeeded.trySet(true);
-                    listener.onResponse(new DeletePITResponse(succeeded.get()));
+                    listener.onResponse(new DeletePitResponse(succeeded.get()));
                 }
 
                 @Override
                 public void onFailure(final Exception e) {
                     logger.debug("Delete all PITs failed ", e);
-                    listener.onResponse(new DeletePITResponse(false));
+                    listener.onResponse(new DeletePitResponse(false));
                 }
             },
             size

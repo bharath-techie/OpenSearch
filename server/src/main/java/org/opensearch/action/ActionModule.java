@@ -236,15 +236,15 @@ import org.opensearch.action.ingest.SimulatePipelineTransportAction;
 import org.opensearch.action.main.MainAction;
 import org.opensearch.action.main.TransportMainAction;
 import org.opensearch.action.search.ClearScrollAction;
-import org.opensearch.action.search.CreatePITAction;
-import org.opensearch.action.search.DeletePITAction;
+import org.opensearch.action.search.CreatePitAction;
+import org.opensearch.action.search.DeletePitAction;
 import org.opensearch.action.search.GetAllPITsAction;
 import org.opensearch.action.search.MultiSearchAction;
 import org.opensearch.action.search.SearchAction;
 import org.opensearch.action.search.SearchScrollAction;
 import org.opensearch.action.search.TransportClearScrollAction;
-import org.opensearch.action.search.TransportCreatePITAction;
-import org.opensearch.action.search.TransportDeletePITAction;
+import org.opensearch.action.search.TransportCreatePitAction;
+import org.opensearch.action.search.TransportDeletePitAction;
 import org.opensearch.action.search.TransportGetAllPITsAction;
 import org.opensearch.action.search.TransportMultiSearchAction;
 import org.opensearch.action.search.TransportSearchAction;
@@ -406,8 +406,8 @@ import org.opensearch.rest.action.ingest.RestPutPipelineAction;
 import org.opensearch.rest.action.ingest.RestSimulatePipelineAction;
 import org.opensearch.rest.action.search.RestClearScrollAction;
 import org.opensearch.rest.action.search.RestCountAction;
-import org.opensearch.rest.action.search.RestCreatePITAction;
-import org.opensearch.rest.action.search.RestDeletePITAction;
+import org.opensearch.rest.action.search.RestCreatePitAction;
+import org.opensearch.rest.action.search.RestDeletePitAction;
 import org.opensearch.rest.action.search.RestExplainAction;
 import org.opensearch.rest.action.search.RestGetAllPITsAction;
 import org.opensearch.rest.action.search.RestMultiSearchAction;
@@ -671,8 +671,8 @@ public class ActionModule extends AbstractModule {
         actions.register(FindDanglingIndexAction.INSTANCE, TransportFindDanglingIndexAction.class);
 
         // Point in time actions
-        actions.register(CreatePITAction.INSTANCE, TransportCreatePITAction.class);
-        actions.register(DeletePITAction.INSTANCE, TransportDeletePITAction.class);
+        actions.register(CreatePitAction.INSTANCE, TransportCreatePitAction.class);
+        actions.register(DeletePitAction.INSTANCE, TransportDeletePitAction.class);
         actions.register(GetAllPITsAction.INSTANCE, TransportGetAllPITsAction.class);
 
         return unmodifiableMap(actions.getRegistry());
@@ -848,8 +848,8 @@ public class ActionModule extends AbstractModule {
         registerHandler.accept(new RestTemplatesAction());
 
         // Point in time API
-        registerHandler.accept(new RestCreatePITAction());
-        registerHandler.accept(new RestDeletePITAction());
+        registerHandler.accept(new RestCreatePitAction());
+        registerHandler.accept(new RestDeletePitAction());
         registerHandler.accept(new RestGetAllPITsAction());
         for (ActionPlugin plugin : actionPlugins) {
             for (RestHandler handler : plugin.getRestHandlers(

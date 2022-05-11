@@ -27,31 +27,31 @@ import static org.opensearch.action.ValidateActions.addValidationError;
 /**
  * Request to delete one or more PIT contexts based on IDs.
  */
-public class DeletePITRequest extends ActionRequest implements ToXContentObject {
+public class DeletePitRequest extends ActionRequest implements ToXContentObject {
 
     /**
      * List of PIT IDs to be deleted , and use "_all" to delete all PIT reader contexts
      */
     private List<String> pitIds;
 
-    public DeletePITRequest(StreamInput in) throws IOException {
+    public DeletePitRequest(StreamInput in) throws IOException {
         super(in);
         pitIds = Arrays.asList(in.readStringArray());
     }
 
-    public DeletePITRequest(String... pitIds) {
+    public DeletePitRequest(String... pitIds) {
         if (pitIds != null) {
             this.pitIds = Arrays.asList(pitIds);
         }
     }
 
-    public DeletePITRequest(List<String> pitIds) {
+    public DeletePitRequest(List<String> pitIds) {
         if (pitIds != null) {
             this.pitIds = pitIds;
         }
     }
 
-    public DeletePITRequest() {}
+    public DeletePitRequest() {}
 
     public List<String> getPitIds() {
         return pitIds;

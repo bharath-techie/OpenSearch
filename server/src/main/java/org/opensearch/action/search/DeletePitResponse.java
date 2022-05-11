@@ -29,18 +29,18 @@ import static org.opensearch.rest.RestStatus.OK;
 /**
  * Response class for delete pit flow which returns if the contexts are freed
  */
-public class DeletePITResponse extends ActionResponse implements StatusToXContentObject {
+public class DeletePitResponse extends ActionResponse implements StatusToXContentObject {
 
     /**
      * This will be true if all PIT reader contexts are deleted.
      */
     private final boolean succeeded;
 
-    public DeletePITResponse(boolean succeeded) {
+    public DeletePitResponse(boolean succeeded) {
         this.succeeded = succeeded;
     }
 
-    public DeletePITResponse(StreamInput in) throws IOException {
+    public DeletePitResponse(StreamInput in) throws IOException {
         super(in);
         succeeded = in.readBoolean();
     }
@@ -64,10 +64,10 @@ public class DeletePITResponse extends ActionResponse implements StatusToXConten
 
     private static final ParseField SUCCEEDED = new ParseField("succeeded");
 
-    private static final ConstructingObjectParser<DeletePITResponse, Void> PARSER = new ConstructingObjectParser<>(
+    private static final ConstructingObjectParser<DeletePitResponse, Void> PARSER = new ConstructingObjectParser<>(
         "delete_pit",
         true,
-        a -> new DeletePITResponse((boolean) a[0])
+        a -> new DeletePitResponse((boolean) a[0])
     );
     static {
         PARSER.declareField(constructorArg(), (parser, context) -> parser.booleanValue(), SUCCEEDED, ObjectParser.ValueType.BOOLEAN);
@@ -82,9 +82,9 @@ public class DeletePITResponse extends ActionResponse implements StatusToXConten
     }
 
     /**
-     * Parse the delete PIT response body into a new {@link DeletePITResponse} object
+     * Parse the delete PIT response body into a new {@link DeletePitResponse} object
      */
-    public static DeletePITResponse fromXContent(XContentParser parser) throws IOException {
+    public static DeletePitResponse fromXContent(XContentParser parser) throws IOException {
         return PARSER.apply(parser, null);
     }
 

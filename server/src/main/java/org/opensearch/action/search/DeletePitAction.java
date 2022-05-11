@@ -13,12 +13,12 @@ import org.opensearch.action.ActionType;
 /**
  * Action type for deleting PIT reader contexts
  */
-public class DeletePITAction extends ActionType<DeletePITResponse> {
+public class DeletePitAction extends ActionType<DeletePitResponse> {
 
-    public static final DeletePITAction INSTANCE = new DeletePITAction();
+    public static final DeletePitAction INSTANCE = new DeletePitAction();
     public static final String NAME = "indices:admin/delete/pit";
 
-    private DeletePITAction() {
-        super(NAME, DeletePITResponse::new);
+    private DeletePitAction() {
+        super(NAME, DeletePitResponse::new);
     }
 }
