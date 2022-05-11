@@ -102,9 +102,7 @@ public class TransportDeletePitActionTests extends OpenSearchTestCase {
         clusterServiceMock = mock(ClusterService.class);
         ClusterState state = mock(ClusterState.class);
 
-        final Settings keepAliveSettings = Settings.builder()
-            .put(CreatePitController.CREATE_PIT_TEMPORARY_KEEPALIVE_SETTING.getKey(), 30000)
-            .build();
+        final Settings keepAliveSettings = Settings.builder().put(CreatePitController.PIT_CREATE_PHASE_KEEP_ALIVE.getKey(), 30000).build();
         when(clusterServiceMock.getSettings()).thenReturn(keepAliveSettings);
 
         when(state.getMetadata()).thenReturn(Metadata.EMPTY_METADATA);
