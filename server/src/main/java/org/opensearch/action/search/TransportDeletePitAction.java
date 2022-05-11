@@ -60,6 +60,9 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
         this.searchTransportService = searchTransportService;
     }
 
+    /**
+     * Invoke delete all pits or delete list of pits workflow based on request
+     */
     @Override
     protected void doExecute(Task task, DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
         List<SearchContextIdForNode> contexts = new ArrayList<>();
@@ -96,15 +99,17 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
             new ActionListener<>() {
                 @Override
                 public void onResponse(final Collection<SearchTransportService.SearchFreeContextResponse> responses) {
-                    final SetOnce<Boolean> succeeded = new SetOnce<>();
-                    for (SearchTransportService.SearchFreeContextResponse response : responses) {
-                        if (!response.isFreed()) {
-                            succeeded.set(false);
-                            break;
-                        }
-                    }
-                    succeeded.trySet(true);
-                    listener.onResponse(new DeletePitResponse(succeeded.get()));
+                    //final SetOnce<Boolean> succeeded = new SetOnce<>();
+                    boolean hasFailures = responses.stream().anyMatch(r-> !r.isFreed());
+                    listener.onResponse(new DeletePitResponse(!hasFailures));
+//                    for (SearchTransportService.SearchFreeContextResponse response : responses) {
+//                        if (!response.isFreed()) {
+//                            succeeded.set(false);
+//                            break;
+//                        }
+//                    }
+//                    succeeded.trySet(true);
+//                    listener.onResponse(new DeletePitResponse(succeeded.get()));
                 }
 
                 @Override

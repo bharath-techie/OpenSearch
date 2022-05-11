@@ -389,6 +389,9 @@ public class SearchTransportService {
 
     }
 
+    /**
+     * Request to free the PIT context based on id
+     */
     static class PitFreeContextRequest extends TransportRequest {
         private ShardSearchContextId contextId;
 
