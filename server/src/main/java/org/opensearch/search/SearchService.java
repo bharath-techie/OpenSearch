@@ -155,6 +155,11 @@ import static org.opensearch.common.unit.TimeValue.timeValueHours;
 import static org.opensearch.common.unit.TimeValue.timeValueMillis;
 import static org.opensearch.common.unit.TimeValue.timeValueMinutes;
 
+/**
+ * The main search service
+ *
+ * @opensearch.internal
+ */
 public class SearchService extends AbstractLifecycleComponent implements IndexEventListener {
     private static final Logger logger = LogManager.getLogger(SearchService.class);
 
@@ -868,10 +873,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             Releasable decreasePitContexts = null;
             Engine.SearcherSupplier searcherSupplier = null;
             ReaderContext readerContext = null;
-            boolean success = false;
             try {
-                // use this when reader context is freed
-                decreasePitContexts = openPitContexts::decrementAndGet;
                 if (openPitContexts.incrementAndGet() > maxOpenPitContext) {
                     throw new OpenSearchRejectedExecutionException(
                         "Trying to create too many Point In Time contexts. Must be less than or equal to: ["
@@ -890,6 +892,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
                 searchOperationListener.onNewReaderContext(readerContext);
                 searchOperationListener.onNewPitContext(finalReaderContext);
+
+                // use this when reader context is freed
+                decreasePitContexts = openPitContexts::decrementAndGet;
                 readerContext.addOnClose(decreasePitContexts);
                 decreasePitContexts = null;
 
@@ -901,15 +906,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 putReaderContext(readerContext);
                 readerContext = null;
                 listener.onResponse(finalReaderContext.id());
-                success = true;
             } catch (Exception exc) {
+                Releasables.closeWhileHandlingException(searcherSupplier, readerContext, decreasePitContexts);
                 listener.onFailure(exc);
-            } finally {
-                if (success) {
-                    Releasables.close(readerContext, searcherSupplier, decreasePitContexts);
-                } else {
-                    Releasables.closeWhileHandlingException(searcherSupplier, readerContext, decreasePitContexts);
-                }
             }
         });
     }
@@ -1072,14 +1071,14 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         Releasable updatePit = null;
         try {
             updatePit = readerContext.updatePitIdAndKeepAlive(request.getKeepAlive(), request.getPitId(), request.getCreationTime());
-            updatePit.close();
             listener.onResponse(new UpdatePitContextResponse(request.getPitId(), request.getCreationTime(), request.getKeepAlive()));
         } catch (Exception e) {
             freeReaderContext(readerContext.id());
+            listener.onFailure(e);
+        } finally {
             if (updatePit != null) {
                 updatePit.close();
             }
-            listener.onFailure(e);
         }
     }
 
