@@ -43,6 +43,8 @@ import java.util.List;
 
 /**
  * An listener for search, fetch and context events.
+ *
+ * @opensearch.internal
  */
 public interface SearchOperationListener {
 
@@ -287,7 +289,7 @@ public interface SearchOperationListener {
                 try {
                     listener.onNewPitContext(readerContext);
                 } catch (Exception e) {
-                    logger.warn(() -> new ParameterizedMessage("onNewPitContext listener [{}] failed", listener), e);
+                    logger.warn("onNewPitContext listener failed", e);
                 }
             }
         }
@@ -303,7 +305,7 @@ public interface SearchOperationListener {
                 try {
                     listener.onFreePitContext(readerContext);
                 } catch (Exception e) {
-                    logger.warn(() -> new ParameterizedMessage("onFreePitContext listener [{}] failed", listener), e);
+                    logger.warn("onFreePitContext listener failed", e);
                 }
             }
         }
