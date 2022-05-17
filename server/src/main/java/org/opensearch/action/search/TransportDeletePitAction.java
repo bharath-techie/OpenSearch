@@ -11,7 +11,6 @@ package org.opensearch.action.search;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.apache.lucene.util.SetOnce;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.StepListener;
@@ -99,17 +98,17 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
             new ActionListener<>() {
                 @Override
                 public void onResponse(final Collection<SearchTransportService.SearchFreeContextResponse> responses) {
-                    //final SetOnce<Boolean> succeeded = new SetOnce<>();
-                    boolean hasFailures = responses.stream().anyMatch(r-> !r.isFreed());
+                    // final SetOnce<Boolean> succeeded = new SetOnce<>();
+                    boolean hasFailures = responses.stream().anyMatch(r -> !r.isFreed());
                     listener.onResponse(new DeletePitResponse(!hasFailures));
-//                    for (SearchTransportService.SearchFreeContextResponse response : responses) {
-//                        if (!response.isFreed()) {
-//                            succeeded.set(false);
-//                            break;
-//                        }
-//                    }
-//                    succeeded.trySet(true);
-//                    listener.onResponse(new DeletePitResponse(succeeded.get()));
+                    // for (SearchTransportService.SearchFreeContextResponse response : responses) {
+                    // if (!response.isFreed()) {
+                    // succeeded.set(false);
+                    // break;
+                    // }
+                    // }
+                    // succeeded.trySet(true);
+                    // listener.onResponse(new DeletePitResponse(succeeded.get()));
                 }
 
                 @Override
