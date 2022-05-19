@@ -103,7 +103,7 @@ configure([
   project(":example-plugins:custom-settings"),
   project(":example-plugins:custom-significance-heuristic"),
   project(":example-plugins:custom-suggester"),
-  project(":example-plugins:painless-whitelist"),
+  project(":example-plugins:painless-allowlist"),
   project(":example-plugins:rescore"),
   project(":example-plugins:rest-handler"),
   project(":example-plugins:script-expert-scoring"),
@@ -178,8 +178,7 @@ configure([
 
 configure(project(":server")) {
   project.tasks.withType(MissingJavadocTask) {
-    isExcluded = true
-    // TODO: reenable after fixing missing javadocs
+    // TODO: bump to variable missing level after increasing javadoc coverage
     javadocMissingLevel = "class"
   }
 }
