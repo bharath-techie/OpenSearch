@@ -870,7 +870,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         final IndexShard shard = indexService.getShard(shardId.id());
         final SearchOperationListener searchOperationListener = shard.getSearchOperationListener();
         shard.awaitShardSearchActive(ignored -> {
-            Releasable decreasePitContexts = null;
             Engine.SearcherSupplier searcherSupplier = null;
             ReaderContext readerContext = null;
             try {
@@ -893,12 +892,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 searchOperationListener.onNewReaderContext(readerContext);
                 searchOperationListener.onNewPitContext(finalReaderContext);
 
-                // use this when reader context is freed
-                decreasePitContexts = openPitContexts::decrementAndGet;
-                readerContext.addOnClose(decreasePitContexts);
-                decreasePitContexts = null;
-
                 readerContext.addOnClose(() -> {
+                    openPitContexts.decrementAndGet();
                     searchOperationListener.onFreeReaderContext(finalReaderContext);
                     searchOperationListener.onFreePitContext(finalReaderContext);
                 });
@@ -907,7 +902,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 readerContext = null;
                 listener.onResponse(finalReaderContext.id());
             } catch (Exception exc) {
-                Releasables.closeWhileHandlingException(searcherSupplier, readerContext, decreasePitContexts);
+                Releasables.closeWhileHandlingException(searcherSupplier, readerContext);
                 listener.onFailure(exc);
             }
         });
@@ -1599,6 +1594,11 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         return request.source().aggregations().buildPipelineTree();
     }
 
+    /**
+     * Search phase result that can match a response
+     *
+     * @opensearch.internal
+     */
     public static final class CanMatchResponse extends SearchPhaseResult {
         private final boolean canMatch;
         private final MinAndMax<?> estimatedMinAndMax;

@@ -284,6 +284,11 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         executeRequest(task, searchRequest, this::searchAsyncAction, listener);
     }
 
+    /**
+     * The single phase search action.
+     *
+     * @opensearch.internal
+     */
     public interface SinglePhaseSearchAction {
         void executeOnShardTarget(
             SearchTask searchTask,
@@ -335,7 +340,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     clusterState,
                     task,
                     new ArraySearchPhaseResults<>(shardsIts.size()),
-                    1,
+                    searchRequest.getMaxConcurrentShardRequests(),
                     clusters
                 ) {
                     @Override

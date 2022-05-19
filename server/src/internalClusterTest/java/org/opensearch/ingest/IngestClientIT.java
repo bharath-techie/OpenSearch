@@ -111,7 +111,6 @@ public class IngestClientIT extends OpenSearchIntegTestCase {
                 .startArray("docs")
                 .startObject()
                 .field("_index", "index")
-                .field("_type", "type")
                 .field("_id", "id")
                 .startObject("_source")
                 .field("foo", "bar")
@@ -302,8 +301,8 @@ public class IngestClientIT extends OpenSearchIntegTestCase {
         assertFalse(response.isFound());
     }
 
-    public void testWithDedicatedMaster() throws Exception {
-        String masterOnlyNode = internalCluster().startMasterOnlyNode();
+    public void testWithDedicatedClusterManager() throws Exception {
+        String clusterManagerOnlyNode = internalCluster().startClusterManagerOnlyNode();
         BytesReference source = BytesReference.bytes(
             jsonBuilder().startObject()
                 .field("description", "my_pipeline")
@@ -318,7 +317,7 @@ public class IngestClientIT extends OpenSearchIntegTestCase {
         PutPipelineRequest putPipelineRequest = new PutPipelineRequest("_id", source, XContentType.JSON);
         client().admin().cluster().putPipeline(putPipelineRequest).get();
 
-        BulkItemResponse item = client(masterOnlyNode).prepareBulk()
+        BulkItemResponse item = client(clusterManagerOnlyNode).prepareBulk()
             .add(client().prepareIndex("test").setSource("field", "value2", "drop", true).setPipeline("_id"))
             .get()
             .getItems()[0];

@@ -11,16 +11,12 @@ package org.opensearch.action.search;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.apache.lucene.util.SetOnce;
-import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
-import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.GroupedActionListener;
 import org.opensearch.action.support.HandledTransportAction;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.common.Strings;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.tasks.Task;
@@ -30,9 +26,6 @@ import org.opensearch.transport.TransportService;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Set;
-import java.util.function.BiFunction;
-import java.util.stream.Collectors;
 
 /**
  * Transport action for deleting pit reader context - supports deleting list and all pit contexts
@@ -99,17 +92,8 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
             new ActionListener<>() {
                 @Override
                 public void onResponse(final Collection<SearchTransportService.SearchFreeContextResponse> responses) {
-                    //final SetOnce<Boolean> succeeded = new SetOnce<>();
-                    boolean hasFailures = responses.stream().anyMatch(r-> !r.isFreed());
+                    boolean hasFailures = responses.stream().anyMatch(r -> !r.isFreed());
                     listener.onResponse(new DeletePitResponse(!hasFailures));
-//                    for (SearchTransportService.SearchFreeContextResponse response : responses) {
-//                        if (!response.isFreed()) {
-//                            succeeded.set(false);
-//                            break;
-//                        }
-//                    }
-//                    succeeded.trySet(true);
-//                    listener.onResponse(new DeletePitResponse(succeeded.get()));
                 }
 
                 @Override
@@ -134,48 +118,6 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
      * Delete list of pits, return success if all reader contexts are deleted ( or not found ).
      */
     void deletePits(List<SearchContextIdForNode> contexts, ActionListener<Integer> listener) {
-        final StepListener<BiFunction<String, String, DiscoveryNode>> lookupListener = getLookupListener(contexts);
-        lookupListener.whenComplete(nodeLookup -> {
-            final GroupedActionListener<Boolean> groupedListener = new GroupedActionListener<>(
-                ActionListener.delegateFailure(
-                    listener,
-                    (l, result) -> l.onResponse(Math.toIntExact(result.stream().filter(r -> r).count()))
-                ),
-                contexts.size()
-            );
-
-            for (SearchContextIdForNode contextId : contexts) {
-                final DiscoveryNode node = nodeLookup.apply(contextId.getClusterAlias(), contextId.getNode());
-                if (node == null) {
-                    groupedListener.onFailure(new OpenSearchException("node not found"));
-                } else {
-                    try {
-                        final Transport.Connection connection = searchTransportService.getConnection(contextId.getClusterAlias(), node);
-                        searchTransportService.sendFreePITContext(
-                            connection,
-                            contextId.getSearchContextId(),
-                            ActionListener.wrap(r -> groupedListener.onResponse(r.isFreed()), e -> groupedListener.onResponse(false))
-                        );
-                    } catch (Exception e) {
-                        logger.debug("Delete PIT failed ", e);
-                        groupedListener.onResponse(false);
-                    }
-                }
-            }
-        }, listener::onFailure);
-    }
-
-    private StepListener<BiFunction<String, String, DiscoveryNode>> getLookupListener(List<SearchContextIdForNode> contexts) {
-        final StepListener<BiFunction<String, String, DiscoveryNode>> lookupListener = new StepListener<>();
-        final Set<String> clusters = contexts.stream()
-            .filter(ctx -> Strings.isEmpty(ctx.getClusterAlias()) == false)
-            .map(SearchContextIdForNode::getClusterAlias)
-            .collect(Collectors.toSet());
-        if (clusters.isEmpty() == false) {
-            searchTransportService.getRemoteClusterService().collectNodes(clusters, lookupListener);
-        } else {
-            lookupListener.onResponse((cluster, nodeId) -> clusterService.state().getNodes().get(nodeId));
-        }
-        return lookupListener;
+        SearchUtils.deletePits(contexts, listener, clusterService.state(), searchTransportService);
     }
 }

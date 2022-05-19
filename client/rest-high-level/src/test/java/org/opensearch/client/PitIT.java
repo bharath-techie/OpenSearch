@@ -13,9 +13,13 @@ import org.apache.http.client.methods.HttpPut;
 import org.junit.Before;
 import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.search.CreatePitResponse;
+import org.opensearch.action.search.DeletePitRequest;
+import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.common.unit.TimeValue;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -25,24 +29,21 @@ public class PitIT extends OpenSearchRestHighLevelClientTestCase {
 
     @Before
     public void indexDocuments() throws IOException {
-        {
-            Request doc1 = new Request(HttpPut.METHOD_NAME, "/index/_doc/1");
-            doc1.setJsonEntity("{\"type\":\"type1\", \"id\":1, \"num\":10, \"num2\":50}");
-            client().performRequest(doc1);
-            Request doc2 = new Request(HttpPut.METHOD_NAME, "/index/_doc/2");
-            doc2.setJsonEntity("{\"type\":\"type1\", \"id\":2, \"num\":20, \"num2\":40}");
-            client().performRequest(doc2);
-            Request doc3 = new Request(HttpPut.METHOD_NAME, "/index/_doc/3");
-            doc3.setJsonEntity("{\"type\":\"type1\", \"id\":3, \"num\":50, \"num2\":35}");
-            client().performRequest(doc3);
-            Request doc4 = new Request(HttpPut.METHOD_NAME, "/index/_doc/4");
-            doc4.setJsonEntity("{\"type\":\"type2\", \"id\":4, \"num\":100, \"num2\":10}");
-            client().performRequest(doc4);
-            Request doc5 = new Request(HttpPut.METHOD_NAME, "/index/_doc/5");
-            doc5.setJsonEntity("{\"type\":\"type2\", \"id\":5, \"num\":100, \"num2\":10}");
-            client().performRequest(doc5);
-        }
-
+        Request doc1 = new Request(HttpPut.METHOD_NAME, "/index/_doc/1");
+        doc1.setJsonEntity("{\"type\":\"type1\", \"id\":1, \"num\":10, \"num2\":50}");
+        client().performRequest(doc1);
+        Request doc2 = new Request(HttpPut.METHOD_NAME, "/index/_doc/2");
+        doc2.setJsonEntity("{\"type\":\"type1\", \"id\":2, \"num\":20, \"num2\":40}");
+        client().performRequest(doc2);
+        Request doc3 = new Request(HttpPut.METHOD_NAME, "/index/_doc/3");
+        doc3.setJsonEntity("{\"type\":\"type1\", \"id\":3, \"num\":50, \"num2\":35}");
+        client().performRequest(doc3);
+        Request doc4 = new Request(HttpPut.METHOD_NAME, "/index/_doc/4");
+        doc4.setJsonEntity("{\"type\":\"type2\", \"id\":4, \"num\":100, \"num2\":10}");
+        client().performRequest(doc4);
+        Request doc5 = new Request(HttpPut.METHOD_NAME, "/index/_doc/5");
+        doc5.setJsonEntity("{\"type\":\"type2\", \"id\":5, \"num\":100, \"num2\":10}");
+        client().performRequest(doc5);
         client().performRequest(new Request(HttpPost.METHOD_NAME, "/_refresh"));
     }
 
@@ -54,8 +55,28 @@ public class PitIT extends OpenSearchRestHighLevelClientTestCase {
         assertEquals(1, pitResponse.getSuccessfulShards());
         assertEquals(0, pitResponse.getFailedShards());
         assertEquals(0, pitResponse.getSkippedShards());
+        List<String> pitIds = new ArrayList<>();
+        pitIds.add(pitResponse.getId());
+        DeletePitRequest deletePitRequest = new DeletePitRequest(pitIds);
+        DeletePitResponse deletePitResponse = execute(deletePitRequest, highLevelClient()::deletePit, highLevelClient()::deletePitAsync);
+        assertTrue(deletePitResponse.isSucceeded());
     }
-    /**
-     * Todo: add deletion logic and test cluster settings
-     */
+
+    public void testDeleteAllPits() throws IOException {
+        CreatePitRequest pitRequest = new CreatePitRequest(new TimeValue(1, TimeUnit.DAYS), true, "index");
+        CreatePitResponse pitResponse = execute(pitRequest, highLevelClient()::createPit, highLevelClient()::createPitAsync);
+        CreatePitResponse pitResponse1 = execute(pitRequest, highLevelClient()::createPit, highLevelClient()::createPitAsync);
+        assertTrue(pitResponse.getId() != null);
+        assertTrue(pitResponse1.getId() != null);
+        List<String> pitIds = new ArrayList<>();
+        pitIds.add("_all");
+        DeletePitRequest deletePitRequest = new DeletePitRequest(pitIds);
+        DeletePitResponse deletePitResponse = execute(
+            deletePitRequest,
+            highLevelClient()::deleteAllPits,
+            highLevelClient()::deleteAllPitsAsync
+        );
+        assertTrue(deletePitResponse.isSucceeded());
+    }
+
 }
