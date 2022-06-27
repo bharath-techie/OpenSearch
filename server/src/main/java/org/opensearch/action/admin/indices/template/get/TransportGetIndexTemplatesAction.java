@@ -34,7 +34,7 @@ package org.opensearch.action.admin.indices.template.get;
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -96,7 +96,7 @@ public class TransportGetIndexTemplatesAction extends TransportClusterManagerNod
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         GetIndexTemplatesRequest request,
         ClusterState state,
         ActionListener<GetIndexTemplatesResponse> listener

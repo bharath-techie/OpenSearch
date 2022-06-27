@@ -34,7 +34,7 @@ package org.opensearch.action.admin.indices.shards;
 
 import org.opensearch.action.ActionType;
 import org.opensearch.action.support.IndicesOptions;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadOperationRequestBuilder;
+import org.opensearch.action.support.master.ClusterManagerNodeReadOperationRequestBuilder;
 import org.opensearch.client.OpenSearchClient;
 import org.opensearch.cluster.health.ClusterHealthStatus;
 

@@ -34,7 +34,7 @@ package org.opensearch.action.admin.indices.create;
 
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -95,7 +95,7 @@ public class TransportCreateIndexAction extends TransportClusterManagerNodeActio
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         final CreateIndexRequest request,
         final ClusterState state,
         final ActionListener<CreateIndexResponse> listener
@@ -111,7 +111,7 @@ public class TransportCreateIndexAction extends TransportClusterManagerNodeActio
             indexName,
             request.index()
         ).ackTimeout(request.timeout())
-            .masterNodeTimeout(request.masterNodeTimeout())
+            .masterNodeTimeout(request.clusterManagerNodeTimeout())
             .settings(request.settings())
             .mappings(request.mappings())
             .aliases(request.aliases())

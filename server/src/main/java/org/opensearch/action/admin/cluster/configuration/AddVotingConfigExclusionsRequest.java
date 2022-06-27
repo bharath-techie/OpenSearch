@@ -33,7 +33,7 @@ package org.opensearch.action.admin.cluster.configuration;
 
 import org.opensearch.LegacyESVersion;
 import org.opensearch.action.ActionRequestValidationException;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
+import org.opensearch.action.support.master.ClusterManagerNodeRequest;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.coordination.CoordinationMetadata.VotingConfigExclusion;
 import org.opensearch.cluster.node.DiscoveryNode;

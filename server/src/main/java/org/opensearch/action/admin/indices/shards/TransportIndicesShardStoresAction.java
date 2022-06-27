@@ -37,7 +37,7 @@ import org.apache.lucene.util.CollectionUtil;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.FailedNodeException;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -121,7 +121,7 @@ public class TransportIndicesShardStoresAction extends TransportClusterManagerNo
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         IndicesShardStoresRequest request,
         ClusterState state,
         ActionListener<IndicesShardStoresResponse> listener

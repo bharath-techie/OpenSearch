@@ -29,12 +29,12 @@
  * GitHub history for details.
  */
 
-package org.opensearch.action.support.clustermanager.info;
+package org.opensearch.action.support.master.info;
 
 import org.opensearch.action.ActionType;
 import org.opensearch.action.ActionResponse;
 import org.opensearch.action.support.IndicesOptions;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadOperationRequestBuilder;
+import org.opensearch.action.support.master.ClusterManagerNodeReadOperationRequestBuilder;
 import org.opensearch.client.OpenSearchClient;
 import org.opensearch.common.util.ArrayUtils;
 

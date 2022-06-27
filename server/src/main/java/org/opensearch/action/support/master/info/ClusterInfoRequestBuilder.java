@@ -33,7 +33,6 @@ package org.opensearch.action.support.master.info;
 
 import org.opensearch.action.ActionType;
 import org.opensearch.action.ActionResponse;
-import org.opensearch.action.support.clustermanager.info.ClusterInfoRequest;
 import org.opensearch.client.OpenSearchClient;
 
 /**
@@ -45,7 +44,7 @@ public abstract class ClusterInfoRequestBuilder<
     Request extends ClusterInfoRequest<Request>,
     Response extends ActionResponse,
     Builder extends ClusterInfoRequestBuilder<Request, Response, Builder>> extends
-    org.opensearch.action.support.clustermanager.info.ClusterInfoRequestBuilder<Request, Response, Builder> {
+    org.opensearch.action.support.master.info.ClusterInfoRequestBuilder<Request, Response, Builder> {
 
     protected ClusterInfoRequestBuilder(OpenSearchClient client, ActionType<Response> action, Request request) {
         super(client, action, request);

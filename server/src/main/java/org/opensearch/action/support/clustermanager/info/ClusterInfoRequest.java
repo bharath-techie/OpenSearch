@@ -30,12 +30,12 @@
  * GitHub history for details.
  */
 
-package org.opensearch.action.support.clustermanager.info;
+package org.opensearch.action.support.master.info;
 
 import org.opensearch.Version;
 import org.opensearch.action.IndicesRequest;
 import org.opensearch.action.support.IndicesOptions;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadRequest;
+import org.opensearch.action.support.master.ClusterManagerNodeReadRequest;
 import org.opensearch.common.Strings;
 import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;

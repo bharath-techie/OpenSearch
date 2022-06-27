@@ -40,7 +40,7 @@ import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateUpdateTask;
 import org.opensearch.cluster.RepositoryCleanupInProgress;
@@ -174,7 +174,7 @@ public final class TransportCleanupRepositoryAction extends TransportClusterMana
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         CleanupRepositoryRequest request,
         ClusterState state,
         ActionListener<CleanupRepositoryResponse> listener

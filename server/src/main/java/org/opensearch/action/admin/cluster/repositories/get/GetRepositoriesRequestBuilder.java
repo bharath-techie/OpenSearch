@@ -32,7 +32,7 @@
 
 package org.opensearch.action.admin.cluster.repositories.get;
 
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadOperationRequestBuilder;
+import org.opensearch.action.support.master.ClusterManagerNodeReadOperationRequestBuilder;
 import org.opensearch.client.OpenSearchClient;
 import org.opensearch.common.util.ArrayUtils;
 

@@ -42,7 +42,7 @@ import java.io.IOException;
  * @opensearch.internal
  */
 public abstract class ClusterInfoRequest<Request extends ClusterInfoRequest<Request>> extends
-    org.opensearch.action.support.clustermanager.info.ClusterInfoRequest<Request> {
+    org.opensearch.action.support.master.info.ClusterInfoRequest<Request> {
 
     public ClusterInfoRequest() {}
 

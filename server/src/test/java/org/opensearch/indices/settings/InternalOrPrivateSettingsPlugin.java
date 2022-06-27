@@ -38,8 +38,8 @@ import org.opensearch.action.ActionRequestValidationException;
 import org.opensearch.action.ActionResponse;
 import org.opensearch.action.ActionType;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.ClusterManagerNodeRequest;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateUpdateTask;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -173,7 +173,7 @@ public class InternalOrPrivateSettingsPlugin extends Plugin implements ActionPlu
         }
 
         @Override
-        protected void masterOperation(
+        protected void clusterManagerOperation(
             final UpdateInternalOrPrivateAction.Request request,
             final ClusterState state,
             final ActionListener<UpdateInternalOrPrivateAction.Response> listener

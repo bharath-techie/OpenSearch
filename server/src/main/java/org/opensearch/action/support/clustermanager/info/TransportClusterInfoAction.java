@@ -29,12 +29,12 @@
  * GitHub history for details.
  */
 
-package org.opensearch.action.support.clustermanager.info;
+package org.opensearch.action.support.master.info;
 
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionResponse;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -77,15 +77,29 @@ public abstract class TransportClusterInfoAction<Request extends ClusterInfoRequ
     }
 
     @Override
-    protected final void masterOperation(final Request request, final ClusterState state, final ActionListener<Response> listener) {
+    protected final void clusterManagerOperation(final Request request, final ClusterState state, final ActionListener<Response> listener) {
         String[] concreteIndices = indexNameExpressionResolver.concreteIndexNames(state, request);
-        doMasterOperation(request, concreteIndices, state, listener);
+        doClusterManagerOperation(request, concreteIndices, state, listener);
     }
 
-    protected abstract void doMasterOperation(
+    /** @deprecated As of 2.1, because supporting inclusive language, replaced by {@link #clusterManagerOperation(ClusterInfoRequest, ClusterState, ActionListener)} */
+    @Deprecated
+    @Override
+    protected final void masterOperation(final Request request, final ClusterState state, final ActionListener<Response> listener) {
+        clusterManagerOperation(request, state, listener);
+    }
+
+    protected abstract void doClusterManagerOperation(
         Request request,
         String[] concreteIndices,
         ClusterState state,
         ActionListener<Response> listener
     );
+
+    // Change the method to be concrete after deprecation so that existing class can override it while new class don't have to.
+    /** @deprecated As of 2.1, because supporting inclusive language, replaced by {@link #doClusterManagerOperation(ClusterInfoRequest, String[], ClusterState, ActionListener)} */
+    @Deprecated
+    protected void doMasterOperation(Request request, String[] concreteIndices, ClusterState state, ActionListener<Response> listener) {
+        doClusterManagerOperation(request, concreteIndices, state, listener);
+    }
 }

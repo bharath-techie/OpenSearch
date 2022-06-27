@@ -40,7 +40,7 @@ import java.io.IOException;
  *
  * @opensearch.internal
  */
-public class AcknowledgedResponse extends org.opensearch.action.support.clustermanager.AcknowledgedResponse {
+public class AcknowledgedResponse extends org.opensearch.action.support.master.AcknowledgedResponse {
 
     public AcknowledgedResponse(StreamInput in) throws IOException {
         super(in);

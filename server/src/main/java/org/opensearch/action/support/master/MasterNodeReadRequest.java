@@ -32,7 +32,7 @@
 
 package org.opensearch.action.support.master;
 
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadRequest;
+import org.opensearch.action.support.master.ClusterManagerNodeReadRequest;
 import org.opensearch.common.io.stream.StreamInput;
 
 import java.io.IOException;

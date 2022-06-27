@@ -53,7 +53,6 @@ import org.opensearch.action.get.GetRequest;
 import org.opensearch.action.get.MultiGetRequest;
 import org.opensearch.action.index.IndexRequest;
 import org.opensearch.action.search.ClearScrollRequest;
-import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.search.MultiSearchRequest;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchScrollRequest;
@@ -61,8 +60,8 @@ import org.opensearch.action.search.SearchType;
 import org.opensearch.action.support.ActiveShardCount;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.WriteRequest;
-import org.opensearch.action.support.clustermanager.AcknowledgedRequest;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
+import org.opensearch.action.support.master.AcknowledgedRequest;
+import org.opensearch.action.support.master.ClusterManagerNodeRequest;
 import org.opensearch.action.support.replication.ReplicationRequest;
 import org.opensearch.action.update.UpdateRequest;
 import org.opensearch.client.RequestConverters.EndpointBuilder;
@@ -132,7 +131,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.StringJoiner;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -1305,27 +1303,6 @@ public class RequestConvertersTests extends OpenSearchTestCase {
         assertEquals(REQUEST_BODY_CONTENT_TYPE.mediaTypeWithoutParameters(), request.getEntity().getContentType().getValue());
     }
 
-    public void testCreatePit() throws IOException {
-        String[] indices = randomIndicesNames(0, 5);
-        Map<String, String> expectedParams = new HashMap<>();
-        expectedParams.put("keep_alive", "1d");
-        expectedParams.put("allow_partial_pit_creation", "true");
-        CreatePitRequest createPitRequest = new CreatePitRequest(new TimeValue(1, TimeUnit.DAYS), true, indices);
-        setRandomIndicesOptions(createPitRequest::indicesOptions, createPitRequest::indicesOptions, expectedParams);
-        Request request = RequestConverters.createPit(createPitRequest);
-        StringJoiner endpoint = new StringJoiner("/", "/", "");
-        String index = String.join(",", indices);
-        if (Strings.hasLength(index)) {
-            endpoint.add(index);
-        }
-        endpoint.add("_search/point_in_time");
-        assertEquals(HttpPost.METHOD_NAME, request.getMethod());
-        assertEquals(endpoint.toString(), request.getEndpoint());
-        assertEquals(expectedParams, request.getParameters());
-        assertToXContentBody(createPitRequest, request.getEntity());
-        assertEquals(REQUEST_BODY_CONTENT_TYPE.mediaTypeWithoutParameters(), request.getEntity().getContentType().getValue());
-    }
-
     public void testSearchTemplate() throws Exception {
         // Create a random request.
         String[] indices = randomIndicesNames(0, 5);
@@ -2129,7 +2106,7 @@ public class RequestConvertersTests extends OpenSearchTestCase {
     }
 
     static void setRandomClusterManagerTimeout(ClusterManagerNodeRequest<?> request, Map<String, String> expectedParams) {
-        setRandomClusterManagerTimeout(request::masterNodeTimeout, expectedParams);
+        setRandomClusterManagerTimeout(request::clusterManagerNodeTimeout, expectedParams);
     }
 
     static void setRandomClusterManagerTimeout(TimedRequest request, Map<String, String> expectedParams) {
@@ -2145,7 +2122,7 @@ public class RequestConvertersTests extends OpenSearchTestCase {
             setter.accept(clusterManagerTimeout);
             expectedParams.put("cluster_manager_timeout", clusterManagerTimeout);
         } else {
-            expectedParams.put("cluster_manager_timeout", ClusterManagerNodeRequest.DEFAULT_MASTER_NODE_TIMEOUT.getStringRep());
+            expectedParams.put("cluster_manager_timeout", ClusterManagerNodeRequest.DEFAULT_CLUSTER_MANAGER_NODE_TIMEOUT.getStringRep());
         }
     }
 

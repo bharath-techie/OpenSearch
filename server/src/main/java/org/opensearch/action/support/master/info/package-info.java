@@ -9,7 +9,7 @@
 /**
  * Master Node Information transport handlers.
  *
- * As of 2.1, because supporting inclusive language, replaced by {@link org.opensearch.action.support.clustermanager.info}
+ * As of 2.1, because supporting inclusive language, replaced by {@link org.opensearch.action.support.master.info}
  */
 @Deprecated
 package org.opensearch.action.support.master.info;

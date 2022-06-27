@@ -40,7 +40,7 @@ import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.SnapshotsInProgress;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -136,7 +136,7 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         final SnapshotsStatusRequest request,
         final ClusterState state,
         final ActionListener<SnapshotsStatusResponse> listener
@@ -169,7 +169,7 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
             }
             transportNodesSnapshotsStatus.execute(
                 new TransportNodesSnapshotsStatus.Request(nodesIds.toArray(Strings.EMPTY_ARRAY)).snapshots(snapshots)
-                    .timeout(request.masterNodeTimeout()),
+                    .timeout(request.clusterManagerNodeTimeout()),
                 ActionListener.wrap(
                     nodeSnapshotStatuses -> threadPool.generic()
                         .execute(

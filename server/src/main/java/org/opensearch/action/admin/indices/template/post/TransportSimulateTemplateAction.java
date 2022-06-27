@@ -34,7 +34,7 @@ package org.opensearch.action.admin.indices.template.post;
 
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -113,7 +113,7 @@ public class TransportSimulateTemplateAction extends TransportClusterManagerNode
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         SimulateTemplateAction.Request request,
         ClusterState state,
         ActionListener<SimulateIndexTemplateResponse> listener

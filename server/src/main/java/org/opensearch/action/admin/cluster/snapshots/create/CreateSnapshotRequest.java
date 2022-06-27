@@ -37,7 +37,7 @@ import org.opensearch.OpenSearchGenerationException;
 import org.opensearch.action.ActionRequestValidationException;
 import org.opensearch.action.IndicesRequest;
 import org.opensearch.action.support.IndicesOptions;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
+import org.opensearch.action.support.master.ClusterManagerNodeRequest;
 import org.opensearch.common.Strings;
 import org.opensearch.common.bytes.BytesReference;
 import org.opensearch.common.io.stream.StreamInput;
@@ -521,7 +521,7 @@ public class CreateSnapshotRequest extends ClusterManagerNodeRequest<CreateSnaps
             && Arrays.equals(indices, that.indices)
             && Objects.equals(indicesOptions, that.indicesOptions)
             && Objects.equals(settings, that.settings)
-            && Objects.equals(masterNodeTimeout, that.masterNodeTimeout)
+            && Objects.equals(clusterManagerNodeTimeout, that.clusterManagerNodeTimeout)
             && Objects.equals(userMetadata, that.userMetadata);
     }
 
@@ -562,8 +562,8 @@ public class CreateSnapshotRequest extends ClusterManagerNodeRequest<CreateSnaps
             + includeGlobalState
             + ", waitForCompletion="
             + waitForCompletion
-            + ", masterNodeTimeout="
-            + masterNodeTimeout
+            + ", clusterManagerNodeTimeout="
+            + clusterManagerNodeTimeout
             + ", metadata="
             + userMetadata
             + '}';

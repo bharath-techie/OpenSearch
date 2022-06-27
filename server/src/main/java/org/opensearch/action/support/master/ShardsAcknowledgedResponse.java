@@ -41,7 +41,7 @@ import java.io.IOException;
  *
  * @opensearch.internal
  */
-public abstract class ShardsAcknowledgedResponse extends org.opensearch.action.support.clustermanager.ShardsAcknowledgedResponse {
+public abstract class ShardsAcknowledgedResponse extends org.opensearch.action.support.master.ShardsAcknowledgedResponse {
 
     protected ShardsAcknowledgedResponse(StreamInput in, boolean readShardsAcknowledged) throws IOException {
         super(in, readShardsAcknowledged);

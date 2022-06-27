@@ -32,7 +32,7 @@
 package org.opensearch.snapshots;
 
 import org.opensearch.action.ActionRequestValidationException;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
+import org.opensearch.action.support.master.ClusterManagerNodeRequest;
 import org.opensearch.cluster.SnapshotsInProgress;
 import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;
@@ -64,7 +64,7 @@ public class UpdateIndexShardSnapshotStatusRequest extends ClusterManagerNodeReq
         this.shardId = shardId;
         this.status = status;
         // By default, we keep trying to post snapshot status messages to avoid snapshot processes getting stuck.
-        this.masterNodeTimeout = TimeValue.timeValueNanos(Long.MAX_VALUE);
+        this.clusterManagerNodeTimeout = TimeValue.timeValueNanos(Long.MAX_VALUE);
     }
 
     @Override

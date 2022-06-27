@@ -34,7 +34,7 @@ package org.opensearch.action.ingest;
 
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -85,7 +85,7 @@ public class GetPipelineTransportAction extends TransportClusterManagerNodeReadA
     }
 
     @Override
-    protected void masterOperation(GetPipelineRequest request, ClusterState state, ActionListener<GetPipelineResponse> listener)
+    protected void clusterManagerOperation(GetPipelineRequest request, ClusterState state, ActionListener<GetPipelineResponse> listener)
         throws Exception {
         listener.onResponse(new GetPipelineResponse(IngestService.getPipelines(state, request.getIds())));
     }

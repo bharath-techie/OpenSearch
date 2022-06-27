@@ -35,9 +35,9 @@ import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionRequestValidationException;
 import org.opensearch.action.ActionType;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeOperationRequestBuilder;
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.ClusterManagerNodeOperationRequestBuilder;
+import org.opensearch.action.support.master.ClusterManagerNodeRequest;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.client.OpenSearchClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -254,7 +254,7 @@ public class StartPersistentTaskAction extends ActionType<PersistentTaskResponse
         }
 
         @Override
-        protected final void masterOperation(
+        protected final void clusterManagerOperation(
             final Request request,
             ClusterState state,
             final ActionListener<PersistentTaskResponse> listener

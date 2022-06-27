@@ -32,7 +32,7 @@
 
 package org.opensearch.action.support.master;
 
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
+import org.opensearch.action.support.master.ClusterManagerNodeRequest;
 import org.opensearch.common.io.stream.StreamInput;
 
 import java.io.IOException;
@@ -45,6 +45,8 @@ import java.io.IOException;
  */
 @Deprecated
 public abstract class MasterNodeRequest<Request extends MasterNodeRequest<Request>> extends ClusterManagerNodeRequest<Request> {
+
+    protected MasterNodeRequest() {}
 
     protected MasterNodeRequest(StreamInput in) throws IOException {
         super(in);

@@ -32,8 +32,8 @@
 package org.opensearch.action.support.master;
 
 import org.opensearch.action.ActionType;
-import org.opensearch.action.support.clustermanager.AcknowledgedRequest;
-import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
+import org.opensearch.action.support.master.AcknowledgedRequest;
+import org.opensearch.action.support.master.AcknowledgedResponse;
 import org.opensearch.client.OpenSearchClient;
 
 /**
@@ -45,7 +45,7 @@ public abstract class AcknowledgedRequestBuilder<
     Request extends AcknowledgedRequest<Request>,
     Response extends AcknowledgedResponse,
     RequestBuilder extends AcknowledgedRequestBuilder<Request, Response, RequestBuilder>> extends
-    org.opensearch.action.support.clustermanager.AcknowledgedRequestBuilder<Request, Response, RequestBuilder> {
+    org.opensearch.action.support.master.AcknowledgedRequestBuilder<Request, Response, RequestBuilder> {
 
     protected AcknowledgedRequestBuilder(OpenSearchClient client, ActionType action, Request request) {
         super(client, action, request);

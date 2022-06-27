@@ -35,7 +35,7 @@ package org.opensearch.action.admin.indices.exists.indices;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.IndicesOptions;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -103,7 +103,7 @@ public class TransportIndicesExistsAction extends TransportClusterManagerNodeRea
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         final IndicesExistsRequest request,
         final ClusterState state,
         final ActionListener<IndicesExistsResponse> listener

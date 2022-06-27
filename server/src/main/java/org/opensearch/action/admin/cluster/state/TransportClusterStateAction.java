@@ -37,7 +37,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
 import org.opensearch.cluster.NotMasterException;
@@ -115,7 +115,7 @@ public class TransportClusterStateAction extends TransportClusterManagerNodeRead
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         final ClusterStateRequest request,
         final ClusterState state,
         final ActionListener<ClusterStateResponse> listener

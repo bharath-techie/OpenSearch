@@ -34,8 +34,8 @@ package org.opensearch.action.admin.cluster.snapshots.clone;
 
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -90,7 +90,11 @@ public final class TransportCloneSnapshotAction extends TransportClusterManagerN
     }
 
     @Override
-    protected void masterOperation(CloneSnapshotRequest request, ClusterState state, ActionListener<AcknowledgedResponse> listener) {
+    protected void clusterManagerOperation(
+        CloneSnapshotRequest request,
+        ClusterState state,
+        ActionListener<AcknowledgedResponse> listener
+    ) {
         snapshotsService.cloneSnapshot(request, ActionListener.map(listener, v -> new AcknowledgedResponse(true)));
     }
 

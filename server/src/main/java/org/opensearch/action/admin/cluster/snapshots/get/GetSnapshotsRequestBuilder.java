@@ -32,7 +32,7 @@
 
 package org.opensearch.action.admin.cluster.snapshots.get;
 
-import org.opensearch.action.support.clustermanager.ClusterManagerNodeOperationRequestBuilder;
+import org.opensearch.action.support.master.ClusterManagerNodeOperationRequestBuilder;
 import org.opensearch.client.OpenSearchClient;
 import org.opensearch.common.util.ArrayUtils;
 

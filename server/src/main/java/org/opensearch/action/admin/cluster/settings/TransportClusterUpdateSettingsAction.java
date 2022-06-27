@@ -38,7 +38,7 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.cluster.AckedClusterStateUpdateTask;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -124,7 +124,7 @@ public class TransportClusterUpdateSettingsAction extends TransportClusterManage
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         final ClusterUpdateSettingsRequest request,
         final ClusterState state,
         final ActionListener<ClusterUpdateSettingsResponse> listener

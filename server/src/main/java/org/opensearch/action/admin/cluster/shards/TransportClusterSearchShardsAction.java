@@ -34,7 +34,7 @@ package org.opensearch.action.admin.cluster.shards;
 
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeReadAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -108,7 +108,7 @@ public class TransportClusterSearchShardsAction extends TransportClusterManagerN
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         final ClusterSearchShardsRequest request,
         final ClusterState state,
         final ActionListener<ClusterSearchShardsResponse> listener

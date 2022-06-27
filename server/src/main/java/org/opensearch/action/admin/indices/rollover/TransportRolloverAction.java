@@ -40,7 +40,7 @@ import org.opensearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.ActiveShardsObserver;
 import org.opensearch.action.support.IndicesOptions;
-import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.action.support.master.TransportClusterManagerNodeAction;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateUpdateTask;
@@ -130,13 +130,13 @@ public class TransportRolloverAction extends TransportClusterManagerNodeAction<R
     }
 
     @Override
-    protected void masterOperation(RolloverRequest request, ClusterState state, ActionListener<RolloverResponse> listener)
+    protected void clusterManagerOperation(RolloverRequest request, ClusterState state, ActionListener<RolloverResponse> listener)
         throws Exception {
         throw new UnsupportedOperationException("The task parameter is required");
     }
 
     @Override
-    protected void masterOperation(
+    protected void clusterManagerOperation(
         Task task,
         final RolloverRequest rolloverRequest,
         final ClusterState state,
@@ -215,7 +215,7 @@ public class TransportRolloverAction extends TransportClusterManagerNodeAction<R
                                     activeShardsObserver.waitForActiveShards(
                                         new String[] { rolloverIndexName },
                                         rolloverRequest.getCreateIndexRequest().waitForActiveShards(),
-                                        rolloverRequest.masterNodeTimeout(),
+                                        rolloverRequest.clusterManagerNodeTimeout(),
                                         isShardsAcknowledged -> listener.onResponse(
                                             new RolloverResponse(
                                                 sourceIndexName,
