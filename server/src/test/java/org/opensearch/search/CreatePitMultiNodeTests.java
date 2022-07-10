@@ -15,6 +15,9 @@ import org.junit.Before;
 import org.opensearch.action.ActionFuture;
 import org.opensearch.action.admin.cluster.state.ClusterStateRequest;
 import org.opensearch.action.admin.cluster.state.ClusterStateResponse;
+import org.opensearch.action.admin.indices.segments.IndicesSegmentResponse;
+import org.opensearch.action.admin.indices.segments.PitSegmentsAction;
+import org.opensearch.action.admin.indices.segments.PitSegmentsRequest;
 import org.opensearch.action.search.*;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.settings.Settings;
@@ -235,6 +238,8 @@ public class CreatePitMultiNodeTests extends OpenSearchIntegTestCase {
         ActionFuture<GetAllPitNodesResponse> execute1 = client().execute(GetAllPitsAction.INSTANCE, getAllPITNodesRequest);
         GetAllPitNodesResponse getPitResponse = execute1.get();
         assertEquals(3, getPitResponse.getPITIDs().size());
+        //TODO remove pit segments call.
+        IndicesSegmentResponse pitSegmentsResponse = client().execute(PitSegmentsAction.INSTANCE, new PitSegmentsRequest(new String[]{})).actionGet();
         List<String> resultPitIds = getPitResponse.getPITIDs().stream().map(p -> p.getPitId()).collect(Collectors.toList());
         // asserting that we get all unique PIT IDs
         Assert.assertTrue(resultPitIds.contains(pitResponse.getId()));

@@ -135,9 +135,13 @@ public abstract class TransportBroadcastByNodeAction<
             executor,
             false,
             canTripCircuitBreaker,
-            NodeRequest::new,
+            getNodeRequestWriteable(),
             new BroadcastByNodeTransportRequestHandler()
         );
+    }
+
+    protected Writeable.Reader<NodeRequest> getNodeRequestWriteable() {
+        return NodeRequest::new;
     }
 
     private Response newResponse(
