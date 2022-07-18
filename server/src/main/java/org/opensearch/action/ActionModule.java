@@ -163,7 +163,9 @@ import org.opensearch.action.admin.indices.resolve.ResolveIndexAction;
 import org.opensearch.action.admin.indices.rollover.RolloverAction;
 import org.opensearch.action.admin.indices.rollover.TransportRolloverAction;
 import org.opensearch.action.admin.indices.segments.IndicesSegmentsAction;
+import org.opensearch.action.admin.indices.segments.PitSegmentsAction;
 import org.opensearch.action.admin.indices.segments.TransportIndicesSegmentsAction;
+import org.opensearch.action.admin.indices.segments.TransportPitSegmentsAction;
 import org.opensearch.action.admin.indices.settings.get.GetSettingsAction;
 import org.opensearch.action.admin.indices.settings.get.TransportGetSettingsAction;
 import org.opensearch.action.admin.indices.settings.put.TransportUpdateSettingsAction;
@@ -366,25 +368,7 @@ import org.opensearch.rest.action.admin.indices.RestUpdateSettingsAction;
 import org.opensearch.rest.action.admin.indices.RestUpgradeAction;
 import org.opensearch.rest.action.admin.indices.RestUpgradeStatusAction;
 import org.opensearch.rest.action.admin.indices.RestValidateQueryAction;
-import org.opensearch.rest.action.cat.AbstractCatAction;
-import org.opensearch.rest.action.cat.RestAliasAction;
-import org.opensearch.rest.action.cat.RestAllocationAction;
-import org.opensearch.rest.action.cat.RestCatAction;
-import org.opensearch.rest.action.cat.RestCatRecoveryAction;
-import org.opensearch.rest.action.cat.RestFielddataAction;
-import org.opensearch.rest.action.cat.RestHealthAction;
-import org.opensearch.rest.action.cat.RestIndicesAction;
-import org.opensearch.rest.action.cat.RestMasterAction;
-import org.opensearch.rest.action.cat.RestNodeAttrsAction;
-import org.opensearch.rest.action.cat.RestNodesAction;
-import org.opensearch.rest.action.cat.RestPluginsAction;
-import org.opensearch.rest.action.cat.RestRepositoriesAction;
-import org.opensearch.rest.action.cat.RestSegmentsAction;
-import org.opensearch.rest.action.cat.RestShardsAction;
-import org.opensearch.rest.action.cat.RestSnapshotAction;
-import org.opensearch.rest.action.cat.RestTasksAction;
-import org.opensearch.rest.action.cat.RestTemplatesAction;
-import org.opensearch.rest.action.cat.RestThreadPoolAction;
+import org.opensearch.rest.action.cat.*;
 import org.opensearch.rest.action.document.RestBulkAction;
 import org.opensearch.rest.action.document.RestDeleteAction;
 import org.opensearch.rest.action.document.RestGetAction;
@@ -622,6 +606,8 @@ public class ActionModule extends AbstractModule {
         actions.register(NodesReloadSecureSettingsAction.INSTANCE, TransportNodesReloadSecureSettingsAction.class);
         actions.register(AutoCreateAction.INSTANCE, AutoCreateAction.TransportAction.class);
 
+        actions.register(PitSegmentsAction.INSTANCE, TransportPitSegmentsAction.class);
+
         // Indexed scripts
         actions.register(PutStoredScriptAction.INSTANCE, TransportPutStoredScriptAction.class);
         actions.register(GetStoredScriptAction.INSTANCE, TransportGetStoredScriptAction.class);
@@ -835,6 +821,7 @@ public class ActionModule extends AbstractModule {
         registerHandler.accept(new RestAliasAction());
         registerHandler.accept(new RestThreadPoolAction());
         registerHandler.accept(new RestPluginsAction());
+        registerHandler.accept(new RestPitSegmentsAction());
         registerHandler.accept(new RestFielddataAction());
         registerHandler.accept(new RestNodeAttrsAction());
         registerHandler.accept(new RestRepositoriesAction());
