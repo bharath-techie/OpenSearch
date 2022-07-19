@@ -46,10 +46,7 @@ import org.opensearch.transport.TransportResponseHandler;
 import org.opensearch.transport.TransportService;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -125,20 +122,23 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
 
     @Override
     protected ShardsIterator shards(ClusterState clusterState, PitSegmentsRequest request, String[] concreteIndices) {
-//        final ArrayList<ShardRouting> iterators = new ArrayList<>();
-//        for (String pitId : request.getPitIds()) {
-//            SearchContextId searchContext = decode(namedWriteableRegistry, pitId);
-//            for (Map.Entry<ShardId, SearchContextIdForNode> entry : searchContext.shards().entrySet()) {
-//                final SearchContextIdForNode perNode = entry.getValue();
-//                if (Strings.isEmpty(perNode.getClusterAlias())) {
-//                    final ShardId shardId = entry.getKey();
-//                    iterators.add(new PitAwareShardRouting(shardId, perNode.getNode(), null, true, ShardRoutingState.STARTED,
-//                            null, null, null, -1L, pitId));
-//                }
-//            }
-//        }
-//        return new PlainShardsIterator(iterators);
-         return clusterState.routingTable().allShards(concreteIndices);
+        final ArrayList<ShardRouting> iterators = new ArrayList<>();
+        ShardsIterator shardsIterator = clusterState.routingTable().allShards(concreteIndices);
+        for (String pitId : request.getPitIds()) {
+            SearchContextId searchContext = decode(namedWriteableRegistry, pitId);
+            for (Map.Entry<ShardId, SearchContextIdForNode> entry : searchContext.shards().entrySet()) {
+                final SearchContextIdForNode perNode = entry.getValue();
+                if (Strings.isEmpty(perNode.getClusterAlias())) {
+                    final ShardId shardId = entry.getKey();
+                    Optional<ShardRouting> shardRouting = shardsIterator.getShardRoutings().stream().filter(r -> r.shardId().equals(shardId)).findFirst();
+                    ShardRouting sr = shardRouting.get();
+                    iterators.add(sr);
+                   // iterators.add(new PitAwareShardRouting(sr, pitId));
+                }
+            }
+        }
+        return new PlainShardsIterator(iterators);
+//         return clusterState.routingTable().allShards(concreteIndices);
     }
 
     @Override
@@ -176,16 +176,16 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
 
     @Override
     protected ShardSegments shardOperation(PitSegmentsRequest request, ShardRouting shardRouting) {
-        PitAwareShardRouting pitAwareShardRouting = (PitAwareShardRouting) shardRouting;
-        SearchContextIdForNode searchContextIdForNode = decode(namedWriteableRegistry,
-                pitAwareShardRouting.getPitId()).shards().get(shardRouting.shardId());
-        PitReaderContext pitReaderContext = searchService.getPitReaderContext(searchContextIdForNode.getSearchContextId());
-        return new ShardSegments(pitReaderContext.getShardRouting(), pitReaderContext.getSegments());
+//        PitAwareShardRouting pitAwareShardRouting = (PitAwareShardRouting) shardRouting;
+//        SearchContextIdForNode searchContextIdForNode = decode(namedWriteableRegistry,
+//                pitAwareShardRouting.getPitId()).shards().get(shardRouting.shardId());
+//        PitReaderContext pitReaderContext = searchService.getPitReaderContext(searchContextIdForNode.getSearchContextId());
+//        return new ShardSegments(pitReaderContext.getShardRouting(), pitReaderContext.getSegments());
 
 
-//        IndexService indexService = indicesService.indexServiceSafe(shardRouting.index());
-//        IndexShard indexShard = indexService.getShard(shardRouting.id());
-//        return new ShardSegments(indexShard.routingEntry(), indexShard.segments(request.verbose()));
+        IndexService indexService = indicesService.indexServiceSafe(shardRouting.index());
+        IndexShard indexShard = indexService.getShard(shardRouting.id());
+        return new ShardSegments(indexShard.routingEntry(), indexShard.segments(request.verbose()));
     }
 
     public class PitAwareShardRouting extends ShardRouting {
@@ -198,19 +198,13 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
         }
 
         public PitAwareShardRouting(
-                ShardId shardId,
-                String currentNodeId,
-                String relocatingNodeId,
-                boolean primary,
-                ShardRoutingState state,
-                RecoverySource recoverySource,
-                UnassignedInfo unassignedInfo,
-                AllocationId allocationId,
-                long expectedShardSize,
+                ShardRouting shardRouting,
                 String pitId
         ) {
-            super(shardId, currentNodeId, relocatingNodeId, primary, state, recoverySource, unassignedInfo,
-                    allocationId, expectedShardSize);
+            super(shardRouting.shardId(), shardRouting.currentNodeId(), shardRouting.relocatingNodeId(),
+                    shardRouting.primary(), shardRouting.state(), shardRouting.recoverySource(),
+                    shardRouting.unassignedInfo(),
+                    shardRouting.allocationId(), shardRouting.getExpectedShardSize());
             this.pitId = pitId;
         }
 
