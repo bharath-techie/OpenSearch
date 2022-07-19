@@ -53,6 +53,7 @@ public class PitSegmentsMultiNodeTests extends OpenSearchIntegTestCase {
         request.setIndices(new String[]{"index1"});
         client().execute(CreatePitAction.INSTANCE, request).get();
         indicesSegmentResponse = client().execute(PitSegmentsAction.INSTANCE, new PitSegmentsRequest()).get();
+       // assertTrue(indicesSegmentResponse.getShardFailures()[0].)
         assertTrue(indicesSegmentResponse.getShardFailures() == null || indicesSegmentResponse.getShardFailures().length == 0);
 
 

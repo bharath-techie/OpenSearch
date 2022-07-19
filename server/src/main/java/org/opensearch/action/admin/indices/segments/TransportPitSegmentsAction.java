@@ -25,13 +25,7 @@ import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
-import org.opensearch.cluster.routing.AllocationId;
-import org.opensearch.cluster.routing.PlainShardsIterator;
-import org.opensearch.cluster.routing.RecoverySource;
-import org.opensearch.cluster.routing.ShardRouting;
-import org.opensearch.cluster.routing.ShardRoutingState;
-import org.opensearch.cluster.routing.ShardsIterator;
-import org.opensearch.cluster.routing.UnassignedInfo;
+import org.opensearch.cluster.routing.*;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.Strings;
 import org.opensearch.common.inject.Inject;
@@ -39,6 +33,8 @@ import org.opensearch.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;
 import org.opensearch.common.xcontent.XContentBuilder;
+import org.opensearch.index.IndexService;
+import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.shard.ShardId;
 import org.opensearch.indices.IndicesService;
 import org.opensearch.search.SearchService;
@@ -54,6 +50,7 @@ import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static org.opensearch.action.search.SearchContextId.decode;
@@ -128,19 +125,20 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
 
     @Override
     protected ShardsIterator shards(ClusterState clusterState, PitSegmentsRequest request, String[] concreteIndices) {
-        final ArrayList<ShardRouting> iterators = new ArrayList<>();
-        for (String pitId : request.getPitIds()) {
-            SearchContextId searchContext = decode(namedWriteableRegistry, pitId);
-            for (Map.Entry<ShardId, SearchContextIdForNode> entry : searchContext.shards().entrySet()) {
-                final SearchContextIdForNode perNode = entry.getValue();
-                if (Strings.isEmpty(perNode.getClusterAlias())) {
-                    final ShardId shardId = entry.getKey();
-                    iterators.add(new PitAwareShardRouting(pitId, shardId, perNode.getNode(), null, true, ShardRoutingState.STARTED,
-                            null, null, null, -1L));
-                }
-            }
-        }
-        return new PlainShardsIterator(iterators);
+//        final ArrayList<ShardRouting> iterators = new ArrayList<>();
+//        for (String pitId : request.getPitIds()) {
+//            SearchContextId searchContext = decode(namedWriteableRegistry, pitId);
+//            for (Map.Entry<ShardId, SearchContextIdForNode> entry : searchContext.shards().entrySet()) {
+//                final SearchContextIdForNode perNode = entry.getValue();
+//                if (Strings.isEmpty(perNode.getClusterAlias())) {
+//                    final ShardId shardId = entry.getKey();
+//                    iterators.add(new PitAwareShardRouting(shardId, perNode.getNode(), null, true, ShardRoutingState.STARTED,
+//                            null, null, null, -1L, pitId));
+//                }
+//            }
+//        }
+//        return new PlainShardsIterator(iterators);
+         return clusterState.routingTable().allShards(concreteIndices);
     }
 
     @Override
@@ -183,6 +181,11 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
                 pitAwareShardRouting.getPitId()).shards().get(shardRouting.shardId());
         PitReaderContext pitReaderContext = searchService.getPitReaderContext(searchContextIdForNode.getSearchContextId());
         return new ShardSegments(pitReaderContext.getShardRouting(), pitReaderContext.getSegments());
+
+
+//        IndexService indexService = indicesService.indexServiceSafe(shardRouting.index());
+//        IndexShard indexShard = indexService.getShard(shardRouting.id());
+//        return new ShardSegments(indexShard.routingEntry(), indexShard.segments(request.verbose()));
     }
 
     public class PitAwareShardRouting extends ShardRouting {
@@ -195,7 +198,6 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
         }
 
         public PitAwareShardRouting(
-                String pitId,
                 ShardId shardId,
                 String currentNodeId,
                 String relocatingNodeId,
@@ -204,7 +206,8 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
                 RecoverySource recoverySource,
                 UnassignedInfo unassignedInfo,
                 AllocationId allocationId,
-                long expectedShardSize
+                long expectedShardSize,
+                String pitId
         ) {
             super(shardId, currentNodeId, relocatingNodeId, primary, state, recoverySource, unassignedInfo,
                     allocationId, expectedShardSize);
@@ -221,12 +224,12 @@ public class TransportPitSegmentsAction extends TransportBroadcastByNodeAction<P
             out.writeString(pitId);
         }
 
-//        @Override
-//        public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-//            super.toXContent(builder, params);
-//            builder.field("pitId", pitId);
-//            return builder.endObject();
-//        }
+        @Override
+        public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+            super.toXContent(builder, params);
+            builder.field("pitId", pitId);
+            return builder.endObject();
+        }
     }
 
 
