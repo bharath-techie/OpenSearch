@@ -43,6 +43,7 @@ import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.OriginalIndices;
 import org.opensearch.action.search.DeletePitInfo;
 import org.opensearch.action.search.DeletePitResponse;
+import org.opensearch.action.search.ListPitInfo;
 import org.opensearch.action.search.PitSearchContextIdForNode;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchShardTask;
@@ -1055,22 +1056,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     /**
-     * Free all active pit contexts
-     * @return response with list of PIT IDs deleted and if operation is successful
-     */
-    public DeletePitResponse freeAllPitContexts() {
-        List<DeletePitInfo> deleteResults = new ArrayList<>();
-        for (ReaderContext readerContext : activeReaders.values()) {
-            if (readerContext instanceof PitReaderContext) {
-                boolean result = freeReaderContext(readerContext.id());
-                DeletePitInfo deletePitInfo = new DeletePitInfo(result, ((PitReaderContext) readerContext).getPitId());
-                deleteResults.add(deletePitInfo);
-            }
-        }
-        return new DeletePitResponse(deleteResults);
-    }
-
-    /**
      * Update PIT reader with pit id, keep alive and created time etc
      */
     public void updatePitIdAndKeepAlive(UpdatePitContextRequest request, ActionListener<UpdatePitContextResponse> listener) {
@@ -1451,6 +1436,21 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             return (PitReaderContext) context;
         }
         return null;
+    }
+
+    /**
+     * This method returns all active PIT reader contexts
+     */
+    public List<ListPitInfo> getAllPITReaderContexts() {
+        final List<ListPitInfo> pitContextsInfo = new ArrayList<>();
+        for (ReaderContext ctx : activeReaders.values()) {
+            if (ctx instanceof PitReaderContext) {
+                final PitReaderContext context = (PitReaderContext) ctx;
+                ListPitInfo pitInfo = new ListPitInfo(context.getPitId(), context.getCreationTime(), context.getKeepAlive());
+                pitContextsInfo.add(pitInfo);
+            }
+        }
+        return pitContextsInfo;
     }
 
     class Reaper implements Runnable {
