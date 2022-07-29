@@ -67,7 +67,7 @@ public class ReaderContext implements Releasable {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final boolean singleSession;
 
-    private final AtomicLong keepAlive;
+    final AtomicLong keepAlive;
     private final AtomicLong lastAccessTime;
     // For reference why we use RefCounted here see https://github.com/elastic/elasticsearch/pull/20095.
     private final AbstractRefCounted refCounted;

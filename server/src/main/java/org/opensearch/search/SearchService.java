@@ -42,6 +42,7 @@ import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.OriginalIndices;
+import org.opensearch.action.search.PitInfo;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
@@ -139,6 +140,7 @@ import org.opensearch.threadpool.ThreadPool.Names;
 import org.opensearch.transport.TransportRequest;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -1435,6 +1437,21 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             return (PitReaderContext) context;
         }
         return null;
+    }
+
+    /**
+     * This method returns all active PIT reader contexts
+     */
+    public List<PitInfo> getAllPITReaderContexts() {
+        final List<PitInfo> pitContextsInfo = new ArrayList<>();
+        for (ReaderContext ctx : activeReaders.values()) {
+            if (ctx instanceof PitReaderContext) {
+                final PitReaderContext context = (PitReaderContext) ctx;
+                PitInfo pitInfo = new PitInfo(context.getPitId(), context.getCreationTime(), context.getKeepAlive());
+                pitContextsInfo.add(pitInfo);
+            }
+        }
+        return pitContextsInfo;
     }
 
     class Reaper implements Runnable {
