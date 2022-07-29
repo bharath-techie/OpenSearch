@@ -22,15 +22,18 @@ import java.io.IOException;
 public class PitInfo implements ToXContentFragment, Writeable {
     private final String pitId;
     private final long creationTime;
+    private final long keepAlive;
 
-    public PitInfo(String pitId, long creationTime) {
+    public PitInfo(String pitId, long creationTime,long keepAlive) {
         this.pitId = pitId;
         this.creationTime = creationTime;
+        this.keepAlive = keepAlive;
     }
 
     public PitInfo(StreamInput in) throws IOException {
         this.pitId = in.readString();
         this.creationTime = in.readLong();
+        this.keepAlive = in.readLong();
     }
 
     @Override
@@ -38,6 +41,7 @@ public class PitInfo implements ToXContentFragment, Writeable {
         builder.startObject();
         builder.field("pitId", pitId);
         builder.field("creationTime", creationTime);
+        builder.field("keepALive", keepAlive);
         builder.endObject();
         return builder;
     }
@@ -54,5 +58,6 @@ public class PitInfo implements ToXContentFragment, Writeable {
     public void writeTo(StreamOutput out) throws IOException {
         out.writeString(pitId);
         out.writeLong(creationTime);
+        out.writeLong(keepAlive);
     }
 }

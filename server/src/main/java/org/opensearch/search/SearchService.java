@@ -1447,7 +1447,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         for (ReaderContext ctx : activeReaders.values()) {
             if (ctx instanceof PitReaderContext) {
                 final PitReaderContext context = (PitReaderContext) ctx;
-                PitInfo pitInfo = new PitInfo(context.getPitId(), context.getCreationTime());
+                PitInfo pitInfo = new PitInfo(context.getPitId(), context.getCreationTime(), context.getKeepAlive());
                 pitContextsInfo.add(pitInfo);
             }
         }

@@ -40,6 +40,9 @@ public class PitReaderContext extends ReaderContext {
         return this.pitId.get();
     }
 
+    public long getKeepAlive() { return this.keepAlive.get(); }
+
+
     public void setPitId(final String pitId) {
         this.pitId.set(pitId);
     }
