@@ -532,6 +532,11 @@ public abstract class TransportBroadcastByNodeAction<
         }
     }
 
+    public List<ShardRouting> getShardsFromInputStream(StreamInput in) throws IOException {
+        System.out.println("getShardsFromInputStream from TBBNA = " + in);
+        return in.readList(ShardRouting::new);
+    }
+
     /**
      * A node request
      *
@@ -547,7 +552,8 @@ public abstract class TransportBroadcastByNodeAction<
         public NodeRequest(StreamInput in) throws IOException {
             super(in);
             indicesLevelRequest = readRequestFrom(in);
-            shards = in.readList(ShardRouting::new);
+            //shards = in.readList(ShardRouting::new);
+            shards = getShardsFromInputStream(in);
             nodeId = in.readString();
         }
 

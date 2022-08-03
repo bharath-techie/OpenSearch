@@ -100,7 +100,7 @@ public class AllocationId implements ToXContentObject, Writeable {
         out.writeOptionalString(this.relocationId);
     }
 
-    private AllocationId(String id, String relocationId) {
+    public AllocationId(String id, String relocationId) {
         Objects.requireNonNull(id, "Argument [id] must be non-null");
         this.id = id;
         this.relocationId = relocationId;
