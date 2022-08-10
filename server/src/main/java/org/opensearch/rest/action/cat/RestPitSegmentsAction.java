@@ -37,6 +37,9 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.unmodifiableList;
 import static org.opensearch.rest.RestRequest.Method.GET;
 
+/**
+ * Rest action for pit segments
+ */
 public class RestPitSegmentsAction extends AbstractCatAction {
     @Override
     public List<RestHandler.Route> routes() {
