@@ -113,6 +113,7 @@ public class PitService {
     }
 
     public GroupedActionListener<DeletePitResponse> getDeletePitGroupedListener(ActionListener<DeletePitResponse> listener, int size) {
+        // if(size > )
         return new GroupedActionListener<>(new ActionListener<>() {
             @Override
             public void onResponse(final Collection<DeletePitResponse> responses) {
