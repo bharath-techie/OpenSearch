@@ -11,13 +11,13 @@ package org.opensearch.action.search;
 import org.opensearch.action.ActionType;
 
 /**
- * Action type for listing all PIT reader contexts
+ * Doc
  */
-public class GetAllPitsAction extends ActionType<GetAllPitNodesResponse> {
-    public static final GetAllPitsAction INSTANCE = new GetAllPitsAction();
-    public static final String NAME = "cluster:admin/pit/read";
+public class PitGetAllPitsAction extends ActionType<GetAllPitNodesResponse> {
+    public static final PitGetAllPitsAction INSTANCE = new PitGetAllPitsAction();
+    public static final String NAME = "cluster:admin/pit/readpit";
 
-    private GetAllPitsAction() {
+    private PitGetAllPitsAction() {
         super(NAME, GetAllPitNodesResponse::new);
     }
 }

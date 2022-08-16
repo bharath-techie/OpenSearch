@@ -337,11 +337,6 @@ public interface Client extends OpenSearchClient, Releasable {
     void createPit(CreatePitRequest createPITRequest, ActionListener<CreatePitResponse> listener);
 
     /**
-     * Delete one or more point in time contexts
-     */
-    void deletePits(DeletePitRequest deletePITRequest, ActionListener<DeletePitResponse> listener);
-
-    /**
      * Get information of segments of one or more PITs
      */
     void pitSegments(PitSegmentsRequest pitSegmentsRequest, ActionListener<IndicesSegmentResponse> listener);

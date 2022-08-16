@@ -9,11 +9,6 @@
 package org.opensearch.action.search;
 
 import org.opensearch.action.FailedNodeException;
-import org.opensearch.action.search.GetAllPitsAction;
-import org.opensearch.action.search.GetAllPitNodeRequest;
-import org.opensearch.action.search.GetAllPitNodeResponse;
-import org.opensearch.action.search.GetAllPitNodesRequest;
-import org.opensearch.action.search.GetAllPitNodesResponse;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.nodes.TransportNodesAction;
 import org.opensearch.cluster.service.ClusterService;
@@ -29,7 +24,7 @@ import java.util.List;
 /**
  * Transport action to get all active PIT contexts across all nodes
  */
-public class TransportGetAllPitsAction extends TransportNodesAction<
+public class TransportNodesGetAllPitsAction extends TransportNodesAction<
         GetAllPitNodesRequest,
         GetAllPitNodesResponse,
         GetAllPitNodeRequest,
@@ -37,32 +32,32 @@ public class TransportGetAllPitsAction extends TransportNodesAction<
     private final SearchService searchService;
 
     @Inject
-    public TransportGetAllPitsAction(
-        ThreadPool threadPool,
-        ClusterService clusterService,
-        TransportService transportService,
-        ActionFilters actionFilters,
-        SearchService searchService
+    public TransportNodesGetAllPitsAction(
+            ThreadPool threadPool,
+            ClusterService clusterService,
+            TransportService transportService,
+            ActionFilters actionFilters,
+            SearchService searchService
     ) {
         super(
-            GetAllPitsAction.NAME,
-            threadPool,
-            clusterService,
-            transportService,
-            actionFilters,
-            GetAllPitNodesRequest::new,
-            GetAllPitNodeRequest::new,
-            ThreadPool.Names.SAME,
-            GetAllPitNodeResponse.class
+                NodesGetAllPitsAction.NAME,
+                threadPool,
+                clusterService,
+                transportService,
+                actionFilters,
+                GetAllPitNodesRequest::new,
+                GetAllPitNodeRequest::new,
+                ThreadPool.Names.SAME,
+                GetAllPitNodeResponse.class
         );
         this.searchService = searchService;
     }
 
     @Override
     protected GetAllPitNodesResponse newResponse(
-        GetAllPitNodesRequest request,
-        List<GetAllPitNodeResponse> getAllPitNodeRespons,
-        List<FailedNodeException> failures
+            GetAllPitNodesRequest request,
+            List<GetAllPitNodeResponse> getAllPitNodeRespons,
+            List<FailedNodeException> failures
     ) {
         return new GetAllPitNodesResponse(clusterService.getClusterName(), getAllPitNodeRespons, failures);
     }
@@ -83,8 +78,8 @@ public class TransportGetAllPitsAction extends TransportNodesAction<
     @Override
     protected GetAllPitNodeResponse nodeOperation(GetAllPitNodeRequest request) {
         GetAllPitNodeResponse nodeResponse = new GetAllPitNodeResponse(
-            transportService.getLocalNode(),
-            searchService.getAllPITReaderContexts()
+                transportService.getLocalNode(),
+                searchService.getAllPITReaderContexts()
         );
         return nodeResponse;
     }

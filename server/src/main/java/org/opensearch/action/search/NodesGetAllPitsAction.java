@@ -5,19 +5,18 @@
  * this file be licensed under the Apache-2.0 license or a
  * compatible open source license.
  */
-
 package org.opensearch.action.search;
 
 import org.opensearch.action.ActionType;
 
 /**
- * Action type for listing all PIT reader contexts
+ * docs
  */
-public class GetAllPitsAction extends ActionType<GetAllPitNodesResponse> {
-    public static final GetAllPitsAction INSTANCE = new GetAllPitsAction();
-    public static final String NAME = "cluster:admin/pit/read";
+public class NodesGetAllPitsAction  extends ActionType<GetAllPitNodesResponse> {
+    public static final NodesGetAllPitsAction INSTANCE = new NodesGetAllPitsAction();
+    public static final String NAME = "cluster:admin/pit/readall";
 
-    private GetAllPitsAction() {
+    private NodesGetAllPitsAction() {
         super(NAME, GetAllPitNodesResponse::new);
     }
 }

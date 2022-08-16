@@ -43,7 +43,7 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
         SearchTransportService searchTransportService,
         PitService pitService
     ) {
-        super(DeletePitAction.NAME, transportService, actionFilters, DeletePitRequest::new);
+        super(DeletePitAction.NAME, transportService, actionFilters, in -> new DeletePitRequest(in));
         this.namedWriteableRegistry = namedWriteableRegistry;
         this.transportSearchAction = transportSearchAction;
         this.clusterService = clusterService;
