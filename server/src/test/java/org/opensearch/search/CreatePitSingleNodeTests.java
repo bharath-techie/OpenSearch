@@ -14,6 +14,10 @@ import org.opensearch.action.search.CreatePitAction;
 import org.opensearch.action.search.CreatePitController;
 import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.search.CreatePitResponse;
+import org.opensearch.action.search.DeletePitAction;
+import org.opensearch.action.search.DeletePitInfo;
+import org.opensearch.action.search.DeletePitRequest;
+import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.action.search.PitTestsUtil;
 import org.opensearch.action.search.SearchPhaseExecutionException;
 import org.opensearch.action.search.SearchResponse;
@@ -33,6 +37,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 
 import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.Matchers.blankOrNullString;
+import static org.hamcrest.Matchers.not;
 import static org.opensearch.action.search.PitTestsUtil.assertSegments;
 import static org.opensearch.action.support.WriteRequest.RefreshPolicy.IMMEDIATE;
 import static org.opensearch.common.xcontent.XContentFactory.jsonBuilder;
@@ -277,6 +283,24 @@ public class CreatePitSingleNodeTests extends OpenSearchSingleNodeTestCase {
                 )
         );
         final int maxPitContexts = SearchService.MAX_OPEN_PIT_CONTEXT.get(Settings.EMPTY);
+        DeletePitRequest deletePITRequest = new DeletePitRequest("_all");
+
+        /**
+         * When we invoke delete again, returns success after clearing the remaining readers. Asserting reader context
+         * not found exceptions don't result in failures ( as deletion in one node is successful )
+         */
+        ActionFuture<DeletePitResponse> execute1 = client().execute(DeletePitAction.INSTANCE, deletePITRequest);
+        DeletePitResponse deletePITResponse = execute1.get();
+        for (DeletePitInfo deletePitInfo : deletePITResponse.getDeletePitResults()) {
+            assertThat(deletePitInfo.getPitId(), not(blankOrNullString()));
+            assertTrue(deletePitInfo.isSuccessful());
+        }
+        assertEquals(0,service.getActiveContexts());
+        execute = client().execute(CreatePitAction.INSTANCE, request);
+        CreatePitResponse pitResponse = execute.get();
+        assertEquals(1,service.getActiveContexts());
+
+        validatePitStats("index", 0, maxPitContexts, 0);
         validatePitStats("index", maxPitContexts, 0, 0);
         service.doClose();
         validatePitStats("index", 0, maxPitContexts, 0);

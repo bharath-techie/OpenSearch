@@ -621,7 +621,13 @@ subprojects {
   }
 }
 
-['archives:darwin-tar'
+['archives:darwin-tar',
+ 'archives:integ-test-zip',
+ 'archives:linux-arm64-tar',
+ 'archives:linux-tar',
+ 'archives:windows-zip',
+ 'packages:arm64-rpm', 'packages:arm64-deb',
+ 'packages:rpm', 'packages:deb'
 ].forEach { subName ->
   Project subproject = project("${project.path}:${subName}")
   Configuration configuration = configurations.create(subproject.name)

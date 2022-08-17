@@ -337,11 +337,11 @@ import org.opensearch.action.search.DeletePitRequest;
 import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.action.search.GetAllPitNodesRequest;
 import org.opensearch.action.search.GetAllPitNodesResponse;
+import org.opensearch.action.search.GetAllPitsAction;
 import org.opensearch.action.search.MultiSearchAction;
 import org.opensearch.action.search.MultiSearchRequest;
 import org.opensearch.action.search.MultiSearchRequestBuilder;
 import org.opensearch.action.search.MultiSearchResponse;
-import org.opensearch.action.search.PitGetAllPitsAction;
 import org.opensearch.action.search.SearchAction;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchRequestBuilder;
@@ -1274,12 +1274,12 @@ public abstract class AbstractClient implements Client {
 
         @Override
         public void getAllPits(GetAllPitNodesRequest request, ActionListener<GetAllPitNodesResponse> listener) {
-            execute(PitGetAllPitsAction.INSTANCE, request, listener);
+            execute(GetAllPitsAction.INSTANCE, request, listener);
         }
 
         @Override
         public ActionFuture<GetAllPitNodesResponse> getAllPits(GetAllPitNodesRequest request) {
-            return execute(PitGetAllPitsAction.INSTANCE, request);
+            return execute(GetAllPitsAction.INSTANCE, request);
         }
 
         @Override

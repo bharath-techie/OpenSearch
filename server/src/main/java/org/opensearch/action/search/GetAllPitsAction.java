@@ -15,7 +15,7 @@ import org.opensearch.action.ActionType;
  */
 public class GetAllPitsAction extends ActionType<GetAllPitNodesResponse> {
     public static final GetAllPitsAction INSTANCE = new GetAllPitsAction();
-    public static final String NAME = "cluster:admin/pit/read";
+    public static final String NAME = "cluster:admin/point_in_time/read";
 
     private GetAllPitsAction() {
         super(NAME, GetAllPitNodesResponse::new);
