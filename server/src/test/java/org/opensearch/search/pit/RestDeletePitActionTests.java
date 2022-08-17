@@ -44,7 +44,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
     public void testDeletePitWithBody() throws Exception {
         SetOnce<Boolean> pitCalled = new SetOnce<>();
         try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
-            //@Override
+            // @Override
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(1));
@@ -66,7 +66,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
     public void testDeleteAllPit() throws Exception {
         SetOnce<Boolean> pitCalled = new SetOnce<>();
         try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
-            //@Override
+            // @Override
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(1));
@@ -85,7 +85,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
     public void testDeleteAllPitWithBody() throws Exception {
         SetOnce<Boolean> pitCalled = new SetOnce<>();
         try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
-            //@Override
+            // @Override
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(1));
@@ -110,7 +110,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
     public void testDeletePitQueryStringParamsShouldThrowException() {
         SetOnce<Boolean> pitCalled = new SetOnce<>();
         try (NodeClient nodeClient = new NoOpNodeClient(this.getTestName()) {
-            //@Override
+            // @Override
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(2));

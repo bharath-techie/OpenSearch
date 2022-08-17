@@ -12,7 +12,7 @@ import org.opensearch.action.ActionType;
 /**
  * docs
  */
-public class NodesGetAllPitsAction  extends ActionType<GetAllPitNodesResponse> {
+public class NodesGetAllPitsAction extends ActionType<GetAllPitNodesResponse> {
     public static final NodesGetAllPitsAction INSTANCE = new NodesGetAllPitsAction();
     public static final String NAME = "cluster:admin/pit/readall";
 

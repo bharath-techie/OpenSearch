@@ -9,11 +9,6 @@
 package org.opensearch.action.search;
 
 import org.opensearch.action.FailedNodeException;
-import org.opensearch.action.search.GetAllPitsAction;
-import org.opensearch.action.search.GetAllPitNodeRequest;
-import org.opensearch.action.search.GetAllPitNodeResponse;
-import org.opensearch.action.search.GetAllPitNodesRequest;
-import org.opensearch.action.search.GetAllPitNodesResponse;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.nodes.TransportNodesAction;
 import org.opensearch.cluster.service.ClusterService;
@@ -30,10 +25,10 @@ import java.util.List;
  * Transport action to get all active PIT contexts across all nodes
  */
 public class TransportGetAllPitsAction extends TransportNodesAction<
-        GetAllPitNodesRequest,
-        GetAllPitNodesResponse,
-        GetAllPitNodeRequest,
-        GetAllPitNodeResponse> {
+    GetAllPitNodesRequest,
+    GetAllPitNodesResponse,
+    GetAllPitNodeRequest,
+    GetAllPitNodeResponse> {
     private final SearchService searchService;
 
     @Inject

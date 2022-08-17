@@ -337,7 +337,6 @@ import org.opensearch.action.search.DeletePitRequest;
 import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.action.search.GetAllPitNodesRequest;
 import org.opensearch.action.search.GetAllPitNodesResponse;
-import org.opensearch.action.search.GetAllPitsAction;
 import org.opensearch.action.search.MultiSearchAction;
 import org.opensearch.action.search.MultiSearchRequest;
 import org.opensearch.action.search.MultiSearchRequestBuilder;
@@ -779,8 +778,6 @@ public abstract class AbstractClient implements Client {
         public ActionFuture<ClusterRerouteResponse> reroute(final ClusterRerouteRequest request) {
             return execute(ClusterRerouteAction.INSTANCE, request);
         }
-
-
 
         @Override
         public void deletePits(final DeletePitRequest deletePITRequest, final ActionListener<DeletePitResponse> listener) {
@@ -1274,8 +1271,6 @@ public abstract class AbstractClient implements Client {
         public ActionFuture<AcknowledgedResponse> deleteDanglingIndex(DeleteDanglingIndexRequest request) {
             return execute(DeleteDanglingIndexAction.INSTANCE, request);
         }
-
-
 
         @Override
         public void getAllPits(GetAllPitNodesRequest request, ActionListener<GetAllPitNodesResponse> listener) {

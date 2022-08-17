@@ -597,7 +597,10 @@ public class RestIndicesAction extends AbstractCatAction {
         );
         table.addCell("pri.search.scroll_total", "default:false;text-align:right;desc:completed scroll contexts");
 
-        table.addCell("search.point_in_time_current", "sibling:pri;alias:scc,searchPointInTimeCurrent;default:false;text-align:right;desc:open pit contexts");
+        table.addCell(
+            "search.point_in_time_current",
+            "sibling:pri;alias:scc,searchPointInTimeCurrent;default:false;text-align:right;desc:open pit contexts"
+        );
         table.addCell("pri.search.point_in_time_current", "default:false;text-align:right;desc:open pit contexts");
 
         table.addCell(
