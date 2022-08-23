@@ -101,7 +101,8 @@ public class NRTReplicationEngine extends Engine {
                         }
                     }
                 },
-                this
+                this,
+                engineConfig.getTranslogFactory()
             );
             this.translogManager = translogManagerRef;
         } catch (IOException e) {
@@ -126,6 +127,23 @@ public class NRTReplicationEngine extends Engine {
             translogManager.rollTranslogGeneration();
         }
         localCheckpointTracker.fastForwardProcessedSeqNo(seqNo);
+    }
+
+    /**
+     * Persist the latest live SegmentInfos.
+     *
+     * This method creates a commit point from the latest SegmentInfos. It is intended to be used when this shard is about to be promoted as the new primary.
+     *
+     * TODO: If this method is invoked while the engine is currently updating segments on its reader, wait for that update to complete so the updated segments are used.
+     *
+     *
+     * @throws IOException - When there is an IO error committing the SegmentInfos.
+     */
+    public void commitSegmentInfos() throws IOException {
+        // TODO: This method should wait for replication events to finalize.
+        final SegmentInfos latestSegmentInfos = getLatestSegmentInfos();
+        store.commitSegmentInfos(latestSegmentInfos, localCheckpointTracker.getMaxSeqNo(), localCheckpointTracker.getProcessedCheckpoint());
+        translogManager.syncTranslog();
     }
 
     @Override
