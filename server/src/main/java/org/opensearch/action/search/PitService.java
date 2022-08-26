@@ -15,6 +15,7 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.GroupedActionListener;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.Strings;
@@ -28,6 +29,7 @@ import org.opensearch.transport.TransportService;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -48,11 +50,14 @@ public class PitService {
     private final SearchTransportService searchTransportService;
     private final TransportService transportService;
 
+    private final NodeClient nodeClient;
+
     @Inject
-    public PitService(ClusterService clusterService, SearchTransportService searchTransportService, TransportService transportService) {
+    public PitService(ClusterService clusterService, SearchTransportService searchTransportService, TransportService transportService, NodeClient nodeClient) {
         this.clusterService = clusterService;
         this.searchTransportService = searchTransportService;
         this.transportService = transportService;
+        this.nodeClient = nodeClient;
     }
 
     /**
@@ -142,6 +147,14 @@ public class PitService {
                 listener.onFailure(e);
             }
         }, size);
+    }
+
+    public Map<String, List<String>> getIndicesForPits(List<String> pitIds) {
+        Map<String, List<String>> pitToIndicesMap = new HashMap<>();
+        for(String pitId : pitIds) {
+            pitToIndicesMap.put(pitId, Arrays.asList(SearchContextId.decode(nodeClient.getNamedWriteableRegistry(), pitId).getActualIndices()));
+        }
+        return pitToIndicesMap;
     }
 
     /**

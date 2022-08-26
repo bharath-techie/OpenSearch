@@ -56,6 +56,7 @@ import org.opensearch.action.index.IndexRequest;
 import org.opensearch.action.search.ClearScrollRequest;
 import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.search.DeletePitRequest;
+import org.opensearch.action.search.GetAllPitNodesRequest;
 import org.opensearch.action.search.MultiSearchRequest;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchScrollRequest;
@@ -496,6 +497,10 @@ final class RequestConverters {
 
     static Request deleteAllPits() {
         return new Request(HttpDelete.METHOD_NAME, "/_search/point_in_time/_all");
+    }
+
+    static Request getAllPits() {
+        return new Request(HttpGet.METHOD_NAME, "/_search/point_in_time/all");
     }
 
     static Request multiSearch(MultiSearchRequest multiSearchRequest) throws IOException {

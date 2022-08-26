@@ -18,6 +18,8 @@ import org.opensearch.action.search.CreatePitResponse;
 import org.opensearch.action.search.DeletePitInfo;
 import org.opensearch.action.search.DeletePitRequest;
 import org.opensearch.action.search.DeletePitResponse;
+import org.opensearch.action.search.GetAllPitNodesRequest;
+import org.opensearch.action.search.GetAllPitNodesResponse;
 import org.opensearch.common.unit.TimeValue;
 
 import java.io.IOException;
@@ -80,6 +82,10 @@ public class PitIT extends OpenSearchRestHighLevelClientTestCase {
         pitResponse1 = execute(pitRequest, highLevelClient()::createPit, highLevelClient()::createPitAsync);
         assertTrue(pitResponse.getId() != null);
         assertTrue(pitResponse1.getId() != null);
+
+        GetAllPitNodesRequest getAllPitNodesRequest = new GetAllPitNodesRequest();
+        GetAllPitNodesResponse getAllPitResponse = highLevelClient().getAllPits(RequestOptions.DEFAULT);
+        assertTrue(getAllPitResponse != null);
         ActionListener<DeletePitResponse> deletePitListener = new ActionListener<>() {
             @Override
             public void onResponse(DeletePitResponse response) {

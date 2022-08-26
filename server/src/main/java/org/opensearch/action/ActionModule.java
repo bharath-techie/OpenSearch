@@ -383,6 +383,7 @@ import org.opensearch.rest.action.cat.RestIndicesAction;
 import org.opensearch.rest.action.cat.RestClusterManagerAction;
 import org.opensearch.rest.action.cat.RestNodeAttrsAction;
 import org.opensearch.rest.action.cat.RestNodesAction;
+import org.opensearch.rest.action.cat.RestPitSegmentsAction;
 import org.opensearch.rest.action.cat.RestPluginsAction;
 import org.opensearch.rest.action.cat.RestRepositoriesAction;
 import org.opensearch.rest.action.cat.RestSegmentsAction;
@@ -411,6 +412,7 @@ import org.opensearch.rest.action.search.RestCountAction;
 import org.opensearch.rest.action.search.RestCreatePitAction;
 import org.opensearch.rest.action.search.RestDeletePitAction;
 import org.opensearch.rest.action.search.RestExplainAction;
+import org.opensearch.rest.action.search.RestGetAllPitsAction;
 import org.opensearch.rest.action.search.RestMultiSearchAction;
 import org.opensearch.rest.action.search.RestSearchAction;
 import org.opensearch.rest.action.search.RestSearchScrollAction;
@@ -855,6 +857,8 @@ public class ActionModule extends AbstractModule {
         // Point in time API
         registerHandler.accept(new RestCreatePitAction());
         registerHandler.accept(new RestDeletePitAction());
+        registerHandler.accept(new RestGetAllPitsAction());
+        registerHandler.accept(new RestPitSegmentsAction());
 
         for (ActionPlugin plugin : actionPlugins) {
             for (RestHandler handler : plugin.getRestHandlers(
