@@ -15,6 +15,8 @@ import org.opensearch.common.inject.Inject;
 import org.opensearch.tasks.Task;
 import org.opensearch.transport.TransportService;
 
+import java.util.Collections;
+
 /**
  * Transport action to get all active PIT contexts in the cluster
  */
@@ -30,6 +32,11 @@ public class TransportGetAllPitsAction extends HandledTransportAction<GetAllPitN
 
     @Override
     protected void doExecute(Task task, GetAllPitNodesRequest request, ActionListener<GetAllPitNodesResponse> listener) {
-        pitService.getAllPits(listener);
+        // If security plugin intercepts the request, it'll replace all PIT IDs with permitted PIT IDs
+        if(request.getGetAllPitNodesResponse() != null) {
+            listener.onResponse(request.getGetAllPitNodesResponse());
+        } else {
+            pitService.getAllPits(listener);
+        }
     }
 }
