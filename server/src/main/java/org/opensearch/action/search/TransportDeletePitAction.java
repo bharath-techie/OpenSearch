@@ -43,7 +43,7 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
         SearchTransportService searchTransportService,
         PitService pitService
     ) {
-        super(DeletePitAction.NAME, transportService, actionFilters, DeletePitRequest::new);
+        super(DeletePitAction.NAME, transportService, actionFilters, in -> new DeletePitRequest(in));
         this.namedWriteableRegistry = namedWriteableRegistry;
         this.transportSearchAction = transportSearchAction;
         this.clusterService = clusterService;
@@ -57,6 +57,7 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
     @Override
     protected void doExecute(Task task, DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
         List<String> pitIds = request.getPitIds();
+        logger.info("pit ids size : " + pitIds.size() + " : " + pitIds.get(0));
         if (pitIds.size() == 1 && "_all".equals(pitIds.get(0))) {
             deleteAllPits(listener);
         } else {

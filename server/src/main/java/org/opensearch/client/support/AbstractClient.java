@@ -335,6 +335,9 @@ import org.opensearch.action.search.CreatePitResponse;
 import org.opensearch.action.search.DeletePitAction;
 import org.opensearch.action.search.DeletePitRequest;
 import org.opensearch.action.search.DeletePitResponse;
+import org.opensearch.action.search.GetAllPitNodesRequest;
+import org.opensearch.action.search.GetAllPitNodesResponse;
+import org.opensearch.action.search.GetAllPitsAction;
 import org.opensearch.action.search.MultiSearchAction;
 import org.opensearch.action.search.MultiSearchRequest;
 import org.opensearch.action.search.MultiSearchRequestBuilder;
@@ -591,11 +594,6 @@ public abstract class AbstractClient implements Client {
     }
 
     @Override
-    public void deletePits(final DeletePitRequest deletePITRequest, final ActionListener<DeletePitResponse> listener) {
-        execute(DeletePitAction.INSTANCE, deletePITRequest, listener);
-    }
-
-    @Override
     public void pitSegments(final PitSegmentsRequest request, final ActionListener<IndicesSegmentResponse> listener) {
         execute(PitSegmentsAction.INSTANCE, request, listener);
     }
@@ -779,6 +777,16 @@ public abstract class AbstractClient implements Client {
         @Override
         public ActionFuture<ClusterRerouteResponse> reroute(final ClusterRerouteRequest request) {
             return execute(ClusterRerouteAction.INSTANCE, request);
+        }
+
+        @Override
+        public void deletePits(final DeletePitRequest deletePITRequest, final ActionListener<DeletePitResponse> listener) {
+            execute(DeletePitAction.INSTANCE, deletePITRequest, listener);
+        }
+
+        @Override
+        public ActionFuture<DeletePitResponse> deletePits(DeletePitRequest request) {
+            return execute(DeletePitAction.INSTANCE, request);
         }
 
         @Override
@@ -1262,6 +1270,16 @@ public abstract class AbstractClient implements Client {
         @Override
         public ActionFuture<AcknowledgedResponse> deleteDanglingIndex(DeleteDanglingIndexRequest request) {
             return execute(DeleteDanglingIndexAction.INSTANCE, request);
+        }
+
+        @Override
+        public void getAllPits(GetAllPitNodesRequest request, ActionListener<GetAllPitNodesResponse> listener) {
+            execute(GetAllPitsAction.INSTANCE, request, listener);
+        }
+
+        @Override
+        public ActionFuture<GetAllPitNodesResponse> getAllPits(GetAllPitNodesRequest request) {
+            return execute(GetAllPitsAction.INSTANCE, request);
         }
 
         @Override

@@ -62,8 +62,6 @@ import org.opensearch.action.search.ClearScrollRequestBuilder;
 import org.opensearch.action.search.ClearScrollResponse;
 import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.search.CreatePitResponse;
-import org.opensearch.action.search.DeletePitRequest;
-import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.action.search.MultiSearchRequest;
 import org.opensearch.action.search.MultiSearchRequestBuilder;
 import org.opensearch.action.search.MultiSearchResponse;
@@ -335,11 +333,6 @@ public interface Client extends OpenSearchClient, Releasable {
      * Create point in time for one or more indices
      */
     void createPit(CreatePitRequest createPITRequest, ActionListener<CreatePitResponse> listener);
-
-    /**
-     * Delete one or more point in time contexts
-     */
-    void deletePits(DeletePitRequest deletePITRequest, ActionListener<DeletePitResponse> listener);
 
     /**
      * Get information of segments of one or more PITs

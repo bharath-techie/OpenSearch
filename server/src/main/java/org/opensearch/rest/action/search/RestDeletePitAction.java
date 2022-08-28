@@ -50,7 +50,9 @@ public class RestDeletePitAction extends BaseRestHandler {
                 }
             }));
         }
-        return channel -> client.deletePits(deletePITRequest, new RestStatusToXContentListener<DeletePitResponse>(channel));
+        return channel -> client.admin()
+            .cluster()
+            .deletePits(deletePITRequest, new RestStatusToXContentListener<DeletePitResponse>(channel));
     }
 
     @Override
