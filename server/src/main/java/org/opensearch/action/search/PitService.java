@@ -29,7 +29,6 @@ import org.opensearch.transport.TransportService;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -49,11 +48,15 @@ public class PitService {
     private final ClusterService clusterService;
     private final SearchTransportService searchTransportService;
     private final TransportService transportService;
-
     private final NodeClient nodeClient;
 
     @Inject
-    public PitService(ClusterService clusterService, SearchTransportService searchTransportService, TransportService transportService, NodeClient nodeClient) {
+    public PitService(
+        ClusterService clusterService,
+        SearchTransportService searchTransportService,
+        TransportService transportService,
+        NodeClient nodeClient
+    ) {
         this.clusterService = clusterService;
         this.searchTransportService = searchTransportService;
         this.transportService = transportService;
@@ -149,10 +152,13 @@ public class PitService {
         }, size);
     }
 
-    public Map<String, List<String>> getIndicesForPits(List<String> pitIds) {
-        Map<String, List<String>> pitToIndicesMap = new HashMap<>();
-        for(String pitId : pitIds) {
-            pitToIndicesMap.put(pitId, Arrays.asList(SearchContextId.decode(nodeClient.getNamedWriteableRegistry(), pitId).getActualIndices()));
+    /**
+     * This method returns indices associated for each pit
+     */
+    public Map<String, String[]> getIndicesForPits(List<String> pitIds) {
+        Map<String, String[]> pitToIndicesMap = new HashMap<>();
+        for (String pitId : pitIds) {
+            pitToIndicesMap.put(pitId, SearchContextId.decode(nodeClient.getNamedWriteableRegistry(), pitId).getActualIndices());
         }
         return pitToIndicesMap;
     }
@@ -169,7 +175,7 @@ public class PitService {
         DiscoveryNode[] disNodesArr = nodes.toArray(new DiscoveryNode[nodes.size()]);
         transportService.sendRequest(
             transportService.getLocalNode(),
-            GetAllPitsAction.NAME,
+            NodesGetAllPitsAction.NAME,
             new GetAllPitNodesRequest(disNodesArr),
             new TransportResponseHandler<GetAllPitNodesResponse>() {
 
