@@ -41,9 +41,9 @@ public class ListPitInfo implements ToXContentFragment, Writeable {
     }
 
     static final ConstructingObjectParser<ListPitInfo, Void> PARSER = new ConstructingObjectParser<>(
-            "list_pit_info",
-            true,
-            args -> new ListPitInfo((String) args[0], (long) args[1], (long) args[2])
+        "list_pit_info",
+        true,
+        args -> new ListPitInfo((String) args[0], (long) args[1], (long) args[2])
     );
 
     static {
@@ -55,6 +55,7 @@ public class ListPitInfo implements ToXContentFragment, Writeable {
     private static final ParseField CREATION_TIME = new ParseField("creation_time");
     private static final ParseField PIT_ID = new ParseField("pit_id");
     private static final ParseField KEEP_ALIVE = new ParseField("keep_alive");
+
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject();

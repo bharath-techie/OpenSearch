@@ -49,46 +49,38 @@ public class RestGetAllPitsAction extends BaseRestHandler {
         clusterStateRequest.local(false);
         boolean includeAll = request.paramAsBoolean("include_all", false);
         clusterStateRequest.clusterManagerNodeTimeout(
-                request.paramAsTime("cluster_manager_timeout", clusterStateRequest.clusterManagerNodeTimeout())
+            request.paramAsTime("cluster_manager_timeout", clusterStateRequest.clusterManagerNodeTimeout())
         );
         clusterStateRequest.clear().nodes(true).routingTable(true).indices("*");
-        return channel -> client.admin().cluster().state(clusterStateRequest, new RestActionListener<ClusterStateResponse>(channel) {
+        GetAllPitNodesRequest getAllPITNodesRequest = new GetAllPitNodesRequest();
+        return channel -> client.execute(GetAllPitsAction.INSTANCE, getAllPITNodesRequest, new RestResponseListener<GetAllPitNodesResponse>(channel) {
             @Override
-            public void processResponse(final ClusterStateResponse clusterStateResponse) {
-                final List<DiscoveryNode> nodes = new LinkedList<>();
-                for (ObjectCursor<DiscoveryNode> cursor : clusterStateResponse.getState().nodes().getDataNodes().values()) {
-                    DiscoveryNode node = cursor.value;
-                    nodes.add(node);
-                }
-                DiscoveryNode[] disNodesArr = new DiscoveryNode[nodes.size()];
-                nodes.toArray(disNodesArr);
-                GetAllPitNodesRequest getAllPITNodesRequest = new GetAllPitNodesRequest(disNodesArr);
-                client.execute(GetAllPitsAction.INSTANCE, getAllPITNodesRequest, new RestResponseListener<GetAllPitNodesResponse>(channel) {
-                    @Override
-                    public RestResponse buildResponse(final GetAllPitNodesResponse getAllPITNodesResponse) throws Exception {
-                        try (XContentBuilder builder = channel.newBuilder()) {
-                            builder.startObject();
-                            if(getAllPITNodesResponse.hasFailures()) {
-                                builder.startArray("failures");
-                                for (int idx = 0; idx < getAllPITNodesResponse.failures().size(); idx++) {
-                                    builder.field(getAllPITNodesResponse.failures().get(idx).nodeId(),
-                                            getAllPITNodesResponse.failures().get(idx).getDetailedMessage());
-                                }
-                                builder.endArray();
-                            }
-                            builder.field("pits", getAllPITNodesResponse.getPitInfos());
-                            if(includeAll) {
-                                builder.startArray("nodeResults");
-                                for (int idx = 0; idx < getAllPITNodesResponse.getNodes().size(); idx++) {
-                                    builder.value(getAllPITNodesResponse.getNodes().get(idx));
-                                }
-                                builder.endArray();
-                            }
-                            builder.endObject();
-                            return new BytesRestResponse(RestStatus.OK, builder);
+            public RestResponse buildResponse(final GetAllPitNodesResponse getAllPITNodesResponse) throws Exception {
+                try (XContentBuilder builder = channel.newBuilder()) {
+                    builder.startObject();
+                    if (getAllPITNodesResponse.hasFailures()) {
+                        builder.startArray("failures");
+                        for (int idx = 0; idx < getAllPITNodesResponse.failures().size(); idx++) {
+                            builder.field(
+                                    getAllPITNodesResponse.failures().get(idx).nodeId(),
+                                    getAllPITNodesResponse.failures().get(idx).getDetailedMessage()
+                            );
                         }
+                        builder.endArray();
                     }
-                });
+                    builder.field("pits", getAllPITNodesResponse.getPitInfos());
+                    if (includeAll) {
+                        builder.startArray("nodeResults");
+                        for (int idx = 0; idx < getAllPITNodesResponse.getNodes().size(); idx++) {
+                            builder.value(getAllPITNodesResponse.getNodes().get(idx));
+                        }
+                        builder.endArray();
+                    }
+                    builder.endObject();
+                    if(getAllPITNodesResponse.getPitInfos().isEmpty())
+                        return new BytesRestResponse(RestStatus.NOT_FOUND, builder);
+                    return new BytesRestResponse(RestStatus.OK, builder);
+                }
             }
         });
     }

@@ -59,10 +59,9 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
         List<String> pitIds = request.getPitIds();
         // when security plugin intercepts the request, if PITs are empty in the cluster the PIT IDs in request will be empty
         // and in this case return empty response
-        if(pitIds.isEmpty()) {
+        if (pitIds.isEmpty()) {
             listener.onResponse(new DeletePitResponse(new ArrayList<>()));
-        }
-        else if (pitIds.size() == 1 && "_all".equals(pitIds.get(0))) {
+        } else if (pitIds.size() == 1 && "_all".equals(pitIds.get(0))) {
             deleteAllPits(listener);
         } else {
             deletePits(listener, request);
