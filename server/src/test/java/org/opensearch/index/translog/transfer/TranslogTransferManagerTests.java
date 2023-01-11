@@ -13,8 +13,8 @@ import org.mockito.Mockito;
 import org.opensearch.action.ActionListener;
 import org.opensearch.common.blobstore.BlobPath;
 import org.opensearch.common.util.set.Sets;
+import org.opensearch.index.shard.ShardId;
 import org.opensearch.index.translog.Translog;
-import org.opensearch.index.translog.transfer.listener.FileTransferListener;
 import org.opensearch.index.translog.transfer.listener.TranslogTransferListener;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.index.translog.transfer.FileSnapshot.CheckpointFileSnapshot;
@@ -74,7 +74,7 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
         TranslogTransferManager translogTransferManager = new TranslogTransferManager(
             transferService,
             remoteBaseTransferPath,
-            new FileTransferListener() {
+            new FileTransferTracker(new ShardId("index", "indexUUid", 0)) {
                 @Override
                 public void onSuccess(TransferFileSnapshot fileSnapshot) {
                     fileTransferSucceeded.incrementAndGet();
@@ -84,8 +84,10 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
                 public void onFailure(TransferFileSnapshot fileSnapshot, Exception e) {
                     fileTransferFailed.incrementAndGet();
                 }
-            },
-            r -> r
+
+                @Override
+                public void onDelete(String name) {}
+            }
         );
 
         assertTrue(translogTransferManager.transferSnapshot(createTransferSnapshot(), new TranslogTransferListener() {
@@ -157,24 +159,14 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
     }
 
     public void testReadMetadataNoFile() throws IOException {
-        TranslogTransferManager translogTransferManager = new TranslogTransferManager(
-            transferService,
-            remoteBaseTransferPath,
-            null,
-            r -> r
-        );
+        TranslogTransferManager translogTransferManager = new TranslogTransferManager(transferService, remoteBaseTransferPath, null);
 
         when(transferService.listAll(remoteBaseTransferPath)).thenReturn(Sets.newHashSet());
         assertNull(translogTransferManager.readMetadata());
     }
 
     public void testReadMetadataSingleFile() throws IOException {
-        TranslogTransferManager translogTransferManager = new TranslogTransferManager(
-            transferService,
-            remoteBaseTransferPath,
-            null,
-            r -> r
-        );
+        TranslogTransferManager translogTransferManager = new TranslogTransferManager(transferService, remoteBaseTransferPath, null);
 
         // BlobPath does not have equals method, so we can't use the instance directly in when
         when(transferService.listAll(any(BlobPath.class))).thenReturn(Sets.newHashSet("12__234__123456789"));
@@ -188,12 +180,7 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
     }
 
     public void testReadMetadataMultipleFiles() throws IOException {
-        TranslogTransferManager translogTransferManager = new TranslogTransferManager(
-            transferService,
-            remoteBaseTransferPath,
-            null,
-            r -> r
-        );
+        TranslogTransferManager translogTransferManager = new TranslogTransferManager(transferService, remoteBaseTransferPath, null);
 
         when(transferService.listAll(any(BlobPath.class))).thenReturn(
             Sets.newHashSet("12__234__56789", "12__235__56823", "12__233__56700")
@@ -208,12 +195,7 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
     }
 
     public void testReadMetadataException() throws IOException {
-        TranslogTransferManager translogTransferManager = new TranslogTransferManager(
-            transferService,
-            remoteBaseTransferPath,
-            null,
-            r -> r
-        );
+        TranslogTransferManager translogTransferManager = new TranslogTransferManager(transferService, remoteBaseTransferPath, null);
 
         when(transferService.listAll(any(BlobPath.class))).thenReturn(
             Sets.newHashSet("12__234__56789", "12__235__56823", "12__233__56700")
@@ -225,12 +207,7 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
     }
 
     public void testReadMetadataSamePrimaryTermGeneration() throws IOException {
-        TranslogTransferManager translogTransferManager = new TranslogTransferManager(
-            transferService,
-            remoteBaseTransferPath,
-            null,
-            r -> r
-        );
+        TranslogTransferManager translogTransferManager = new TranslogTransferManager(transferService, remoteBaseTransferPath, null);
 
         when(transferService.listAll(any(BlobPath.class))).thenReturn(
             Sets.newHashSet("12__234__56789", "12__235__56823", "12__234__56700")
@@ -244,8 +221,7 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
         TranslogTransferManager translogTransferManager = new TranslogTransferManager(
             transferService,
             remoteBaseTransferPath,
-            null,
-            r -> r
+            new FileTransferTracker(new ShardId("index", "indexUuid", 0))
         );
 
         when(transferService.downloadBlob(any(BlobPath.class), eq("translog-23.tlog"))).thenReturn(
@@ -264,16 +240,12 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
     }
 
     public void testDownloadTranslogAlreadyExists() throws IOException {
+        FileTransferTracker tracker = new FileTransferTracker(new ShardId("index", "indexUuid", 0));
         Path location = createTempDir();
         Files.createFile(location.resolve("translog-23.tlog"));
         Files.createFile(location.resolve("translog-23.ckp"));
 
-        TranslogTransferManager translogTransferManager = new TranslogTransferManager(
-            transferService,
-            remoteBaseTransferPath,
-            null,
-            r -> r
-        );
+        TranslogTransferManager translogTransferManager = new TranslogTransferManager(transferService, remoteBaseTransferPath, tracker);
 
         when(transferService.downloadBlob(any(BlobPath.class), eq("translog-23.tlog"))).thenReturn(
             new ByteArrayInputStream("Hello Translog".getBytes(StandardCharsets.UTF_8))
@@ -288,5 +260,38 @@ public class TranslogTransferManagerTests extends OpenSearchTestCase {
         verify(transferService).downloadBlob(any(BlobPath.class), eq("translog-23.ckp"));
         assertTrue(Files.exists(location.resolve("translog-23.tlog")));
         assertTrue(Files.exists(location.resolve("translog-23.ckp")));
+    }
+
+    public void testDownloadTranslogWithTrackerUpdated() throws IOException {
+        FileTransferTracker tracker = new FileTransferTracker(new ShardId("index", "indexUuid", 0));
+        Path location = createTempDir();
+        String translogFile = "translog-23.tlog", checkpointFile = "translog-23.ckp";
+        Files.createFile(location.resolve(translogFile));
+        Files.createFile(location.resolve(checkpointFile));
+
+        TranslogTransferManager translogTransferManager = new TranslogTransferManager(transferService, remoteBaseTransferPath, tracker);
+
+        when(transferService.downloadBlob(any(BlobPath.class), eq(translogFile))).thenReturn(
+            new ByteArrayInputStream("Hello Translog".getBytes(StandardCharsets.UTF_8))
+        );
+        when(transferService.downloadBlob(any(BlobPath.class), eq(checkpointFile))).thenReturn(
+            new ByteArrayInputStream("Hello Checkpoint".getBytes(StandardCharsets.UTF_8))
+        );
+
+        translogTransferManager.downloadTranslog("12", "23", location);
+
+        verify(transferService).downloadBlob(any(BlobPath.class), eq(translogFile));
+        verify(transferService).downloadBlob(any(BlobPath.class), eq(checkpointFile));
+        assertTrue(Files.exists(location.resolve(translogFile)));
+        assertTrue(Files.exists(location.resolve(checkpointFile)));
+
+        // Since the tracker already holds the files with success state, adding them with failed state would throw exception
+        assertThrows(IllegalStateException.class, () -> tracker.add(translogFile, false));
+        assertThrows(IllegalStateException.class, () -> tracker.add(checkpointFile, false));
+
+        // Since the tracker already holds the files with success state, adding them with success state is allowed
+        tracker.add(translogFile, true);
+        tracker.add(checkpointFile, true);
+
     }
 }
