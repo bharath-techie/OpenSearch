@@ -11,6 +11,8 @@ package org.opensearch.rest.action.search;
 
 import org.opensearch.action.search.GetAllPitNodesRequest;
 import org.opensearch.action.search.GetAllPitNodesResponse;
+import org.opensearch.action.search.ListPitInfo;
+import org.opensearch.action.search.SearchContextId;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodes;
@@ -72,6 +74,10 @@ public class RestGetAllPitsAction extends BaseRestHandler {
                         builder.endObject();
                     }
                     builder.endArray();
+                }
+                for(ListPitInfo pitInfo : getAllPITNodesResponse.getPitInfos()) {
+                    final SearchContextId searchContextId = SearchContextId.decode(client.getNamedWriteableRegistry(), pitInfo.getPitId());
+                    pitInfo.indices(searchContextId.getActualIndices());
                 }
                 builder.field("pits", getAllPITNodesResponse.getPitInfos());
                 builder.endObject();
