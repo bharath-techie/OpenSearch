@@ -16,10 +16,11 @@ import org.opensearch.common.io.stream.StreamOutput;
 import org.opensearch.common.xcontent.XContentParser;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.opensearch.action.ValidateActions.addValidationError;
 
@@ -28,7 +29,7 @@ import static org.opensearch.action.ValidateActions.addValidationError;
  */
 public class PitSegmentsRequest extends BroadcastRequest<PitSegmentsRequest> {
     private boolean verbose = false;
-    private final List<String> pitIds = new ArrayList<>();
+    private final Set<String> pitIds = new HashSet<>();
 
     public PitSegmentsRequest() {
         this(Strings.EMPTY_ARRAY);
@@ -68,8 +69,8 @@ public class PitSegmentsRequest extends BroadcastRequest<PitSegmentsRequest> {
         out.writeBoolean(verbose);
     }
 
-    public List<String> getPitIds() {
-        return Collections.unmodifiableList(pitIds);
+    public Set<String> getPitIds() {
+        return Collections.unmodifiableSet(pitIds);
     }
 
     public void clearAndSetPitIds(List<String> pitIds) {

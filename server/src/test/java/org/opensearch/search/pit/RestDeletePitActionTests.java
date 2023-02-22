@@ -22,6 +22,7 @@ import org.opensearch.test.client.NoOpNodeClient;
 import org.opensearch.test.rest.FakeRestChannel;
 import org.opensearch.test.rest.FakeRestRequest;
 
+import java.util.ArrayList;
 import java.util.Collections;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -48,7 +49,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(1));
-                assertThat(request.getPitIds().get(0), equalTo("BODY"));
+                assertThat(new ArrayList(request.getPitIds()).get(0), equalTo("BODY"));
             }
         }) {
             RestDeletePitAction action = new RestDeletePitAction();
@@ -70,7 +71,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(1));
-                assertThat(request.getPitIds().get(0), equalTo("_all"));
+                assertThat(new ArrayList<>(request.getPitIds()).get(0), equalTo("_all"));
             }
         }) {
             RestDeletePitAction action = new RestDeletePitAction();
@@ -89,7 +90,7 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(1));
-                assertThat(request.getPitIds().get(0), equalTo("_all"));
+                assertThat(new ArrayList<>(request.getPitIds()).get(0), equalTo("_all"));
             }
         }) {
             RestDeletePitAction action = new RestDeletePitAction();
@@ -114,8 +115,8 @@ public class RestDeletePitActionTests extends OpenSearchTestCase {
             public void deletePits(DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
                 pitCalled.set(true);
                 assertThat(request.getPitIds(), hasSize(2));
-                assertThat(request.getPitIds().get(0), equalTo("QUERY_STRING"));
-                assertThat(request.getPitIds().get(1), equalTo("QUERY_STRING_1"));
+                assertTrue(new ArrayList<>(request.getPitIds()).contains("QUERY_STRING"));
+                assertTrue(new ArrayList<>(request.getPitIds()).contains("QUERY_STRING"));
             }
         }) {
             RestDeletePitAction action = new RestDeletePitAction();

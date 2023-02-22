@@ -46,7 +46,7 @@ public class TransportDeletePitAction extends HandledTransportAction<DeletePitRe
      */
     @Override
     protected void doExecute(Task task, DeletePitRequest request, ActionListener<DeletePitResponse> listener) {
-        List<String> pitIds = request.getPitIds();
+        List<String> pitIds = new ArrayList<>(request.getPitIds());
         if (pitIds.size() == 1 && "_all".equals(pitIds.get(0))) {
             deleteAllPits(listener);
         } else {

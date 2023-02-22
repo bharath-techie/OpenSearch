@@ -19,9 +19,10 @@ import org.opensearch.common.xcontent.XContentBuilder;
 import org.opensearch.common.xcontent.XContentParser;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.opensearch.action.ValidateActions.addValidationError;
 
@@ -33,7 +34,7 @@ public class DeletePitRequest extends ActionRequest implements ToXContentObject 
     /**
      * List of PIT IDs to be deleted , and use "_all" to delete all PIT reader contexts
      */
-    private final List<String> pitIds = new ArrayList<>();
+    private final Set<String> pitIds = new HashSet<>();
 
     public DeletePitRequest(StreamInput in) throws IOException {
         super(in);
@@ -55,7 +56,7 @@ public class DeletePitRequest extends ActionRequest implements ToXContentObject 
 
     public DeletePitRequest() {}
 
-    public List<String> getPitIds() {
+    public Set<String> getPitIds() {
         return pitIds;
     }
 
