@@ -55,7 +55,7 @@ import java.util.Set;
 
 /**
  * FileSystem probe
- *
+ * java.nio.file.Files.readAllLines(org.opensearch.common.io.PathUtils.get("/proc/diskstats"))
  * @opensearch.internal
  */
 public class FsProbe {

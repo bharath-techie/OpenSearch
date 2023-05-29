@@ -41,13 +41,8 @@ import org.opensearch.tasks.TaskResourceTrackingService.TaskCompletionListener;
 import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.io.*;
+import java.util.*;
 import java.util.function.DoubleSupplier;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
@@ -159,11 +154,12 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
 
     void doRun() {
         SearchBackpressureMode mode = getSettings().getMode();
-        if (mode == SearchBackpressureMode.DISABLED) {
+        if (mode != SearchBackpressureMode.DISABLED) {
+            doIoStuff();
             return;
         }
 
-        if (isNodeInDuress() == false) {
+        if (isNodeInDuress() == true) {
             return;
         }
 
@@ -223,6 +219,63 @@ public class SearchBackpressureService extends AbstractLifecycleComponent implem
             }
 
             taskCancellation.cancelTaskAndDescendants(taskManager);
+        }
+    }
+    private void doIoStuff() {
+        try {
+            String pid = new File("/proc/self").getCanonicalFile().getName();
+            List<String> tids = new ArrayList<>();
+            tids.clear();
+            tids.add(pid);
+
+            File self = new File("/proc/self/task");
+            File[] filesList = self.listFiles();
+            if (filesList != null) {
+                for (File f : filesList) {
+                    if (f.isDirectory()) {
+                        String tid = f.getName();
+                        tids.add(tid);
+                    }
+                }
+            }
+            Map<String, Map<String, Long>> tidKVMap = new HashMap<>();
+            for(String tid: tids) {
+                addSampleTid(tid, pid, tidKVMap);
+            }
+
+            for(Map.Entry<String, Map<String, Long>> entry : tidKVMap.entrySet()) {
+                logger.info(entry.getKey());
+                //Map<String, long>
+            }
+
+        }
+        catch(Exception e) {
+
+        }
+    }
+
+    private void addSampleTid(String tid, String pid, Map<String, Map<String, Long>> tidKVMap) {
+        try (FileReader fileReader =
+                 new FileReader(new File("/proc/" + pid + "/task/" + tid + "/io"));
+             BufferedReader bufferedReader = new BufferedReader(fileReader); ) {
+            String line = null;
+            Map<String, Long> kvmap = new HashMap<>();
+            while ((line = bufferedReader.readLine()) != null) {
+                String[] toks = line.split("[: ]+");
+                String key = toks[0];
+                long val = Long.parseLong(toks[1]);
+                kvmap.put(key, val);
+            }
+            tidKVMap.put(tid, kvmap);
+        } catch (FileNotFoundException e) {
+            //LOGGER.debug("FileNotFound in parse with exception: {}", () -> e.toString());
+        } catch (Exception e) {
+//            LOGGER.debug(
+//                "Error In addSample Tid for: {}  with error: {} with ExceptionCode: {}",
+//                () -> tid,
+//                () -> e.toString(),
+//                () -> StatExceptionCode.THREAD_IO_ERROR.toString());
+//            StatsCollector.instance().logException(StatExceptionCode.THREAD_IO_ERROR);
         }
     }
 

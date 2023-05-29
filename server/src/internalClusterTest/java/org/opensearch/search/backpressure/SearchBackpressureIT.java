@@ -40,15 +40,15 @@ import org.opensearch.test.OpenSearchIntegTestCase;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportService;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
@@ -431,7 +431,42 @@ public class SearchBackpressureIT extends OpenSearchIntegTestCase {
                     break;
                 case HIGHER_HEAP:
                     Byte[] more_bytes = new Byte[1000000];
+
                     int[] more_ints = new int[10000];
+                    for(int ii=0; ii<100;ii++){
+                        try (Stream<Path> paths = Files.walk(Paths.get("/proc"))) {
+                            paths
+                                .filter(Files::isRegularFile)
+                                .forEach(System.out::println);
+                        }catch (FileNotFoundException e) {
+                            //LOGGER.debug("FileNotFound in parse with exception: {}", () -> e.toString());
+                        } catch (Exception e) {
+
+                        }
+                        try (FileReader fileReader =
+                                 new FileReader(new File("/proc/task"));
+                             BufferedReader bufferedReader = new BufferedReader(fileReader); ) {
+                            String line = null;
+                            Map<String, Long> kvmap = new HashMap<>();
+                            while ((line = bufferedReader.readLine()) != null) {
+                                String[] toks = line.split("[: ]+");
+                                String key = toks[0];
+                                long val = Long.parseLong(toks[1]);
+                                kvmap.put(key, val);
+                            }
+                            Thread.sleep(100000);
+                            //tidKVMap.put(tid, kvmap);
+                        } catch (FileNotFoundException e) {
+                            //LOGGER.debug("FileNotFound in parse with exception: {}", () -> e.toString());
+                        } catch (Exception e) {
+//            LOGGER.debug(
+//                "Error In addSample Tid for: {}  with error: {} with ExceptionCode: {}",
+//                () -> tid,
+//                () -> e.toString(),
+//                () -> StatExceptionCode.THREAD_IO_ERROR.toString());
+//            StatsCollector.instance().logException(StatExceptionCode.THREAD_IO_ERROR);
+                        }
+                    }
                     break;
                 case HIGH_ELAPSED_TIME:
                     Thread.sleep(100);

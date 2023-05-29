@@ -8,11 +8,15 @@
 
 package org.opensearch.tasks;
 
+import com.sun.jna.Library;
+import com.sun.jna.Native;
+import com.sun.jna.NativeLong;
 import com.sun.management.ThreadMXBean;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.ExceptionsHelper;
+import org.opensearch.bootstrap.SystemCallFilter;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.settings.ClusterSettings;
@@ -24,11 +28,12 @@ import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.threadpool.RunnableTaskExecutionListener;
 import org.opensearch.threadpool.ThreadPool;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
 import java.lang.management.ManagementFactory;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static org.opensearch.tasks.ResourceStatsType.WORKER_STATS;
 
@@ -84,16 +89,17 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
      * @return Autocloseable stored context to restore ThreadContext to the state before this method changed it.
      */
     public ThreadContext.StoredContext startTracking(Task task) {
-        if (task.supportsResourceTracking() == false
-            || isTaskResourceTrackingEnabled() == false
-            || isTaskResourceTrackingSupported() == false) {
-            return () -> {};
-        }
+//        if (task.supportsResourceTracking() == false
+//            || isTaskResourceTrackingEnabled() == false
+//            || isTaskResourceTrackingSupported() == false) {
+//            return () -> {};
+//        }
 
         logger.debug("Starting resource tracking for task: {}", task.getId());
         resourceAwareTasks.put(task.getId(), task);
         return addTaskIdToThreadContext(task);
     }
+
 
     /**
      * Stops tracking task registered earlier for tracking.
@@ -160,7 +166,104 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
         }
 
     }
+    public interface CStdLib extends Library {
+        int syscall(int number, Object... args);
+    }
 
+    private void doIoStuff(String resTid) {
+        try {
+            String pid = new File("/proc/self").getCanonicalFile().getName();
+            List<String> tids = new ArrayList<>();
+            tids.clear();
+            tids.add(pid);
+
+            File self = new File("/proc/self/task");
+            File[] filesList = self.listFiles();
+            if (filesList != null) {
+                for (File f : filesList) {
+                    if (f.isDirectory()) {
+                        String tid = f.getName();
+                        tids.add(tid);
+                    }
+                }
+            }
+            Map<String, Map<String, Long>> tidKVMap = new HashMap<>();
+//            for(String tid: tids) {
+//                addSampleTid(tid, pid, tidKVMap);
+//            }
+            Map<String, Map<String, Long>> tidKVMap1 = new HashMap<>();
+
+            // null if unavailable or something goes wrong.
+             final SystemCallFilter.LinuxLibrary linux_libc;
+
+            SystemCallFilter.LinuxLibrary lib = null;
+//            if (Constants.LINUX) {
+                try {
+                    lib = ( SystemCallFilter.LinuxLibrary) Native.loadLibrary("c",  SystemCallFilter.LinuxLibrary.class);
+                } catch (UnsatisfiedLinkError e) {
+                    logger.warn("unable to link C library. native methods (seccomp) will be disabled.", e);
+                }
+            //}
+            int tid = -1;
+            linux_libc = lib;
+            try {
+                NativeLong b = linux_libc.syscall(new NativeLong(186));
+                CStdLib c = (CStdLib)Native.loadLibrary("c", CStdLib.class);
+
+                // WARNING: These syscall numbers are for x86 only
+                System.out.println("PID: " + c.syscall(186));
+                System.out.println("UID: " + c.syscall(24));
+                System.out.println("GID: " + c.syscall(47));
+                tid = c.syscall(186);
+            }
+            catch(Exception e) {
+
+            }
+            addSampleTid(String.valueOf(tid), pid, tidKVMap1);
+
+
+
+            for(Map.Entry<String, Map<String, Long>> entry : tidKVMap1.entrySet()) {
+                logger.info(entry.getKey());
+                //Map<String, long>
+            }
+
+        }
+        catch(Exception e) {
+
+        }
+    }
+
+    private void addSampleTid(String tid, String pid, Map<String, Map<String, Long>> tidKVMap) {
+        try (FileReader fileReader =
+                 new FileReader(new File("/proc/" + pid + "/task/" + tid + "/io"));
+             BufferedReader bufferedReader = new BufferedReader(fileReader); ) {
+            String line = null;
+            Map<String, Long> kvmap = new HashMap<>();
+            System.out.println("-----------I/O----------");
+            while ((line = bufferedReader.readLine()) != null) {
+                String[] toks = line.split("[: ]+");
+                String key = toks[0];
+                long val = Long.parseLong(toks[1]);
+                System.out.println(key+" : "+val);
+                kvmap.put(key, val);
+            }
+            tidKVMap.put(tid, kvmap);
+        } catch (FileNotFoundException e) {
+            ResourceUsageMetric currentMemoryUsage = new ResourceUsageMetric(
+                ResourceStats.MEMORY,
+                threadMXBean.getThreadAllocatedBytes(Long.parseLong(tid))
+            );
+            ResourceUsageMetric currentCPUUsage = new ResourceUsageMetric(ResourceStats.CPU, threadMXBean.getThreadCpuTime(Long.parseLong(tid)));
+            logger.info("FileNotFound in parse with exception: {}", () -> e.toString());
+        } catch (Exception e) {
+            logger.info(
+                "Error In addSample Tid for: {}  with error: {} with ExceptionCode: {}",
+                () -> tid,
+                () -> e.toString());
+        }
+    }
+//access denied ("java.io.FilePermission" "/proc/3550/task/14563/io" "read")
     /**
      * Called when a thread starts working on a task's runnable.
      *
@@ -213,6 +316,8 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
             threadMXBean.getThreadAllocatedBytes(threadId)
         );
         ResourceUsageMetric currentCPUUsage = new ResourceUsageMetric(ResourceStats.CPU, threadMXBean.getThreadCpuTime(threadId));
+        // cpu and memory stuff is captured, adding IO stuff
+        doIoStuff(String.valueOf(threadId));
         return new ResourceUsageMetric[] { currentMemoryUsage, currentCPUUsage };
     }
 

@@ -15,7 +15,9 @@ package org.opensearch.tasks;
  */
 public enum ResourceStats {
     CPU("cpu_time_in_nanos"),
-    MEMORY("memory_in_bytes");
+    MEMORY("memory_in_bytes"),
+    IoThroughput("io_throughput_mibss"),
+    IoIops("io_iops");
 
     private final String statsName;
 

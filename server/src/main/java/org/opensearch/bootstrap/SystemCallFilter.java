@@ -106,13 +106,13 @@ import java.util.Map;
  * @opensearch.internal
  */
 // not an example of how to write code!!!
-final class SystemCallFilter {
+public final class SystemCallFilter {
     private static final Logger logger = LogManager.getLogger(SystemCallFilter.class);
 
     // Linux implementation, based on seccomp(2) or prctl(2) with bpf filtering
 
     /** Access to non-standard Linux libc methods */
-    interface LinuxLibrary extends Library {
+    public interface LinuxLibrary extends Library {
         /**
          * maps to prctl(2)
          */
