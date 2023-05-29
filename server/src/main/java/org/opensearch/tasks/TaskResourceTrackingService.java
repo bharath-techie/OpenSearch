@@ -177,20 +177,8 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
             tids.clear();
             tids.add(pid);
 
-            File self = new File("/proc/self/task");
-            File[] filesList = self.listFiles();
-            if (filesList != null) {
-                for (File f : filesList) {
-                    if (f.isDirectory()) {
-                        String tid = f.getName();
-                        tids.add(tid);
-                    }
-                }
-            }
-            Map<String, Map<String, Long>> tidKVMap = new HashMap<>();
-//            for(String tid: tids) {
-//                addSampleTid(tid, pid, tidKVMap);
-//            }
+
+
             Map<String, Map<String, Long>> tidKVMap1 = new HashMap<>();
 
             // null if unavailable or something goes wrong.
@@ -209,11 +197,6 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
             try {
                 NativeLong b = linux_libc.syscall(new NativeLong(186));
                 CStdLib c = (CStdLib)Native.loadLibrary("c", CStdLib.class);
-
-                // WARNING: These syscall numbers are for x86 only
-                System.out.println("PID: " + c.syscall(186));
-                System.out.println("UID: " + c.syscall(24));
-                System.out.println("GID: " + c.syscall(47));
                 tid = c.syscall(186);
             }
             catch(Exception e) {
@@ -224,6 +207,7 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
 
 
             for(Map.Entry<String, Map<String, Long>> entry : tidKVMap1.entrySet()) {
+
                 logger.info(entry.getKey());
                 //Map<String, long>
             }
@@ -250,11 +234,6 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
             }
             tidKVMap.put(tid, kvmap);
         } catch (FileNotFoundException e) {
-            ResourceUsageMetric currentMemoryUsage = new ResourceUsageMetric(
-                ResourceStats.MEMORY,
-                threadMXBean.getThreadAllocatedBytes(Long.parseLong(tid))
-            );
-            ResourceUsageMetric currentCPUUsage = new ResourceUsageMetric(ResourceStats.CPU, threadMXBean.getThreadCpuTime(Long.parseLong(tid)));
             logger.info("FileNotFound in parse with exception: {}", () -> e.toString());
         } catch (Exception e) {
             logger.info(
@@ -263,7 +242,6 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
                 () -> e.toString());
         }
     }
-//access denied ("java.io.FilePermission" "/proc/3550/task/14563/io" "read")
     /**
      * Called when a thread starts working on a task's runnable.
      *
