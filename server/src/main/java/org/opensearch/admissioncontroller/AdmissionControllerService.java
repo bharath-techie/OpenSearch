@@ -10,6 +10,7 @@ package org.opensearch.admissioncontroller;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.common.ExponentiallyWeightedMovingAverage;
 import org.opensearch.common.component.AbstractLifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Setting;
@@ -18,6 +19,8 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.monitor.fs.FsInfo;
 import org.opensearch.monitor.fs.FsService;
+import org.opensearch.monitor.jvm.JvmStats;
+import org.opensearch.monitor.process.ProcessProbe;
 import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -41,6 +44,11 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
     private final AtomicInteger ioLimitBreachedCount;
 
     private final FsService fsService;
+    double EWMA_ALPHA = 0.3;
+    private final ExponentiallyWeightedMovingAverage cpuExecutionEWMA;
+    private final ExponentiallyWeightedMovingAverage memoryExecutionEWMA;
+    private final ExponentiallyWeightedMovingAverage ioExecutionEWMA;
+
 
     public static final Setting<TimeValue> REFRESH_INTERVAL_SETTING = Setting.timeSetting(
         "admissioncontroller.io.monitor.refresh_interval",
@@ -56,6 +64,9 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
         this.previousIOTimeMap = new HashMap<>();
         this.deviceIOUsage = new HashMap<>();
         this.ioLimitBreachedCount = new AtomicInteger(0);
+        this.cpuExecutionEWMA = new ExponentiallyWeightedMovingAverage(EWMA_ALPHA, 0);
+        this.memoryExecutionEWMA = new ExponentiallyWeightedMovingAverage(EWMA_ALPHA, 0);
+        this.ioExecutionEWMA = new ExponentiallyWeightedMovingAverage(EWMA_ALPHA, 0);
     }
     @Override
     protected void doStart() {
@@ -69,6 +80,14 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
 
     public boolean isIOInStress(){
         return this.ioLimitBreachedCount.get() >= IO_THRESHOLD_WINDOW;
+    }
+
+    public double getCPUEWMA() {
+        return cpuExecutionEWMA.getAverage();
+    }
+
+    public double getMemoryEWMA() {
+        return memoryExecutionEWMA.getAverage();
     }
 
     @Override
@@ -88,11 +107,19 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
         public void run() {
             try{
                 monitorIOUtilisation();
+                monitorCpuUtilisation();
+                monitorMemoryUtilisation();
             }catch (Exception e){
                 logger.error("Exception on the getting IO utilisation");
             }
         }
 
+        private void monitorCpuUtilisation() {
+            cpuExecutionEWMA.addValue( ProcessProbe.getInstance().getProcessCpuPercent() / 100.0);
+        }
+        private void monitorMemoryUtilisation() {
+            memoryExecutionEWMA.addValue(JvmStats.jvmStats().getMem().getHeapUsedPercent() / 100.0);
+        }
         private void monitorIOUtilisation() {
             logger.info("IO stats is triggered");
             Map<String, Long> currentIOTimeMap = new HashMap<>();

@@ -34,6 +34,7 @@ package org.opensearch.search.query;
 
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.TotalHits;
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.common.io.stream.DelayableWriteable;
 import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;
@@ -85,8 +86,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
     private boolean hasProfileResults;
     private long serviceTimeEWMA = -1;
     private int nodeQueueSize = -1;
-
-    private
+    private NodePerfStats nodePerfStats;
     private final boolean isNull;
 
     public QuerySearchResult() {
@@ -312,8 +312,17 @@ public final class QuerySearchResult extends SearchPhaseResult {
         return this.serviceTimeEWMA;
     }
 
+    public NodePerfStats getNodePerfStats() {
+        return this.nodePerfStats;
+    }
+
     public QuerySearchResult serviceTimeEWMA(long serviceTimeEWMA) {
         this.serviceTimeEWMA = serviceTimeEWMA;
+        return this;
+    }
+
+    public QuerySearchResult nodePerfStats(NodePerfStats nodePerfStats) {
+        this.nodePerfStats = nodePerfStats;
         return this;
     }
 
@@ -363,6 +372,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
         hasProfileResults = profileShardResults != null;
         serviceTimeEWMA = in.readZLong();
         nodeQueueSize = in.readInt();
+        nodePerfStats = new NodePerfStats(in);
         setShardSearchRequest(in.readOptionalWriteable(ShardSearchRequest::new));
         setRescoreDocIds(new RescoreDocIds(in));
     }
@@ -405,6 +415,8 @@ public final class QuerySearchResult extends SearchPhaseResult {
         out.writeOptionalWriteable(profileShardResults);
         out.writeZLong(serviceTimeEWMA);
         out.writeInt(nodeQueueSize);
+        nodePerfStats.writeTo(out);
+
         out.writeOptionalWriteable(getShardSearchRequest());
         getRescoreDocIds().writeTo(out);
     }

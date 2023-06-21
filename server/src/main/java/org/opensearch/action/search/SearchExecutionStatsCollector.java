@@ -33,6 +33,7 @@
 package org.opensearch.action.search;
 
 import org.opensearch.action.ActionListener;
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.node.ResponseCollectorService;
 import org.opensearch.search.SearchPhaseResult;
 import org.opensearch.search.fetch.QueryFetchSearchResult;
@@ -91,9 +92,10 @@ public final class SearchExecutionStatsCollector implements ActionListener<Searc
             final long serviceTimeEWMA = queryResult.serviceTimeEWMA();
             final int queueSize = queryResult.nodeQueueSize();
             final long responseDuration = System.nanoTime() - startNanos;
+            final NodePerfStats nodePerfStats = queryResult.getNodePerfStats();
             // EWMA/queue size may be -1 if the query node doesn't support capturing it
             if (serviceTimeEWMA > 0 && queueSize >= 0) {
-                collector.addNodeStatistics(nodeId, queueSize, responseDuration, serviceTimeEWMA);
+                collector.addNodeStatistics(nodeId, queueSize, responseDuration, serviceTimeEWMA, nodePerfStats);
             }
         }
         listener.onResponse(response);

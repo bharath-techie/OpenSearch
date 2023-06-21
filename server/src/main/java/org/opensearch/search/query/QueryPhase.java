@@ -47,6 +47,7 @@ import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TotalHits;
 import org.opensearch.action.search.SearchShardTask;
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.common.Booleans;
 import org.opensearch.common.lucene.Lucene;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
@@ -292,9 +293,11 @@ public class QueryPhase {
                     final EWMATrackingThreadPoolExecutor rExecutor = (EWMATrackingThreadPoolExecutor) executor;
                     queryResult.nodeQueueSize(rExecutor.getCurrentQueueSize());
                     queryResult.serviceTimeEWMA((long) rExecutor.getTaskExecutionEWMA());
-
-                    ProcessStats.Cpu cpu = new ProcessStats.Cpu(getProcessCpuPercent(), getProcessCpuTotalTime());
-                    ProcessStats.Mem mem = new ProcessStats.Mem(getTotalVirtualMemorySize());
+                    LOGGER.info("Adding node perf stats");
+                    NodePerfStats nodePerfStats = new NodePerfStats(
+                        95.0, 95.0, 95.0
+                    );
+                    queryResult.nodePerfStats(nodePerfStats);
                 }
 
                 return shouldRescore;

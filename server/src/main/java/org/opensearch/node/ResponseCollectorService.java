@@ -32,6 +32,7 @@
 
 package org.opensearch.node;
 
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -79,16 +80,18 @@ public final class ResponseCollectorService implements ClusterStateListener {
         nodeIdToStats.remove(nodeId);
     }
 
-    public void addNodeStatistics(String nodeId, int queueSize, long responseTimeNanos, long avgServiceTimeNanos) {
+    public void addNodeStatistics(String nodeId, int queueSize, long responseTimeNanos, long avgServiceTimeNanos,
+                                  NodePerfStats nodePerfStats) {
         nodeIdToStats.compute(nodeId, (id, ns) -> {
             if (ns == null) {
                 ExponentiallyWeightedMovingAverage queueEWMA = new ExponentiallyWeightedMovingAverage(ALPHA, queueSize);
                 ExponentiallyWeightedMovingAverage responseEWMA = new ExponentiallyWeightedMovingAverage(ALPHA, responseTimeNanos);
-                return new NodeStatistics(nodeId, queueEWMA, responseEWMA, avgServiceTimeNanos);
+                return new NodeStatistics(nodeId, queueEWMA, responseEWMA, avgServiceTimeNanos, nodePerfStats);
             } else {
                 ns.queueSize.addValue((double) queueSize);
                 ns.responseTime.addValue((double) responseTimeNanos);
                 ns.serviceTime = avgServiceTimeNanos;
+                ns.nodePerfStats = nodePerfStats;
                 return ns;
             }
         });
@@ -229,17 +232,20 @@ public final class ResponseCollectorService implements ClusterStateListener {
         final ExponentiallyWeightedMovingAverage queueSize;
         final ExponentiallyWeightedMovingAverage responseTime;
         double serviceTime;
+        NodePerfStats nodePerfStats;
 
         NodeStatistics(
             String nodeId,
             ExponentiallyWeightedMovingAverage queueSizeEWMA,
             ExponentiallyWeightedMovingAverage responseTimeEWMA,
-            double serviceTimeEWMA
+            double serviceTimeEWMA,
+            NodePerfStats nodePerfStats
         ) {
             this.nodeId = nodeId;
             this.queueSize = queueSizeEWMA;
             this.responseTime = responseTimeEWMA;
             this.serviceTime = serviceTimeEWMA;
+            this.nodePerfStats = nodePerfStats;
         }
     }
 }
