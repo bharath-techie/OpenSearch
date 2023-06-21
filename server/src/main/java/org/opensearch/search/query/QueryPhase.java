@@ -52,6 +52,7 @@ import org.opensearch.common.lucene.Lucene;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.util.concurrent.EWMATrackingThreadPoolExecutor;
 import org.opensearch.lucene.queries.SearchAfterSortedDocQuery;
+import org.opensearch.monitor.process.ProcessStats;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.SearchContextSourcePrinter;
 import org.opensearch.search.SearchService;
@@ -291,6 +292,9 @@ public class QueryPhase {
                     final EWMATrackingThreadPoolExecutor rExecutor = (EWMATrackingThreadPoolExecutor) executor;
                     queryResult.nodeQueueSize(rExecutor.getCurrentQueueSize());
                     queryResult.serviceTimeEWMA((long) rExecutor.getTaskExecutionEWMA());
+
+                    ProcessStats.Cpu cpu = new ProcessStats.Cpu(getProcessCpuPercent(), getProcessCpuTotalTime());
+                    ProcessStats.Mem mem = new ProcessStats.Mem(getTotalVirtualMemorySize());
                 }
 
                 return shouldRescore;

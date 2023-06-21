@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.util.Constants;
 import org.opensearch.ExceptionsHelper;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.common.SetOnce;
 import org.opensearch.common.settings.SettingsException;
 import org.opensearch.common.unit.ByteSizeUnit;
@@ -808,7 +809,13 @@ public class Node implements Closeable {
             modules.add(actionModule);
 
             final RestController restController = actionModule.getRestController();
-
+            final AdmissionControllerService admissionControllerService = new AdmissionControllerService(
+                settings,
+                clusterService.getClusterSettings(),
+                threadPool,
+                nodeEnvironment,
+                monitorService.fsService()
+            );
             final NetworkModule networkModule = new NetworkModule(
                 settings,
                 pluginsService.filterPlugins(NetworkPlugin.class),
@@ -820,7 +827,8 @@ public class Node implements Closeable {
                 xContentRegistry,
                 networkService,
                 restController,
-                clusterService.getClusterSettings()
+                clusterService.getClusterSettings(),
+                admissionControllerService
             );
             Collection<UnaryOperator<Map<String, IndexTemplateMetadata>>> indexTemplateMetadataUpgraders = pluginsService.filterPlugins(
                 Plugin.class
@@ -1089,6 +1097,7 @@ public class Node implements Closeable {
                 b.bind(ClusterInfoService.class).toInstance(clusterInfoService);
                 b.bind(SnapshotsInfoService.class).toInstance(snapshotsInfoService);
                 b.bind(GatewayMetaState.class).toInstance(gatewayMetaState);
+                b.bind(AdmissionControllerService.class).toInstance(admissionControllerService);
                 b.bind(Discovery.class).toInstance(discoveryModule.getDiscovery());
                 {
                     processRecoverySettings(settingsModule.getClusterSettings(), recoverySettings);
@@ -1236,6 +1245,7 @@ public class Node implements Closeable {
         nodeService.getMonitorService().start();
         nodeService.getSearchBackpressureService().start();
         nodeService.getTaskCancellationMonitoringService().start();
+        injector.getInstance(AdmissionControllerService.class).start();
 
         final ClusterService clusterService = injector.getInstance(ClusterService.class);
 
@@ -1394,9 +1404,11 @@ public class Node implements Closeable {
         injector.getInstance(GatewayService.class).stop();
         injector.getInstance(SearchService.class).stop();
         injector.getInstance(TransportService.class).stop();
+        injector.getInstance(AdmissionControllerService.class).stop();
         nodeService.getTaskCancellationMonitoringService().stop();
 
         pluginLifecycleComponents.forEach(LifecycleComponent::stop);
+
         // we should stop this last since it waits for resources to get released
         // if we had scroll searchers etc or recovery going on we wait for to finish.
         injector.getInstance(IndicesService.class).stop();
@@ -1459,6 +1471,9 @@ public class Node implements Closeable {
         toClose.add(() -> stopWatch.stop().start("transport"));
         toClose.add(injector.getInstance(TransportService.class));
         toClose.add(nodeService.getTaskCancellationMonitoringService());
+
+        toClose.add(() -> stopWatch.stop().start("admissioncontroller"));
+        toClose.add(injector.getInstance(AdmissionControllerService.class));
 
         for (LifecycleComponent plugin : pluginLifecycleComponents) {
             toClose.add(() -> stopWatch.stop().start("plugin(" + plugin.getClass().getName() + ")"));

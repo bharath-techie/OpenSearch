@@ -33,6 +33,8 @@
 package org.opensearch.common.network;
 
 import org.opensearch.action.support.replication.ReplicationTask;
+import org.opensearch.admissioncontroller.AdmissionControllerPlugin;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.cluster.routing.allocation.command.AllocateEmptyPrimaryAllocationCommand;
 import org.opensearch.cluster.routing.allocation.command.AllocateReplicaAllocationCommand;
 import org.opensearch.cluster.routing.allocation.command.AllocateStalePrimaryAllocationCommand;
@@ -131,6 +133,7 @@ public final class NetworkModule {
     private final Map<String, Supplier<Transport>> transportFactories = new HashMap<>();
     private final Map<String, Supplier<HttpServerTransport>> transportHttpFactories = new HashMap<>();
     private final List<TransportInterceptor> transportIntercetors = new ArrayList<>();
+    private final AdmissionControllerPlugin admissionControllerPlugin;
 
     /**
      * Creates a network module that custom networking classes can be plugged into.
@@ -147,7 +150,8 @@ public final class NetworkModule {
         NamedXContentRegistry xContentRegistry,
         NetworkService networkService,
         HttpServerTransport.Dispatcher dispatcher,
-        ClusterSettings clusterSettings
+        ClusterSettings clusterSettings,
+        AdmissionControllerService admissionControllerService
     ) {
         this.settings = settings;
         for (NetworkPlugin plugin : plugins) {
@@ -183,6 +187,11 @@ public final class NetworkModule {
             for (TransportInterceptor interceptor : transportInterceptors) {
                 registerTransportInterceptor(interceptor);
             }
+        }
+        admissionControllerPlugin = new AdmissionControllerPlugin(admissionControllerService);
+        List<TransportInterceptor> transportInterceptors = admissionControllerPlugin.getTransportInterceptors(namedWriteableRegistry, threadPool.getThreadContext());
+        for (TransportInterceptor interceptor : transportInterceptors) {
+            registerTransportInterceptor(interceptor);
         }
     }
 

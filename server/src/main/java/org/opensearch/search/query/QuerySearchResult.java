@@ -86,6 +86,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
     private long serviceTimeEWMA = -1;
     private int nodeQueueSize = -1;
 
+    private
     private final boolean isNull;
 
     public QuerySearchResult() {

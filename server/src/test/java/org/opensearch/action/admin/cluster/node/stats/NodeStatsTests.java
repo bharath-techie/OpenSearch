@@ -584,12 +584,14 @@ public class NodeStatsTests extends OpenSearchTestCase {
                         randomNonNegativeLong(),
                         randomNonNegativeLong(),
                         randomNonNegativeLong(),
+                    randomNonNegativeLong(),
                         null
                     );
                 deviceStatsArray[i] = new FsInfo.DeviceStats(
                     randomInt(),
                     randomInt(),
                     randomAlphaOfLengthBetween(3, 10),
+                    randomNonNegativeLong(),
                     randomNonNegativeLong(),
                     randomNonNegativeLong(),
                     randomNonNegativeLong(),
