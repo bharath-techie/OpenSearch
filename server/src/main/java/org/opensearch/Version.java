@@ -92,6 +92,7 @@ public class Version implements Comparable<Version>, ToXContentFragment {
     public static final Version V_1_3_6 = new Version(1030699, org.apache.lucene.util.Version.LUCENE_8_10_1);
     public static final Version V_1_3_7 = new Version(1030799, org.apache.lucene.util.Version.LUCENE_8_10_1);
     public static final Version V_1_3_8 = new Version(1030899, org.apache.lucene.util.Version.LUCENE_8_10_1);
+    public static final Version V_1_3_9 = new Version(1030999, org.apache.lucene.util.Version.LUCENE_8_10_1);
     public static final Version V_2_0_0 = new Version(2000099, org.apache.lucene.util.Version.LUCENE_9_1_0);
     public static final Version V_2_0_1 = new Version(2000199, org.apache.lucene.util.Version.LUCENE_9_1_0);
     public static final Version V_2_0_2 = new Version(2000299, org.apache.lucene.util.Version.LUCENE_9_1_0);
@@ -106,7 +107,8 @@ public class Version implements Comparable<Version>, ToXContentFragment {
     public static final Version V_2_4_1 = new Version(2040199, org.apache.lucene.util.Version.LUCENE_9_4_2);
     public static final Version V_2_4_2 = new Version(2040299, org.apache.lucene.util.Version.LUCENE_9_4_2);
     public static final Version V_2_5_0 = new Version(2050099, org.apache.lucene.util.Version.LUCENE_9_4_2);
-    public static final Version CURRENT = V_2_5_0;
+    public static final Version V_2_5_1 = new Version(2050199, org.apache.lucene.util.Version.LUCENE_9_4_2);
+    public static final Version CURRENT = V_2_5_1;
 
     public static Version readVersion(StreamInput in) throws IOException {
         return fromId(in.readVInt());
