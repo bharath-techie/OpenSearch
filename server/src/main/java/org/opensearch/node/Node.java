@@ -885,7 +885,8 @@ public class Node implements Closeable {
             final TaskResourceTrackingService taskResourceTrackingService = new TaskResourceTrackingService(
                 settings,
                 clusterService.getClusterSettings(),
-                threadPool
+                threadPool,
+                admissionControllerService
             );
 
             final SearchBackpressureSettings searchBackpressureSettings = new SearchBackpressureSettings(
@@ -1021,11 +1022,12 @@ public class Node implements Closeable {
                 threadPool,
                 scriptService,
                 bigArrays,
-                searchModule.getQueryPhase(),
+                searchModule.getQueryPhase(admissionControllerService),
                 searchModule.getFetchPhase(),
                 responseCollectorService,
                 circuitBreakerService,
-                searchModule.getIndexSearcherExecutor(threadPool)
+                searchModule.getIndexSearcherExecutor(threadPool),
+                admissionControllerService
             );
 
             final List<PersistentTasksExecutor<?>> tasksExecutors = pluginsService.filterPlugins(PersistentTaskPlugin.class)
@@ -1632,7 +1634,8 @@ public class Node implements Closeable {
         FetchPhase fetchPhase,
         ResponseCollectorService responseCollectorService,
         CircuitBreakerService circuitBreakerService,
-        Executor indexSearcherExecutor
+        Executor indexSearcherExecutor,
+        AdmissionControllerService admissionControllerService
     ) {
         return new SearchService(
             clusterService,
@@ -1644,7 +1647,8 @@ public class Node implements Closeable {
             fetchPhase,
             responseCollectorService,
             circuitBreakerService,
-            indexSearcherExecutor
+            indexSearcherExecutor,
+            admissionControllerService
         );
     }
 

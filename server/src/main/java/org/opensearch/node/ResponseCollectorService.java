@@ -32,6 +32,7 @@
 
 package org.opensearch.node;
 
+import org.apache.logging.log4j.LogManager;
 import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
@@ -42,6 +43,7 @@ import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;
 import org.opensearch.common.io.stream.Writeable;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
+import org.opensearch.common.util.concurrent.ThreadContext;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -49,6 +51,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentMap;
+import java.util.logging.Logger;
 
 /**
  * Collects statistics about queue size, response time, and service time of
@@ -60,6 +63,8 @@ import java.util.concurrent.ConcurrentMap;
 public final class ResponseCollectorService implements ClusterStateListener {
 
     private static final double ALPHA = 0.3;
+    org.apache.logging.log4j.Logger logger = LogManager.getLogger(ResponseCollectorService.class);
+
 
     private final ConcurrentMap<String, NodeStatistics> nodeIdToStats = ConcurrentCollections.newConcurrentMap();
 
@@ -80,9 +85,14 @@ public final class ResponseCollectorService implements ClusterStateListener {
         nodeIdToStats.remove(nodeId);
     }
 
+    public void addNodeStatistics(String nodeId, int queueSize, long responseTimeNanos, long avgServiceTimeNanos) {
+        addNodeStatistics(nodeId, queueSize, responseTimeNanos, avgServiceTimeNanos, null);
+    }
     public void addNodeStatistics(String nodeId, int queueSize, long responseTimeNanos, long avgServiceTimeNanos,
                                   NodePerfStats nodePerfStats) {
         nodeIdToStats.compute(nodeId, (id, ns) -> {
+            logger.info("Add node statistics - node id : {} , cpu : {} , mem : {} , io : {}", nodeId, nodePerfStats.cpuPercentAvg,
+                nodePerfStats.memoryPercentAvg, nodePerfStats.ioPercentAvg);
             if (ns == null) {
                 ExponentiallyWeightedMovingAverage queueEWMA = new ExponentiallyWeightedMovingAverage(ALPHA, queueSize);
                 ExponentiallyWeightedMovingAverage responseEWMA = new ExponentiallyWeightedMovingAverage(ALPHA, responseTimeNanos);
@@ -137,13 +147,18 @@ public final class ResponseCollectorService implements ClusterStateListener {
         public final int queueSize;
         public final double responseTime;
         public final double serviceTime;
+        public final NodePerfStats nodePerfStats;
+        org.apache.logging.log4j.Logger logger = LogManager.getLogger(ResponseCollectorService.class);
 
-        public ComputedNodeStats(String nodeId, int clientNum, int queueSize, double responseTime, double serviceTime) {
+
+        public ComputedNodeStats(String nodeId, int clientNum, int queueSize, double responseTime, double serviceTime,
+                                 NodePerfStats nodePerfStats) {
             this.nodeId = nodeId;
             this.clientNum = clientNum;
             this.queueSize = queueSize;
             this.responseTime = responseTime;
             this.serviceTime = serviceTime;
+            this.nodePerfStats = nodePerfStats;
         }
 
         ComputedNodeStats(int clientNum, NodeStatistics nodeStats) {
@@ -152,7 +167,8 @@ public final class ResponseCollectorService implements ClusterStateListener {
                 clientNum,
                 (int) nodeStats.queueSize.getAverage(),
                 nodeStats.responseTime.getAverage(),
-                nodeStats.serviceTime
+                nodeStats.serviceTime,
+                nodeStats.nodePerfStats
             );
         }
 
@@ -162,6 +178,7 @@ public final class ResponseCollectorService implements ClusterStateListener {
             this.queueSize = in.readInt();
             this.responseTime = in.readDouble();
             this.serviceTime = in.readDouble();
+            this.nodePerfStats = new NodePerfStats(in);
         }
 
         @Override
@@ -171,6 +188,7 @@ public final class ResponseCollectorService implements ClusterStateListener {
             out.writeInt(this.queueSize);
             out.writeDouble(this.responseTime);
             out.writeDouble(this.serviceTime);
+            this.nodePerfStats.writeTo(out);
         }
 
         /**
@@ -198,13 +216,24 @@ public final class ResponseCollectorService implements ClusterStateListener {
 
             // The final formula
             double rank = rS - (1.0 / muBarS) + (Math.pow(qHatS, queueAdjustmentFactor) / muBarS);
+
+            logger.info("queue size : {} , queue size with compensation factor : {} , response time : {} ," +
+                " service time : {} , rank : {}", qBar, qHatS, rS, muBarS, rank);
+            logger.info("CPU : {} , Mem : {} , IO : {} ", nodePerfStats.cpuPercentAvg,
+                nodePerfStats.memoryPercentAvg, nodePerfStats.ioPercentAvg);
+            if(nodePerfStats.cpuPercentAvg > 50.0 ) rank  = rank * 2;
+            if(nodePerfStats.memoryPercentAvg > 50.0 ) rank = rank * 2;
+            if(nodePerfStats.ioPercentAvg > 50.0) rank = rank * 2;
             return rank;
         }
 
         public double rank(long outstandingRequests) {
             if (cachedRank == 0) {
+                logger.info("Cached rank : {}" , cachedRank);
                 cachedRank = innerRank(outstandingRequests);
+                logger.info("Cached rank post : {}" , cachedRank);
             }
+            logger.info("Cached rank post : {}" , cachedRank);
             return cachedRank;
         }
 

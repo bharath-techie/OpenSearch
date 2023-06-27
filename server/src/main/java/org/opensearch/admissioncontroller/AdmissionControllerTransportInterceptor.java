@@ -16,6 +16,9 @@ import org.opensearch.transport.TransportInterceptor;
 import org.opensearch.transport.TransportRequest;
 import org.opensearch.transport.TransportRequestHandler;
 
+/**
+ * Interceptor
+ */
 public class AdmissionControllerTransportInterceptor implements TransportInterceptor {
 
     protected final Logger log = LogManager.getLogger(this.getClass());

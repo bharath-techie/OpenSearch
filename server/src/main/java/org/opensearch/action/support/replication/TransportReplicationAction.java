@@ -411,9 +411,8 @@ public abstract class TransportReplicationAction<
             new ChannelActionListener<>(channel, transportPrimaryAction, request),
             releasable::close
         );
-
-        try {
-            new AsyncPrimaryAction(request, listener, (ReplicationTask) task).run();
+        // here
+        try {new AsyncPrimaryAction(request, listener, (ReplicationTask) task).run();
         } catch (RuntimeException e) {
             listener.onFailure(e);
         }

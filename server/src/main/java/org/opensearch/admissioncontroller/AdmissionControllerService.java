@@ -29,6 +29,9 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Service
+ */
 public class AdmissionControllerService extends AbstractLifecycleComponent {
 
     private static final Logger logger = LogManager.getLogger(AdmissionControllerService.class);
@@ -89,6 +92,8 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
     public double getMemoryEWMA() {
         return memoryExecutionEWMA.getAverage();
     }
+
+    public double getIoEWMA() { return ioExecutionEWMA.getAverage(); }
 
     @Override
     protected void doClose() throws IOException {

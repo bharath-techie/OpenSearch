@@ -248,7 +248,7 @@ public class TransportFieldCapabilitiesIndexAction extends HandledTransportActio
             }
 
             shardsIt = clusterService.operationRouting()
-                .searchShards(clusterService.state(), new String[] { request.index() }, null, null, null, null);
+                .searchShards(clusterService.state(), new String[] { request.index() }, null, null, null, null, null);
         }
 
         public void start() {

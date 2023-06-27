@@ -33,6 +33,7 @@
 package org.opensearch.search;
 
 import org.apache.lucene.search.BooleanQuery;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.common.NamedRegistry;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.geo.GeoShapeType;
@@ -1290,7 +1291,10 @@ public class SearchModule {
     }
 
     public QueryPhase getQueryPhase() {
-        return new QueryPhase(queryPhaseSearcher);
+        return new QueryPhase(queryPhaseSearcher, null);
+    }
+    public QueryPhase getQueryPhase(@Nullable AdmissionControllerService admissionControllerService) {
+        return new QueryPhase(queryPhaseSearcher, admissionControllerService);
     }
 
     public @Nullable ExecutorService getIndexSearcherExecutor(ThreadPool pool) {

@@ -279,7 +279,8 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
                 }
             }), latch::countDown),
             threadPool,
-            Names.WRITE
+            Names.WRITE,
+            "NoedId"
         );
 
         latch.await();
@@ -941,7 +942,8 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
                 assertThat(response.getSeqNo(), equalTo(13L));
             }), latch),
             threadPool,
-            Names.WRITE
+            Names.WRITE,
+            "NodeId"
         );
         latch.await();
     }
@@ -1024,7 +1026,8 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
                 // Assert that we still need to fsync the location that was successfully written
                 assertThat(((WritePrimaryResult<BulkShardRequest, BulkShardResponse>) result).location, equalTo(resultLocation1))), latch),
                 rejectingThreadPool,
-                Names.WRITE
+                Names.WRITE,
+                "nodeId"
             );
             latch.await();
 

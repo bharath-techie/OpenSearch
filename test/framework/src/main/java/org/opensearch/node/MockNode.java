@@ -32,6 +32,7 @@
 
 package org.opensearch.node;
 
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterInfoService;
 import org.opensearch.cluster.MockInternalClusterInfoService;
@@ -154,7 +155,8 @@ public class MockNode extends Node {
         FetchPhase fetchPhase,
         ResponseCollectorService responseCollectorService,
         CircuitBreakerService circuitBreakerService,
-        Executor indexSearcherExecutor
+        Executor indexSearcherExecutor,
+        AdmissionControllerService admissionControllerService
     ) {
         if (getPluginsService().filterPlugins(MockSearchService.TestPlugin.class).isEmpty()) {
             return super.newSearchService(
@@ -167,7 +169,8 @@ public class MockNode extends Node {
                 fetchPhase,
                 responseCollectorService,
                 circuitBreakerService,
-                indexSearcherExecutor
+                indexSearcherExecutor,
+                admissionControllerService
             );
         }
         return new MockSearchService(
@@ -179,7 +182,8 @@ public class MockNode extends Node {
             queryPhase,
             fetchPhase,
             circuitBreakerService,
-            indexSearcherExecutor
+            indexSearcherExecutor,
+            admissionControllerService
         );
     }
 

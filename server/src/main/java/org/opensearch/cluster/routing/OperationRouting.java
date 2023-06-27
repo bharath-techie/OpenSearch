@@ -32,6 +32,7 @@
 
 package org.opensearch.cluster.routing;
 
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.WeightedRoutingMetadata;
@@ -202,7 +203,8 @@ public class OperationRouting {
             preference,
             null,
             null,
-            clusterState.getMetadata().weightedRoutingMetadata()
+            clusterState.getMetadata().weightedRoutingMetadata(),
+            null
         );
     }
 
@@ -215,7 +217,8 @@ public class OperationRouting {
             preference,
             null,
             null,
-            clusterState.metadata().weightedRoutingMetadata()
+            clusterState.metadata().weightedRoutingMetadata(),
+            null
         );
     }
 
@@ -225,7 +228,7 @@ public class OperationRouting {
         @Nullable Map<String, Set<String>> routing,
         @Nullable String preference
     ) {
-        return searchShards(clusterState, concreteIndices, routing, preference, null, null);
+        return searchShards(clusterState, concreteIndices, routing, preference, null, null, null);
     }
 
     public GroupShardsIterator<ShardIterator> searchShards(
@@ -236,6 +239,17 @@ public class OperationRouting {
         @Nullable ResponseCollectorService collectorService,
         @Nullable Map<String, Long> nodeCounts
     ) {
+        return searchShards(clusterState, concreteIndices, routing, preference, collectorService, nodeCounts, null);
+    }
+    public GroupShardsIterator<ShardIterator> searchShards(
+        ClusterState clusterState,
+        String[] concreteIndices,
+        @Nullable Map<String, Set<String>> routing,
+        @Nullable String preference,
+        @Nullable ResponseCollectorService collectorService,
+        @Nullable Map<String, Long> nodeCounts,
+        @Nullable AdmissionControllerService admissionControllerService
+        ) {
         final Set<IndexShardRoutingTable> shards = computeTargetedShards(clusterState, concreteIndices, routing);
         final Set<ShardIterator> set = new HashSet<>(shards.size());
         for (IndexShardRoutingTable shard : shards) {
@@ -253,7 +267,8 @@ public class OperationRouting {
                 preference,
                 collectorService,
                 nodeCounts,
-                clusterState.metadata().weightedRoutingMetadata()
+                clusterState.metadata().weightedRoutingMetadata(),
+                admissionControllerService
             );
             if (iterator != null) {
                 set.add(iterator);
@@ -276,8 +291,10 @@ public class OperationRouting {
     ) {
         routing = routing == null ? EMPTY_ROUTING : routing; // just use an empty map
         final Set<IndexShardRoutingTable> set = new HashSet<>();
+        final Set<String> nodeIds = new HashSet<>();
         // we use set here and not list since we might get duplicates
         for (String index : concreteIndices) {
+            // this is where we calculate shard information which contains nodes associated with each shard
             final IndexRoutingTable indexRouting = indexRoutingTable(clusterState, index);
             final IndexMetadata indexMetadata = indexMetadata(clusterState, index);
             final Set<String> effectiveRouting = routing.get(index);
@@ -285,7 +302,10 @@ public class OperationRouting {
                 for (String r : effectiveRouting) {
                     final int routingPartitionSize = indexMetadata.getRoutingPartitionSize();
                     for (int partitionOffset = 0; partitionOffset < routingPartitionSize; partitionOffset++) {
-                        set.add(RoutingTable.shardRoutingTable(indexRouting, calculateScaledShardId(indexMetadata, r, partitionOffset)));
+                        final IndexShardRoutingTable indexShardRoutingTable = RoutingTable.shardRoutingTable(indexRouting,
+                            calculateScaledShardId(indexMetadata, r, partitionOffset));
+                        //nodeIds.add(indexShardRoutingTable.s)
+                        set.add(indexShardRoutingTable);
                     }
                 }
             } else {
@@ -304,10 +324,11 @@ public class OperationRouting {
         @Nullable String preference,
         @Nullable ResponseCollectorService collectorService,
         @Nullable Map<String, Long> nodeCounts,
-        @Nullable WeightedRoutingMetadata weightedRoutingMetadata
+        @Nullable WeightedRoutingMetadata weightedRoutingMetadata,
+        @Nullable AdmissionControllerService admissionControllerService
     ) {
         if (preference == null || preference.isEmpty()) {
-            return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata);
+            return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata, admissionControllerService);
         }
 
         if (preference.charAt(0) == '_') {
@@ -335,12 +356,13 @@ public class OperationRouting {
                 }
                 // no more preference
                 if (index == -1 || index == preference.length() - 1) {
-                    return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata);
+                    return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata, admissionControllerService);
                 } else {
                     // update the preference and continue
                     preference = preference.substring(index + 1);
                 }
             }
+            // there are preference based routings as well
             preferenceType = Preference.parse(preference);
             checkPreferenceBasedRoutingAllowed(preferenceType, weightedRoutingMetadata);
             switch (preferenceType) {
@@ -400,7 +422,8 @@ public class OperationRouting {
         DiscoveryNodes nodes,
         @Nullable ResponseCollectorService collectorService,
         @Nullable Map<String, Long> nodeCounts,
-        @Nullable WeightedRoutingMetadata weightedRoutingMetadata
+        @Nullable WeightedRoutingMetadata weightedRoutingMetadata,
+        @Nullable AdmissionControllerService admissionControllerService
     ) {
         if (WeightedRoutingUtils.shouldPerformWeightedRouting(ignoreWeightedRouting, weightedRoutingMetadata)) {
             return indexShard.activeInitializingShardsWeightedIt(
@@ -412,7 +435,7 @@ public class OperationRouting {
             );
         } else if (ignoreAwarenessAttributes()) {
             if (useAdaptiveReplicaSelection) {
-                return indexShard.activeInitializingShardsRankedIt(collectorService, nodeCounts);
+                return indexShard.activeInitializingShardsRankedIt(collectorService, nodeCounts, admissionControllerService);
             } else {
                 return indexShard.activeInitializingShardsRandomIt();
             }

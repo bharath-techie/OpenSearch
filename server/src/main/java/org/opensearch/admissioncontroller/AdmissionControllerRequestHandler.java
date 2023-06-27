@@ -18,6 +18,10 @@ import org.opensearch.transport.TransportChannel;
 import org.opensearch.transport.TransportRequest;
 import org.opensearch.transport.TransportRequestHandler;
 
+/**
+ * Handler
+ * @param <T>
+ */
 public class AdmissionControllerRequestHandler<T extends TransportRequest> implements TransportRequestHandler<T> {
     private final String action;
     private final TransportRequestHandler<T> actualHandler;
@@ -37,6 +41,7 @@ public class AdmissionControllerRequestHandler<T extends TransportRequest> imple
         if(threadPool == null) {
             return null;
         }
+        threadPool.getThreadContext().getTransient("PERF_STATS");
         return threadPool.getThreadContext();
     }
 
@@ -58,7 +63,7 @@ public class AdmissionControllerRequestHandler<T extends TransportRequest> imple
                 return;
             }
         }else {
-            log.info("Admission controller service responded with IO is in healthy state");
+            //log.info("Admission controller service responded with IO is in healthy state");
         }
         this.messageReceivedDecorate(request, actualHandler, channel, task);
     }

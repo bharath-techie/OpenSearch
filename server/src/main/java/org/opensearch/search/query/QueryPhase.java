@@ -47,13 +47,16 @@ import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TotalHits;
 import org.opensearch.action.search.SearchShardTask;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.common.Booleans;
+import org.opensearch.common.Nullable;
 import org.opensearch.common.lucene.Lucene;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.util.concurrent.EWMATrackingThreadPoolExecutor;
 import org.opensearch.lucene.queries.SearchAfterSortedDocQuery;
 import org.opensearch.monitor.process.ProcessStats;
+import org.opensearch.node.Node;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.SearchContextSourcePrinter;
 import org.opensearch.search.SearchService;
@@ -101,14 +104,17 @@ public class QueryPhase {
     private final SuggestProcessor suggestProcessor;
     private final RescoreProcessor rescoreProcessor;
 
+    private final AdmissionControllerService admissionControllerService;
+
     public QueryPhase() {
-        this(DEFAULT_QUERY_PHASE_SEARCHER);
+        this(DEFAULT_QUERY_PHASE_SEARCHER, null);
     }
 
-    public QueryPhase(QueryPhaseSearcher queryPhaseSearcher) {
+    public QueryPhase(QueryPhaseSearcher queryPhaseSearcher, @Nullable AdmissionControllerService admissionControllerService) {
         this.queryPhaseSearcher = Objects.requireNonNull(queryPhaseSearcher, "QueryPhaseSearcher is required");
         this.suggestProcessor = new SuggestProcessor();
         this.rescoreProcessor = new RescoreProcessor();
+        this.admissionControllerService = admissionControllerService;
     }
 
     public void preProcess(SearchContext context) {
@@ -152,7 +158,7 @@ public class QueryPhase {
         // request, preProcess is called on the DFS phase phase, this is why we pre-process them
         // here to make sure it happens during the QUERY phase
         aggregationProcessor.preProcess(searchContext);
-        boolean rescore = executeInternal(searchContext, queryPhaseSearcher);
+        boolean rescore = executeInternal(searchContext, queryPhaseSearcher, this.admissionControllerService);
 
         if (rescore) { // only if we do a regular search
             rescoreProcessor.process(searchContext);
@@ -180,15 +186,19 @@ public class QueryPhase {
      * @return whether the rescoring phase should be executed
      */
     static boolean executeInternal(SearchContext searchContext) throws QueryPhaseExecutionException {
-        return executeInternal(searchContext, QueryPhase.DEFAULT_QUERY_PHASE_SEARCHER);
+        return executeInternal(searchContext, QueryPhase.DEFAULT_QUERY_PHASE_SEARCHER, null);
     }
 
+    static boolean executeInternal(SearchContext searchContext, QueryPhaseSearcher queryPhaseSearcher) throws QueryPhaseExecutionException {
+        return executeInternal(searchContext, queryPhaseSearcher, null);
+    }
     /**
      * In a package-private method so that it can be tested without having to
      * wire everything (mapperService, etc.)
      * @return whether the rescoring phase should be executed
      */
-    static boolean executeInternal(SearchContext searchContext, QueryPhaseSearcher queryPhaseSearcher) throws QueryPhaseExecutionException {
+    static boolean executeInternal(SearchContext searchContext, QueryPhaseSearcher queryPhaseSearcher,
+                                   @Nullable AdmissionControllerService admissionControllerService) throws QueryPhaseExecutionException {
         final ContextIndexSearcher searcher = searchContext.searcher();
         final IndexReader reader = searcher.getIndexReader();
         QuerySearchResult queryResult = searchContext.queryResult();
@@ -289,15 +299,23 @@ public class QueryPhase {
                 );
 
                 ExecutorService executor = searchContext.indexShard().getThreadPool().executor(ThreadPool.Names.SEARCH);
+                //Thread.sleep(5000);
                 if (executor instanceof EWMATrackingThreadPoolExecutor) {
                     final EWMATrackingThreadPoolExecutor rExecutor = (EWMATrackingThreadPoolExecutor) executor;
                     queryResult.nodeQueueSize(rExecutor.getCurrentQueueSize());
                     queryResult.serviceTimeEWMA((long) rExecutor.getTaskExecutionEWMA());
-                    LOGGER.info("Adding node perf stats");
-                    NodePerfStats nodePerfStats = new NodePerfStats(
-                        95.0, 95.0, 95.0
-                    );
-                    queryResult.nodePerfStats(nodePerfStats);
+                    LOGGER.info("Adding node perf stats for CPU : {} , MEM : {} , IO : {}" ,admissionControllerService.getCPUEWMA() * 1000,
+                        admissionControllerService.getMemoryEWMA() * 1000, admissionControllerService.getIoEWMA() * 1000);
+                    NodePerfStats nodePerfStats = null;
+                    if(admissionControllerService != null) {
+                        nodePerfStats = new NodePerfStats(
+                            admissionControllerService.getCPUEWMA(),
+                            admissionControllerService.getMemoryEWMA(),
+                            admissionControllerService.getIoEWMA()
+                        );
+                        queryResult.nodePerfStats(nodePerfStats);
+
+                    }
                 }
 
                 return shouldRescore;

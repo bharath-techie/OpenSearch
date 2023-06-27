@@ -13,6 +13,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.ExceptionsHelper;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.settings.ClusterSettings;
@@ -55,11 +57,15 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
     private final ThreadPool threadPool;
     private volatile boolean taskResourceTrackingEnabled;
 
+    private final AdmissionControllerService admissionControllerService;
+
     @Inject
-    public TaskResourceTrackingService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
+    public TaskResourceTrackingService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
+                                       AdmissionControllerService admissionControllerService) {
         this.taskResourceTrackingEnabled = TASK_RESOURCE_TRACKING_ENABLED.get(settings);
         this.threadPool = threadPool;
         clusterSettings.addSettingsUpdateConsumer(TASK_RESOURCE_TRACKING_ENABLED, this::setTaskResourceTrackingEnabled);
+        this.admissionControllerService = admissionControllerService;
     }
 
     public void setTaskResourceTrackingEnabled(boolean taskResourceTrackingEnabled) {
@@ -87,6 +93,7 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
         if (task.supportsResourceTracking() == false
             || isTaskResourceTrackingEnabled() == false
             || isTaskResourceTrackingSupported() == false) {
+            //return addPerfStatsToThreadContext(task);
             return () -> {};
         }
 
@@ -193,6 +200,7 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
     public void taskExecutionFinishedOnThread(long taskId, long threadId) {
         try {
             final Task task = resourceAwareTasks.get(taskId);
+            long id = (long)threadPool.getThreadContext().getTransient("TASK_ID");
             if (task != null) {
                 logger.debug("Task execution finished on thread. Task: {}, Thread: {}", taskId, threadId);
                 task.stopThreadResourceTracking(threadId, WORKER_STATS, getResourceUsageMetricsForThread(threadId));
@@ -254,6 +262,17 @@ public class TaskResourceTrackingService implements RunnableTaskExecutionListene
         ThreadContext threadContext = threadPool.getThreadContext();
         ThreadContext.StoredContext storedContext = threadContext.newStoredContext(true, Collections.singletonList(TASK_ID));
         threadContext.putTransient(TASK_ID, task.getId());
+        return storedContext;
+    }
+
+    private ThreadContext.StoredContext addPerfStatsToThreadContext(Task task) {
+        ThreadContext threadContext = threadPool.getThreadContext();
+
+        ThreadContext.StoredContext storedContext = threadContext.newStoredContext(true,
+            Collections.singletonList("PERF_STATS"));
+        NodePerfStats nodePerfStats = new NodePerfStats(admissionControllerService.getCPUEWMA(), admissionControllerService.getMemoryEWMA(),
+            admissionControllerService.getIoEWMA());
+        threadContext.putTransient("PERF_STATS", nodePerfStats);
         return storedContext;
     }
 

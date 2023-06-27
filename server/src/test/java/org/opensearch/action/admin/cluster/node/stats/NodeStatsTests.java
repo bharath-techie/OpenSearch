@@ -32,6 +32,7 @@
 
 package org.opensearch.action.admin.cluster.node.stats;
 
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.WeightedRoutingStats;
 import org.opensearch.cluster.service.ClusterManagerThrottlingStats;
@@ -710,7 +711,8 @@ public class NodeStatsTests extends OpenSearchTestCase {
                         randomIntBetween(1, 10),
                         randomIntBetween(0, 2000),
                         randomDoubleBetween(1.0, 10000000.0, true),
-                        randomDoubleBetween(1.0, 10000000.0, true)
+                        randomDoubleBetween(1.0, 10000000.0, true),
+                        new NodePerfStats(95.0, 95.0, 95.0)
                     );
                     nodeStats.put(nodeId, stats);
                 }

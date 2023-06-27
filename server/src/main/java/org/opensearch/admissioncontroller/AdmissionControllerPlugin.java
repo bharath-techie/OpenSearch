@@ -19,6 +19,9 @@ import org.opensearch.transport.TransportInterceptor;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Plugin
+ */
 public class AdmissionControllerPlugin extends Plugin implements NetworkPlugin {
 
     public AdmissionControllerService admissionControllerService;

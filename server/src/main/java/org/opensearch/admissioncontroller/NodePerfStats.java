@@ -10,10 +10,14 @@ package org.opensearch.admissioncontroller;
 
 import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;
+import org.opensearch.common.io.stream.Writeable;
 
 import java.io.IOException;
 
-public class NodePerfStats {
+/**
+ * Node perf stats
+ */
+public class NodePerfStats implements Writeable {
     public double cpuPercentAvg;
     public double memoryPercentAvg;
     public double ioPercentAvg;

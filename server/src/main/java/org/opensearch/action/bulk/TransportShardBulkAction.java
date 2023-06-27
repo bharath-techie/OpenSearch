@@ -56,6 +56,7 @@ import org.opensearch.action.support.replication.TransportWriteAction;
 import org.opensearch.action.update.UpdateHelper;
 import org.opensearch.action.update.UpdateRequest;
 import org.opensearch.action.update.UpdateResponse;
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.client.transport.NoNodeAvailableException;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
@@ -77,6 +78,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.common.util.concurrent.AbstractRunnable;
+import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.common.lease.Releasable;
@@ -108,9 +110,7 @@ import org.opensearch.transport.TransportRequestOptions;
 import org.opensearch.transport.TransportService;
 
 import java.io.IOException;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -428,7 +428,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
             public void onTimeout(TimeValue timeout) {
                 mappingUpdateListener.onFailure(new MapperException("timed out while waiting for a dynamic mapping update"));
             }
-        }), listener, threadPool, executor(primary));
+        }), listener, threadPool, executor(primary), clusterService.localNode().getId());
     }
 
     @Override
@@ -453,7 +453,8 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
         Consumer<ActionListener<Void>> waitForMappingUpdate,
         ActionListener<PrimaryResult<BulkShardRequest, BulkShardResponse>> listener,
         ThreadPool threadPool,
-        String executorName
+        String executorName,
+        String nodeId
     ) {
         new ActionRunnable<PrimaryResult<BulkShardRequest, BulkShardResponse>>(listener) {
 
@@ -516,6 +517,24 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
             }
 
             private void finishRequest() {
+                Map<String, NodePerfStats> nodePerfStatsMap = new HashMap();
+                NodePerfStats nodePerfStats = new NodePerfStats(0.95, 0.95,0.95);
+                nodePerfStatsMap.put(nodeId, nodePerfStats);
+                ThreadContext threadContext = threadPool.getThreadContext();
+                threadContext.addResponseHeader("PERF_STATS", String.valueOf(nodePerfStats.cpuPercentAvg) + "-"
+                        + String.valueOf(nodePerfStats.memoryPercentAvg) + "-" + String.valueOf(nodePerfStats.ioPercentAvg));
+//                Map<String, NodePerfStats> np = new HashMap<>();
+//                if(threadContext.getTransient("PERF_STATS") != null ) {
+//                    np = threadContext.getTransient("PERF_STATS");
+//                }
+//                np.put(nodeId, nodePerfStats);
+                //ThreadContext.StoredContext storedContext = threadContext.newStoredContext(true, Collections.singletonList("PERF_STATS"));
+                //ThreadContext.StoredContext storedContext = threadContext.newStoredContext(true, Collections.singletonList("PERF_STATS"));
+                //threadContext.putTransient("PERF_STATS", nodePerfStats);
+                //threadContext.putHeader("PERF_STATS", nodePerfStatsMap);
+//                ThreadContext.StoredContext storedContext1 = threadContext.newStoredContext(true, Collections.singletonList("T_ID"));
+//                threadContext.putTransient("T_ID", "nodePerfStats");
+
                 ActionListener.completeWith(
                     listener,
                     () -> new WritePrimaryResult<>(
@@ -527,6 +546,8 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
                         logger
                     )
                 );
+              //storedContext.close();
+//                storedContext1.close();
             }
         }.run();
     }

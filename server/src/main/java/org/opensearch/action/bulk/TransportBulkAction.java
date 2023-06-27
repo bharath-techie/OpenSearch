@@ -627,7 +627,16 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 shardBulkAction.execute(bulkShardRequest, ActionListener.runBefore(new ActionListener<BulkShardResponse>() {
                     @Override
                     public void onResponse(BulkShardResponse bulkShardResponse) {
+                        threadPool.getThreadContext().getResponseHeaders();
+                        if(threadPool.getThreadContext().getTransient("PERF_STATS") != null) {
+//                            Map<String, NodePerfStats> nodePerfStats = (Map<String, NodePerfStats>) threadPool.getThreadContext().getTransient("PERF_STATS");
+//                            for (NodePerfStats perfStats : nodePerfStats.values()) {
+//                                logger.info("Response " +
+//                                    "CPU : {} , MEM : {} , IO : {}", perfStats.cpuPercentAvg, perfStats.memoryPercentAvg, perfStats.ioPercentAvg);
+//                            }
+                        }
                         for (BulkItemResponse bulkItemResponse : bulkShardResponse.getResponses()) {
+                            clusterService.state().getRoutingTable().shardRoutingTable(bulkShardResponse.getShardId());
                             // we may have no response if item failed
                             if (bulkItemResponse.getResponse() != null) {
                                 bulkItemResponse.getResponse().setShardInfo(bulkShardResponse.getShardInfo());

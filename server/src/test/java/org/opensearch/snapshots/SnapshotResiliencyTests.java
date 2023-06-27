@@ -1762,7 +1762,7 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     new ThreadContext(Settings.EMPTY)
                 );
                 transportService.getTaskManager()
-                    .setTaskResourceTrackingService(new TaskResourceTrackingService(settings, clusterSettings, threadPool));
+                    .setTaskResourceTrackingService(new TaskResourceTrackingService(settings, clusterSettings, threadPool, null));
                 repositoriesService = new RepositoriesService(
                     settings,
                     clusterService,
@@ -2034,6 +2034,7 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     new FetchPhase(Collections.emptyList()),
                     responseCollectorService,
                     new NoneCircuitBreakerService(),
+                    null,
                     null
                 );
                 SearchPhaseController searchPhaseController = new SearchPhaseController(
