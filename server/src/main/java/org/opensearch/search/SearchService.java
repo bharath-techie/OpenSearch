@@ -54,6 +54,7 @@ import org.opensearch.action.search.SearchType;
 import org.opensearch.action.search.UpdatePitContextRequest;
 import org.opensearch.action.search.UpdatePitContextResponse;
 import org.opensearch.action.support.TransportActions;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.CheckedSupplier;
@@ -301,6 +302,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     private final AtomicInteger openPitContexts = new AtomicInteger();
     private final String sessionId = UUIDs.randomBase64UUID();
     private final Executor indexSearcherExecutor;
+    private final AdmissionControllerService admissionControllerService;
 
     public SearchService(
         ClusterService clusterService,
@@ -312,7 +314,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         FetchPhase fetchPhase,
         ResponseCollectorService responseCollectorService,
         CircuitBreakerService circuitBreakerService,
-        Executor indexSearcherExecutor
+        Executor indexSearcherExecutor,
+        AdmissionControllerService admissionControllerService
     ) {
         Settings settings = clusterService.getSettings();
         this.threadPool = threadPool;
@@ -320,6 +323,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         this.indicesService = indicesService;
         this.scriptService = scriptService;
         this.responseCollectorService = responseCollectorService;
+        this.admissionControllerService = admissionControllerService;
         this.bigArrays = bigArrays;
         this.queryPhase = queryPhase;
         this.fetchPhase = fetchPhase;
@@ -1467,6 +1471,11 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     public ResponseCollectorService getResponseCollectorService() {
         return this.responseCollectorService;
     }
+
+    public AdmissionControllerService getAdmissionControllerService() {
+        return this.admissionControllerService;
+    }
+
 
     class Reaper implements Runnable {
         @Override

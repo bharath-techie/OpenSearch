@@ -46,6 +46,8 @@ import org.opensearch.common.util.set.Sets;
 import org.opensearch.index.Index;
 import org.opensearch.index.shard.ShardId;
 import org.opensearch.node.ResponseCollectorService;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
+import org.opensearch.admissioncontroller.NodePerfStats;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -288,7 +290,8 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
      */
     public ShardIterator activeInitializingShardsRankedIt(
         @Nullable ResponseCollectorService collector,
-        @Nullable Map<String, Long> nodeSearchCounts
+        @Nullable Map<String, Long> nodeSearchCounts,
+        @Nullable AdmissionControllerService admissionControllerService
     ) {
         final int seed = shuffler.nextSeed();
         if (allInitializingShards.isEmpty()) {
@@ -465,7 +468,12 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
                     final int updatedQueue = (minStats.queueSize + stats.queueSize) / 2;
                     final long updatedResponse = (long) (minStats.responseTime + stats.responseTime) / 2;
                     final long updatedService = (long) (minStats.serviceTime + stats.serviceTime) / 2;
-                    collector.addNodeStatistics(nodeId, updatedQueue, updatedResponse, updatedService);
+                    // revisit this - basically reset stats based on time
+                    final double cpuPercentAvg = stats.nodePerfStats.cpuPercentAvg * 0.99;
+                    final double memPercentAvg = stats.nodePerfStats.memoryPercentAvg * 0.99;
+                    final double ioPercentAvg = stats.nodePerfStats.ioPercentAvg * 0.99;
+                    NodePerfStats nodePerfStats = new NodePerfStats(cpuPercentAvg, memPercentAvg, ioPercentAvg);
+                    collector.addNodeStatistics(nodeId, updatedQueue, updatedResponse, updatedService, nodePerfStats);
                 }
             }
         }

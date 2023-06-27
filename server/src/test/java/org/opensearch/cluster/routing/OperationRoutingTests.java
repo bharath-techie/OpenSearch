@@ -33,6 +33,7 @@ package org.opensearch.cluster.routing;
 
 import org.opensearch.Version;
 import org.opensearch.action.support.replication.ClusterStateCreationUtils;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.Metadata;
@@ -45,8 +46,11 @@ import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.internal.io.IOUtils;
+import org.opensearch.env.Environment;
+import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.Index;
 import org.opensearch.index.shard.ShardId;
+import org.opensearch.monitor.fs.FsService;
 import org.opensearch.node.ResponseCollectorService;
 import org.opensearch.test.ClusterServiceUtils;
 import org.opensearch.test.OpenSearchTestCase;
@@ -593,6 +597,13 @@ public class OperationRoutingTests extends OpenSearchTestCase {
         TestThreadPool threadPool = new TestThreadPool("testThatOnlyNodesSupportNodeIds");
         ClusterService clusterService = ClusterServiceUtils.createClusterService(threadPool);
         ResponseCollectorService collector = new ResponseCollectorService(clusterService);
+        AdmissionControllerService admissionControllerService = new AdmissionControllerService(
+            Settings.EMPTY,
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+            threadPool,
+            new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)),
+            new FsService(Settings.EMPTY, new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)))
+        );
         Map<String, Long> outstandingRequests = new HashMap<>();
         GroupShardsIterator<ShardIterator> groupIterator = opRouting.searchShards(
             state,
@@ -600,7 +611,8 @@ public class OperationRoutingTests extends OpenSearchTestCase {
             null,
             null,
             collector,
-            outstandingRequests
+            outstandingRequests,
+            admissionControllerService
         );
 
         assertThat("One group per index shard", groupIterator.size(), equalTo(numIndices * numShards));
@@ -612,7 +624,7 @@ public class OperationRoutingTests extends OpenSearchTestCase {
         searchedShards.add(firstChoice);
         selectedNodes.add(firstChoice.currentNodeId());
 
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
 
         assertThat(groupIterator.size(), equalTo(numIndices * numShards));
         ShardRouting secondChoice = groupIterator.get(0).nextOrNull();
@@ -620,7 +632,7 @@ public class OperationRoutingTests extends OpenSearchTestCase {
         searchedShards.add(secondChoice);
         selectedNodes.add(secondChoice.currentNodeId());
 
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
 
         assertThat(groupIterator.size(), equalTo(numIndices * numShards));
         ShardRouting thirdChoice = groupIterator.get(0).nextOrNull();
@@ -639,26 +651,26 @@ public class OperationRoutingTests extends OpenSearchTestCase {
         outstandingRequests.put("node_1", 1L);
         outstandingRequests.put("node_2", 1L);
 
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
         ShardRouting shardChoice = groupIterator.get(0).nextOrNull();
         // node 1 should be the lowest ranked node to start
         assertThat(shardChoice.currentNodeId(), equalTo("node_1"));
 
         // node 1 starts getting more loaded...
         collector.addNodeStatistics("node_1", 2, TimeValue.timeValueMillis(200).nanos(), TimeValue.timeValueMillis(150).nanos());
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
         shardChoice = groupIterator.get(0).nextOrNull();
         assertThat(shardChoice.currentNodeId(), equalTo("node_1"));
 
         // and more loaded...
         collector.addNodeStatistics("node_1", 3, TimeValue.timeValueMillis(250).nanos(), TimeValue.timeValueMillis(200).nanos());
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
         shardChoice = groupIterator.get(0).nextOrNull();
         assertThat(shardChoice.currentNodeId(), equalTo("node_1"));
 
         // and even more
         collector.addNodeStatistics("node_1", 4, TimeValue.timeValueMillis(300).nanos(), TimeValue.timeValueMillis(250).nanos());
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
         shardChoice = groupIterator.get(0).nextOrNull();
         // finally, node 2 is chosen instead
         assertThat(shardChoice.currentNodeId(), equalTo("node_2"));
@@ -698,14 +710,21 @@ public class OperationRoutingTests extends OpenSearchTestCase {
         Set<String> selectedNodes = new HashSet<>(numShards);
         ResponseCollectorService collector = new ResponseCollectorService(clusterService);
         Map<String, Long> outstandingRequests = new HashMap<>();
-
+        AdmissionControllerService admissionControllerService = new AdmissionControllerService(
+            Settings.EMPTY,
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+            threadPool,
+            new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)),
+            new FsService(Settings.EMPTY, new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)))
+        );
         GroupShardsIterator<ShardIterator> groupIterator = opRouting.searchShards(
             state,
             indexNames,
             null,
             null,
             collector,
-            outstandingRequests
+            outstandingRequests,
+            admissionControllerService
         );
         assertThat("One group per index shard", groupIterator.size(), equalTo(numIndices * numShards));
 
@@ -718,7 +737,7 @@ public class OperationRoutingTests extends OpenSearchTestCase {
         searchedShards.add(firstChoice);
         selectedNodes.add(firstChoice.currentNodeId());
 
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
 
         assertThat(groupIterator.size(), equalTo(numIndices * numShards));
         assertThat(groupIterator.get(0).size(), equalTo(numReplicas + 1));
@@ -741,18 +760,18 @@ public class OperationRoutingTests extends OpenSearchTestCase {
         outstandingRequests.put("node_a1", 1L);
         outstandingRequests.put("node_b2", 1L);
 
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
         // node_a0 or node_a1 should be the lowest ranked node to start
         groupIterator.forEach(shardRoutings -> assertThat(shardRoutings.nextOrNull().currentNodeId(), containsString("node_a")));
 
         // Adding more load to node_a0
         collector.addNodeStatistics("node_a0", 10, TimeValue.timeValueMillis(200).nanos(), TimeValue.timeValueMillis(150).nanos());
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
 
         // Adding more load to node_a0 and node_a1 from zone-a
         collector.addNodeStatistics("node_a1", 100, TimeValue.timeValueMillis(300).nanos(), TimeValue.timeValueMillis(250).nanos());
         collector.addNodeStatistics("node_a0", 100, TimeValue.timeValueMillis(300).nanos(), TimeValue.timeValueMillis(250).nanos());
-        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+        groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
         // ARS should pick node_b2 from zone-b since both node_a0 and node_a1 are overloaded
         groupIterator.forEach(shardRoutings -> assertThat(shardRoutings.nextOrNull().currentNodeId(), containsString("node_b")));
 
@@ -830,7 +849,13 @@ public class OperationRoutingTests extends OpenSearchTestCase {
 
             ClusterState.Builder builder = ClusterState.builder(state);
             ClusterServiceUtils.setState(clusterService, builder);
-
+            AdmissionControllerService admissionControllerService = new AdmissionControllerService(
+                Settings.EMPTY,
+                new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+                threadPool,
+                new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)),
+                new FsService(Settings.EMPTY, new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)))
+            );
             // search shards call
             GroupShardsIterator<ShardIterator> groupIterator = opRouting.searchShards(
                 state,
@@ -838,8 +863,8 @@ public class OperationRoutingTests extends OpenSearchTestCase {
                 null,
                 null,
                 collector,
-                outstandingRequests
-
+                outstandingRequests,
+                admissionControllerService
             );
 
             for (ShardIterator it : groupIterator) {
@@ -867,7 +892,7 @@ public class OperationRoutingTests extends OpenSearchTestCase {
             opRouting = new OperationRouting(setting, new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS));
 
             // search shards call
-            groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+            groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
 
             for (ShardIterator it : groupIterator) {
                 List<ShardRouting> shardRoutings = Collections.singletonList(it.nextOrNull());
@@ -923,7 +948,13 @@ public class OperationRoutingTests extends OpenSearchTestCase {
             Map<String, Double> weights = Map.of("a", 1.0, "c", 0.0);
             state = setWeightedRoutingWeights(state, weights);
             ClusterServiceUtils.setState(clusterService, ClusterState.builder(state));
-
+            AdmissionControllerService admissionControllerService = new AdmissionControllerService(
+                Settings.EMPTY,
+                new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+                threadPool,
+                new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)),
+                new FsService(Settings.EMPTY, new NodeEnvironment(Settings.EMPTY, new Environment(Settings.EMPTY, null)))
+            );
             // search shards call
             GroupShardsIterator<ShardIterator> groupIterator = opRouting.searchShards(
                 state,
@@ -931,7 +962,8 @@ public class OperationRoutingTests extends OpenSearchTestCase {
                 null,
                 null,
                 collector,
-                outstandingRequests
+                outstandingRequests,
+                admissionControllerService
 
             );
 
@@ -965,7 +997,7 @@ public class OperationRoutingTests extends OpenSearchTestCase {
             opRouting = new OperationRouting(setting, new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS));
 
             // search shards call
-            groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests);
+            groupIterator = opRouting.searchShards(state, indexNames, null, null, collector, outstandingRequests, admissionControllerService);
 
             for (ShardIterator it : groupIterator) {
                 while (it.remaining() > 0) {

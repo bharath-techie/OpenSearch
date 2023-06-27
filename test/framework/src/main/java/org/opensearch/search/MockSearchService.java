@@ -32,6 +32,7 @@
 
 package org.opensearch.search;
 
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.util.BigArrays;
 import org.opensearch.indices.IndicesService;
@@ -94,7 +95,8 @@ public class MockSearchService extends SearchService {
         BigArrays bigArrays,
         QueryPhase queryPhase,
         FetchPhase fetchPhase,
-        CircuitBreakerService circuitBreakerService
+        CircuitBreakerService circuitBreakerService,
+        AdmissionControllerService admissionControllerService
     ) {
         super(
             clusterService,
@@ -106,7 +108,8 @@ public class MockSearchService extends SearchService {
             fetchPhase,
             null,
             circuitBreakerService,
-            null
+            null,
+            admissionControllerService
         );
     }
 

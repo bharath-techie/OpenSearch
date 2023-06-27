@@ -35,6 +35,7 @@ package org.opensearch.search.query;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.TotalHits;
 import org.opensearch.LegacyESVersion;
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.common.io.stream.DelayableWriteable;
 import org.opensearch.common.io.stream.StreamInput;
 import org.opensearch.common.io.stream.StreamOutput;
@@ -88,6 +89,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
     private boolean hasProfileResults;
     private long serviceTimeEWMA = -1;
     private int nodeQueueSize = -1;
+    private NodePerfStats nodePerfStats;
 
     private final boolean isNull;
 
@@ -314,6 +316,10 @@ public final class QuerySearchResult extends SearchPhaseResult {
         return this;
     }
 
+    public NodePerfStats getNodePerfStats() {
+        return this.nodePerfStats;
+    }
+
     public long serviceTimeEWMA() {
         return this.serviceTimeEWMA;
     }
@@ -329,6 +335,11 @@ public final class QuerySearchResult extends SearchPhaseResult {
 
     public QuerySearchResult nodeQueueSize(int nodeQueueSize) {
         this.nodeQueueSize = nodeQueueSize;
+        return this;
+    }
+
+    public QuerySearchResult nodePerfStats(NodePerfStats nodePerfStats) {
+        this.nodePerfStats = nodePerfStats;
         return this;
     }
 
@@ -379,6 +390,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
         hasProfileResults = profileShardResults != null;
         serviceTimeEWMA = in.readZLong();
         nodeQueueSize = in.readInt();
+        nodePerfStats = in.readOptionalWriteable(NodePerfStats::new);
         if (in.getVersion().onOrAfter(LegacyESVersion.V_7_10_0)) {
             setShardSearchRequest(in.readOptionalWriteable(ShardSearchRequest::new));
             setRescoreDocIds(new RescoreDocIds(in));
@@ -454,6 +466,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
         out.writeOptionalWriteable(profileShardResults);
         out.writeZLong(serviceTimeEWMA);
         out.writeInt(nodeQueueSize);
+        out.writeOptionalWriteable(nodePerfStats);
         if (out.getVersion().onOrAfter(LegacyESVersion.V_7_10_0)) {
             out.writeOptionalWriteable(getShardSearchRequest());
             getRescoreDocIds().writeTo(out);

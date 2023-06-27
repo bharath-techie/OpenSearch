@@ -32,6 +32,7 @@
 
 package org.opensearch.cluster.routing;
 
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.WeightedRoutingMetadata;
@@ -167,7 +168,8 @@ public class OperationRouting {
             preference,
             null,
             null,
-            clusterState.getMetadata().weightedRoutingMetadata()
+            clusterState.getMetadata().weightedRoutingMetadata(),
+            null
         );
     }
 
@@ -180,7 +182,8 @@ public class OperationRouting {
             preference,
             null,
             null,
-            clusterState.metadata().weightedRoutingMetadata()
+            clusterState.metadata().weightedRoutingMetadata(),
+            null
         );
     }
 
@@ -190,7 +193,7 @@ public class OperationRouting {
         @Nullable Map<String, Set<String>> routing,
         @Nullable String preference
     ) {
-        return searchShards(clusterState, concreteIndices, routing, preference, null, null);
+        return searchShards(clusterState, concreteIndices, routing, preference, null, null, null);
     }
 
     public GroupShardsIterator<ShardIterator> searchShards(
@@ -199,7 +202,8 @@ public class OperationRouting {
         @Nullable Map<String, Set<String>> routing,
         @Nullable String preference,
         @Nullable ResponseCollectorService collectorService,
-        @Nullable Map<String, Long> nodeCounts
+        @Nullable Map<String, Long> nodeCounts,
+        @Nullable AdmissionControllerService admissionControllerService
     ) {
         final Set<IndexShardRoutingTable> shards = computeTargetedShards(clusterState, concreteIndices, routing);
         final Set<ShardIterator> set = new HashSet<>(shards.size());
@@ -211,7 +215,8 @@ public class OperationRouting {
                 preference,
                 collectorService,
                 nodeCounts,
-                clusterState.metadata().weightedRoutingMetadata()
+                clusterState.metadata().weightedRoutingMetadata(),
+                admissionControllerService
             );
             if (iterator != null) {
                 set.add(iterator);
@@ -262,10 +267,11 @@ public class OperationRouting {
         @Nullable String preference,
         @Nullable ResponseCollectorService collectorService,
         @Nullable Map<String, Long> nodeCounts,
-        @Nullable WeightedRoutingMetadata weightedRoutingMetadata
+        @Nullable WeightedRoutingMetadata weightedRoutingMetadata,
+        @Nullable AdmissionControllerService admissionControllerService
     ) {
         if (preference == null || preference.isEmpty()) {
-            return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata);
+            return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata, admissionControllerService);
         }
         if (preference.charAt(0) == '_') {
             Preference preferenceType = Preference.parse(preference);
@@ -292,7 +298,7 @@ public class OperationRouting {
                 }
                 // no more preference
                 if (index == -1 || index == preference.length() - 1) {
-                    return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata);
+                    return shardRoutings(indexShard, nodes, collectorService, nodeCounts, weightedRoutingMetadata, admissionControllerService);
                 } else {
                     // update the preference and continue
                     preference = preference.substring(index + 1);
@@ -336,7 +342,8 @@ public class OperationRouting {
         DiscoveryNodes nodes,
         @Nullable ResponseCollectorService collectorService,
         @Nullable Map<String, Long> nodeCounts,
-        @Nullable WeightedRoutingMetadata weightedRoutingMetadata
+        @Nullable WeightedRoutingMetadata weightedRoutingMetadata,
+        @Nullable AdmissionControllerService admissionControllerService
     ) {
         if (weightedRoutingMetadata != null && weightedRoutingMetadata.getWeightedRouting().isSet()) {
             return indexShard.activeInitializingShardsWeightedIt(
@@ -347,7 +354,7 @@ public class OperationRouting {
             );
         } else if (ignoreAwarenessAttributes()) {
             if (useAdaptiveReplicaSelection) {
-                return indexShard.activeInitializingShardsRankedIt(collectorService, nodeCounts);
+                return indexShard.activeInitializingShardsRankedIt(collectorService, nodeCounts, admissionControllerService);
             } else {
                 return indexShard.activeInitializingShardsRandomIt();
             }

@@ -33,6 +33,7 @@
 package org.opensearch.search;
 
 import org.apache.lucene.search.BooleanQuery;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
 import org.opensearch.common.NamedRegistry;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.ParseField;
@@ -1314,7 +1315,11 @@ public class SearchModule {
     }
 
     public QueryPhase getQueryPhase() {
-        return (queryPhaseSearcher == null) ? new QueryPhase() : new QueryPhase(queryPhaseSearcher);
+        return (queryPhaseSearcher == null) ? new QueryPhase() : new QueryPhase(queryPhaseSearcher,  null);
+    }
+
+    public QueryPhase getQueryPhase(@Nullable AdmissionControllerService admissionControllerService) {
+        return (queryPhaseSearcher == null) ? new QueryPhase(admissionControllerService) : new QueryPhase(queryPhaseSearcher,  admissionControllerService);
     }
 
     public @Nullable ExecutorService getIndexSearcherExecutor(ThreadPool pool) {

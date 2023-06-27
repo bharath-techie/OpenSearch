@@ -941,7 +941,8 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     routingMap,
                     searchRequest.preference(),
                     searchService.getResponseCollectorService(),
-                    nodeSearchCounts
+                    nodeSearchCounts,
+                    searchService.getAdmissionControllerService()
                 );
             localShardIterators = StreamSupport.stream(localShardRoutings.spliterator(), false)
                 .map(it -> new SearchShardIterator(searchRequest.getLocalClusterAlias(), it.shardId(), it.getShardRoutings(), localIndices))

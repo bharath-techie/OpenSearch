@@ -32,6 +32,9 @@
 
 package org.opensearch.node;
 
+import org.apache.logging.log4j.LogManager;
+import org.opensearch.admissioncontroller.AdmissionControllerService;
+import org.opensearch.admissioncontroller.NodePerfStats;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -59,6 +62,7 @@ import java.util.concurrent.ConcurrentMap;
 public final class ResponseCollectorService implements ClusterStateListener {
 
     private static final double ALPHA = 0.3;
+    org.apache.logging.log4j.Logger logger = LogManager.getLogger(ResponseCollectorService.class);
 
     private final ConcurrentMap<String, NodeStatistics> nodeIdToStats = ConcurrentCollections.newConcurrentMap();
 
@@ -78,17 +82,23 @@ public final class ResponseCollectorService implements ClusterStateListener {
     void removeNode(String nodeId) {
         nodeIdToStats.remove(nodeId);
     }
-
     public void addNodeStatistics(String nodeId, int queueSize, long responseTimeNanos, long avgServiceTimeNanos) {
+        addNodeStatistics(nodeId, queueSize, responseTimeNanos, avgServiceTimeNanos, null);
+    }
+    public void addNodeStatistics(String nodeId, int queueSize, long responseTimeNanos, long avgServiceTimeNanos,
+                                  NodePerfStats nodePerfStats) {
         nodeIdToStats.compute(nodeId, (id, ns) -> {
+            logger.info("Add node statistics - node id : {} , cpu : {} , mem : {} , io : {}", nodeId, nodePerfStats.cpuPercentAvg,
+                nodePerfStats.memoryPercentAvg, nodePerfStats.ioPercentAvg);
             if (ns == null) {
                 ExponentiallyWeightedMovingAverage queueEWMA = new ExponentiallyWeightedMovingAverage(ALPHA, queueSize);
                 ExponentiallyWeightedMovingAverage responseEWMA = new ExponentiallyWeightedMovingAverage(ALPHA, responseTimeNanos);
-                return new NodeStatistics(nodeId, queueEWMA, responseEWMA, avgServiceTimeNanos);
+                return new NodeStatistics(nodeId, queueEWMA, responseEWMA, avgServiceTimeNanos, nodePerfStats);
             } else {
                 ns.queueSize.addValue((double) queueSize);
                 ns.responseTime.addValue((double) responseTimeNanos);
                 ns.serviceTime = avgServiceTimeNanos;
+                ns.nodePerfStats = nodePerfStats;
                 return ns;
             }
         });
@@ -134,13 +144,17 @@ public final class ResponseCollectorService implements ClusterStateListener {
         public final int queueSize;
         public final double responseTime;
         public final double serviceTime;
+        public final NodePerfStats nodePerfStats;
+        org.apache.logging.log4j.Logger logger = LogManager.getLogger(ComputedNodeStats.class);
 
-        public ComputedNodeStats(String nodeId, int clientNum, int queueSize, double responseTime, double serviceTime) {
+        public ComputedNodeStats(String nodeId, int clientNum, int queueSize, double responseTime, double serviceTime,
+                                 NodePerfStats nodePerfStats) {
             this.nodeId = nodeId;
             this.clientNum = clientNum;
             this.queueSize = queueSize;
             this.responseTime = responseTime;
             this.serviceTime = serviceTime;
+            this.nodePerfStats = nodePerfStats;
         }
 
         ComputedNodeStats(int clientNum, NodeStatistics nodeStats) {
@@ -149,7 +163,8 @@ public final class ResponseCollectorService implements ClusterStateListener {
                 clientNum,
                 (int) nodeStats.queueSize.getAverage(),
                 nodeStats.responseTime.getAverage(),
-                nodeStats.serviceTime
+                nodeStats.serviceTime,
+                nodeStats.nodePerfStats
             );
         }
 
@@ -159,6 +174,7 @@ public final class ResponseCollectorService implements ClusterStateListener {
             this.queueSize = in.readInt();
             this.responseTime = in.readDouble();
             this.serviceTime = in.readDouble();
+            this.nodePerfStats = new NodePerfStats(in);
         }
 
         @Override
@@ -168,6 +184,7 @@ public final class ResponseCollectorService implements ClusterStateListener {
             out.writeInt(this.queueSize);
             out.writeDouble(this.responseTime);
             out.writeDouble(this.serviceTime);
+            this.nodePerfStats.writeTo(out);
         }
 
         /**
@@ -195,6 +212,13 @@ public final class ResponseCollectorService implements ClusterStateListener {
 
             // The final formula
             double rank = rS - (1.0 / muBarS) + (Math.pow(qHatS, queueAdjustmentFactor) / muBarS);
+            logger.info("queue size : {} , queue size with compensation factor : {} , response time : {} ," +
+                " service time : {} , rank : {}", qBar, qHatS, rS, muBarS, rank);
+            logger.info("CPU : {} , Mem : {} , IO : {} ", nodePerfStats.cpuPercentAvg,
+                nodePerfStats.memoryPercentAvg, nodePerfStats.ioPercentAvg);
+            if(nodePerfStats.cpuPercentAvg > 50.0 ) rank  = rank * 2;
+            if(nodePerfStats.memoryPercentAvg > 50.0 ) rank = rank * 2;
+            if(nodePerfStats.ioPercentAvg > 50.0) rank = rank * 2;
             return rank;
         }
 
@@ -229,17 +253,20 @@ public final class ResponseCollectorService implements ClusterStateListener {
         final ExponentiallyWeightedMovingAverage queueSize;
         final ExponentiallyWeightedMovingAverage responseTime;
         double serviceTime;
+        NodePerfStats nodePerfStats;
 
         NodeStatistics(
             String nodeId,
             ExponentiallyWeightedMovingAverage queueSizeEWMA,
             ExponentiallyWeightedMovingAverage responseTimeEWMA,
-            double serviceTimeEWMA
+            double serviceTimeEWMA,
+            NodePerfStats nodePerfStats
         ) {
             this.nodeId = nodeId;
             this.queueSize = queueSizeEWMA;
             this.responseTime = responseTimeEWMA;
             this.serviceTime = serviceTimeEWMA;
+            this.nodePerfStats = nodePerfStats;
         }
     }
 }
