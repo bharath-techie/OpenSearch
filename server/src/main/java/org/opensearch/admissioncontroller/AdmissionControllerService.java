@@ -130,9 +130,15 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
             Map<String, Long> currentIOTimeMap = new HashMap<>();
             for (FsInfo.DeviceStats devicesStat : this.fsService.stats().getIoStats().getDevicesStats()) {
                 logger.info("Device Id: " + devicesStat.getDeviceName() + "; IO time: " + devicesStat.getCurrentIOTime());
+                logger.info("Read Latency : " + devicesStat.getCurrentReadLatency() + " Write latency : " + devicesStat.getCurrentWriteLatency());
+                logger.info("Write time : " + devicesStat.getCurrentWriteTime() + "Read time : " + devicesStat.getCurrentReadTime());
+                logger.info("Read latency diff : " + devicesStat.getReadLatency() + "Write latency diff" + devicesStat.getWriteLatency());
+                logger.info("Read time diff : " + devicesStat.getReadTime() + "Write time diff" + devicesStat.getWriteTime());
+
                 if (previousIOTimeMap.containsKey(devicesStat.getDeviceName())){
                     long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName());
                     double ioUsePercent = (double) (ioSpentTime * 100) / (10 * 1000);
+                    ioExecutionEWMA.addValue(ioUsePercent / 100.0);
                     Queue<Double> ioUsageQueue;
                     if (deviceIOUsage.containsKey(devicesStat.getDeviceName())) {
                         ioUsageQueue = deviceIOUsage.get(devicesStat.getDeviceName());

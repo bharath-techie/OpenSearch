@@ -98,6 +98,9 @@ public class AdaptiveSelectionStats implements Writeable, ToXContentFragment {
                 }
                 builder.field("avg_response_time_ns", (long) stats.responseTime);
                 builder.field("rank", String.format(Locale.ROOT, "%.1f", stats.rank(outgoingSearches)));
+                 builder.field("cpu", (double) stats.nodePerfStats.cpuPercentAvg);
+                builder.field("memory", (double) stats.nodePerfStats.memoryPercentAvg);
+                builder.field("io", (double) stats.nodePerfStats.ioPercentAvg);
             }
             builder.endObject();
         }

@@ -530,8 +530,8 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
 //                np.put(nodeId, nodePerfStats);
                 //ThreadContext.StoredContext storedContext = threadContext.newStoredContext(true, Collections.singletonList("PERF_STATS"));
                 //ThreadContext.StoredContext storedContext = threadContext.newStoredContext(true, Collections.singletonList("PERF_STATS"));
-                //threadContext.putTransient("PERF_STATS", nodePerfStats);
-                //threadContext.putHeader("PERF_STATS", nodePerfStatsMap);
+               // threadContext.putTransient("PERF_STATS", nodePerfStats);
+               // threadContext.putHeader("PERF_STATS", nodePerfStatsMap);
 //                ThreadContext.StoredContext storedContext1 = threadContext.newStoredContext(true, Collections.singletonList("T_ID"));
 //                threadContext.putTransient("T_ID", "nodePerfStats");
 

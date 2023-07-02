@@ -107,6 +107,10 @@ public final class ResponseCollectorService implements ClusterStateListener {
         });
     }
 
+    /**
+     * This method
+     * @return
+     */
     public Map<String, ComputedNodeStats> getAllNodeStatistics() {
         final int clientNum = nodeIdToStats.size();
         // Transform the mutable object internally used for accounting into the computed version
@@ -196,6 +200,7 @@ public final class ResponseCollectorService implements ClusterStateListener {
          * https://www.usenix.org/system/files/conference/nsdi15/nsdi15-paper-suresh.pdf
          */
         private double innerRank(long outstandingRequests) {
+            //
             // the concurrency compensation is defined as the number of
             // outstanding requests from the client to the node times the number
             // of clients in the system
@@ -217,13 +222,18 @@ public final class ResponseCollectorService implements ClusterStateListener {
             // The final formula
             double rank = rS - (1.0 / muBarS) + (Math.pow(qHatS, queueAdjustmentFactor) / muBarS);
 
-            logger.info("queue size : {} , queue size with compensation factor : {} , response time : {} ," +
-                " service time : {} , rank : {}", qBar, qHatS, rS, muBarS, rank);
-            logger.info("CPU : {} , Mem : {} , IO : {} ", nodePerfStats.cpuPercentAvg,
+            logger.info("Node id : {} , queue size : {} , queue size with compensation factor : {} , response time : {} ," +
+                " service time : {} , rank : {}", nodeId, qBar, qHatS, rS, muBarS, rank);
+            logger.info("Node ID : {} CPU : {} , Mem : {} , IO : {} ", nodeId, nodePerfStats.cpuPercentAvg,
                 nodePerfStats.memoryPercentAvg, nodePerfStats.ioPercentAvg);
-            if(nodePerfStats.cpuPercentAvg > 50.0 ) rank  = rank * 2;
-            if(nodePerfStats.memoryPercentAvg > 50.0 ) rank = rank * 2;
-            if(nodePerfStats.ioPercentAvg > 50.0) rank = rank * 2;
+            logger.info("rank before adjustment : {}",  rank);
+            // adjust rank if the node is overloaded
+            // how to adjust rank
+            if(nodePerfStats.cpuPercentAvg > 90.0 ) rank  = rank * 2;
+            if(nodePerfStats.memoryPercentAvg > 90.0 ) rank = rank * 2;
+            if(nodePerfStats.ioPercentAvg > 90.0) rank = rank * 2;
+            // is there flaw in above logic
+            logger.info("rank after adjustment : {}",  rank);
             return rank;
         }
 
