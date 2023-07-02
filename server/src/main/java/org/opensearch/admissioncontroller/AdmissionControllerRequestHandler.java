@@ -58,10 +58,10 @@ public class AdmissionControllerRequestHandler<T extends TransportRequest> imple
         // Evaluate the requests here.
         if (this.admissionControllerService.isIOInStress()) {
             log.info("Admission controller service responded with IO is in stress state");
-            if (this.isSearchRequest()){
-                channel.sendResponse(new OpenSearchRejectedExecutionException("Execution Rejected due to high IO usage"));
-                return;
-            }
+//            if (this.isSearchRequest()){
+//                channel.sendResponse(new OpenSearchRejectedExecutionException("Execution Rejected due to high IO usage"));
+//                return;
+//            }
         }else {
             //log.info("Admission controller service responded with IO is in healthy state");
         }

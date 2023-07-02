@@ -133,6 +133,7 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
                 if (previousIOTimeMap.containsKey(devicesStat.getDeviceName())){
                     long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName());
                     double ioUsePercent = (double) (ioSpentTime * 100) / (10 * 1000);
+                    ioExecutionEWMA.addValue(ioUsePercent / 100.0);
                     Queue<Double> ioUsageQueue;
                     if (deviceIOUsage.containsKey(devicesStat.getDeviceName())) {
                         ioUsageQueue = deviceIOUsage.get(devicesStat.getDeviceName());

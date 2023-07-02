@@ -304,14 +304,14 @@ public class QueryPhase {
                     final EWMATrackingThreadPoolExecutor rExecutor = (EWMATrackingThreadPoolExecutor) executor;
                     queryResult.nodeQueueSize(rExecutor.getCurrentQueueSize());
                     queryResult.serviceTimeEWMA((long) rExecutor.getTaskExecutionEWMA());
-                    LOGGER.info("Adding node perf stats for CPU : {} , MEM : {} , IO : {}" ,admissionControllerService.getCPUEWMA() * 1000,
-                        admissionControllerService.getMemoryEWMA() * 1000, admissionControllerService.getIoEWMA() * 1000);
+                    LOGGER.info("Adding node perf stats for CPU : {} , MEM : {} , IO : {}" ,admissionControllerService.getCPUEWMA() * 100,
+                        admissionControllerService.getMemoryEWMA() * 100, admissionControllerService.getIoEWMA() * 100);
                     NodePerfStats nodePerfStats = null;
                     if(admissionControllerService != null) {
                         nodePerfStats = new NodePerfStats(
-                            admissionControllerService.getCPUEWMA(),
-                            admissionControllerService.getMemoryEWMA(),
-                            admissionControllerService.getIoEWMA()
+                            admissionControllerService.getCPUEWMA() * 100,
+                            admissionControllerService.getMemoryEWMA() * 100,
+                            admissionControllerService.getIoEWMA() * 100
                         );
                         queryResult.nodePerfStats(nodePerfStats);
 

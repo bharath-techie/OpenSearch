@@ -487,9 +487,14 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
                     final long updatedResponse = (long) (minStats.responseTime + stats.responseTime) / 2;
                     final long updatedService = (long) (minStats.serviceTime + stats.serviceTime) / 2;
                     // revisit this - basically reset stats based on time
+                    logger.info("Stats before adjust CPU : {}, MEM : {}, IO : {}",
+                        stats.nodePerfStats.cpuPercentAvg, stats.nodePerfStats.memoryPercentAvg, stats.nodePerfStats.ioPercentAvg);
                     final double cpuPercentAvg = stats.nodePerfStats.cpuPercentAvg * 0.99;
                     final double memPercentAvg = stats.nodePerfStats.memoryPercentAvg * 0.99;
                     final double ioPercentAvg = stats.nodePerfStats.ioPercentAvg * 0.99;
+                    logger.info("Stats after adjust CPU : {}, MEM : {}, IO : {}",
+                        cpuPercentAvg, memPercentAvg, ioPercentAvg);
+
                     NodePerfStats nodePerfStats = new NodePerfStats(cpuPercentAvg, memPercentAvg, ioPercentAvg);
                     collector.addNodeStatistics(nodeId, updatedQueue, updatedResponse, updatedService, nodePerfStats);
                 }
