@@ -159,7 +159,7 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
                     ioExecutionEWMA.addValue(ioUsePercent / 100.0);
 
                     double readOps = devicesStat.currentReadOperations() - previousIOTimeMap.get(devicesStat.getDeviceName()).readOps;
-                    double writeOps = devicesStat.currentReadOperations() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeOps;
+                    double writeOps = devicesStat.currentWriteOpetations() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeOps;
 
                     double readTime = devicesStat.getCurrentReadTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).readTime;
                     double writeTime = devicesStat.getWriteTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeTime;
