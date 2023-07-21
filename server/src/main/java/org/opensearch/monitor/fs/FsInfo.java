@@ -398,6 +398,14 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             return (currentWritesCompleted - previousWritesCompleted);
         }
 
+        public long currentReadOperations() {
+            return currentReadsCompleted;
+        }
+
+        public long currentWriteOpetations()  {
+            return currentWritesCompleted;
+        }
+
         public long readKilobytes() {
             if (previousSectorsRead == -1) return -1;
 
@@ -429,7 +437,7 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
 
         public double getNewReadLatency() {
             //double readLatency = getReadTime() / readOperations();
-            double readLatency = getReadTime() / writeOperations();
+            double readLatency = getReadTime() / readOperations();
             return readLatency;
         }
 

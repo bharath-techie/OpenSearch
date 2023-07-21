@@ -38,7 +38,7 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
     private final ThreadPool threadPool;
     private final TimeValue refreshInterval;
     private volatile Scheduler.Cancellable scheduledFuture;
-    private Map<String, Long> previousIOTimeMap;
+    private Map<String, DevicePreiousStats> previousIOTimeMap;
     private final Map<String, Queue<Double>> deviceIOUsage;
 
     private static final double IO_MAX_USAGE = 30;
@@ -100,6 +100,21 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
 
     }
 
+    class DevicePreiousStats {
+        public long ioTime;
+        public double readTime;
+        public double writeTime;
+        public double readOps;
+        public double writeOps;
+        public DevicePreiousStats(long ioTime, double readTime, double writeTime, double readOps, double writeOps) {
+            this.ioTime = ioTime;
+            this.readTime = readTime;
+            this.writeTime = writeTime;
+            this.readOps = readOps;
+            this.writeOps = writeOps;
+        }
+    }
+
     class IOMonitor implements Runnable {
 
         private final FsService fsService;
@@ -127,19 +142,34 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
         }
         private void monitorIOUtilisation() {
             logger.info("IO stats is triggered");
-            Map<String, Long> currentIOTimeMap = new HashMap<>();
+            Map<String, DevicePreiousStats> currentIOTimeMap = new HashMap<>();
             for (FsInfo.DeviceStats devicesStat : this.fsService.stats().getIoStats().getDevicesStats()) {
                 logger.info("Device Id: " + devicesStat.getDeviceName() + "; IO time: " + devicesStat.getCurrentIOTime());
-                logger.info("Read Latency : " + devicesStat.getCurrentReadLatency() + " Write latency : " + devicesStat.getCurrentWriteLatency());
-                logger.info("Write time : " + devicesStat.getCurrentWriteTime() + "Read time : " + devicesStat.getCurrentReadTime());
-                logger.info("Read latency diff : " + devicesStat.getReadLatency() + "Write latency diff" + devicesStat.getWriteLatency());
-                logger.info("Read time diff : " + devicesStat.getReadTime() + "Write time diff" + devicesStat.getWriteTime());
+//                logger.info("Read Latency : " + devicesStat.getCurrentReadLatency() + " Write latency : " + devicesStat.getCurrentWriteLatency());
+//                logger.info("Write time : " + devicesStat.getCurrentWriteTime() + "Read time : " + devicesStat.getCurrentReadTime());
+//                logger.info("Read latency diff : " + devicesStat.getReadLatency() + "Write latency diff" + devicesStat.getWriteLatency());
+//                logger.info("Read time diff : " + devicesStat.getReadTime() + "Write time diff" + devicesStat.getWriteTime());
 
-                logger.info("Read latency : " + devicesStat.getNewReadLatency() + " Write latency : " + devicesStat.getNewWriteLatency());
+                //logger.info("Read latency : " + devicesStat.getNewReadLatency() + " Write latency : " + devicesStat.getNewWriteLatency());
+
+                logger.info("");
                 if (previousIOTimeMap.containsKey(devicesStat.getDeviceName())){
-                    long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName());
+                    long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).ioTime;
                     double ioUsePercent = (double) (ioSpentTime * 100) / (10 * 1000);
                     ioExecutionEWMA.addValue(ioUsePercent / 100.0);
+
+                    double readOps = devicesStat.currentReadOperations() - previousIOTimeMap.get(devicesStat.getDeviceName()).readOps;
+                    double writeOps = devicesStat.currentReadOperations() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeOps;
+
+                    double readTime = devicesStat.getCurrentReadTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).readTime;
+                    double writeTime = devicesStat.getWriteTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeTime;
+
+                    double readLatency = readOps / readTime;
+                    double wrieLatency = writeOps / writeTime;
+
+                    logger.info("read ops : {} , writeops : {} , readtime: {} , writetime: {}", readOps, writeOps, readTime, writeTime);
+                    logger.info("Read latency final : " + readLatency  + "write latency final : " + wrieLatency);
+
                     Queue<Double> ioUsageQueue;
                     if (deviceIOUsage.containsKey(devicesStat.getDeviceName())) {
                         ioUsageQueue = deviceIOUsage.get(devicesStat.getDeviceName());
@@ -159,7 +189,11 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
                     }
                     deviceIOUsage.put(devicesStat.getDeviceName(), ioUsageQueue);
                 }
-                currentIOTimeMap.put(devicesStat.getDeviceName(), devicesStat.getCurrentIOTime());
+
+                DevicePreiousStats ps = new DevicePreiousStats(devicesStat.getCurrentIOTime(), devicesStat.getCurrentReadTime(),
+                    devicesStat.getCurrentWriteTime(), devicesStat.currentReadOperations(), devicesStat.currentWriteOpetations());
+
+                currentIOTimeMap.put(devicesStat.getDeviceName(), ps);
             }
             previousIOTimeMap = currentIOTimeMap;
         }
