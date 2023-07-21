@@ -421,6 +421,18 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             return currentWriteLatency - previousWriteLatency;
         }
 
+        public double getNewWriteLatency() {
+            //double readLatency = getReadTime() / readOperations();
+            double writeLatency = getWriteTime() / writeOperations();
+            return writeLatency;
+        }
+
+        public double getNewReadLatency() {
+            //double readLatency = getReadTime() / readOperations();
+            double readLatency = getReadTime() / writeOperations();
+            return readLatency;
+        }
+
         public double getReadLatency() {
             if(previousReadLatency == -1.0) return -1.0;
             return currentReadLatency - previousReadLatency;

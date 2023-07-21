@@ -135,6 +135,7 @@ public class AdmissionControllerService extends AbstractLifecycleComponent {
                 logger.info("Read latency diff : " + devicesStat.getReadLatency() + "Write latency diff" + devicesStat.getWriteLatency());
                 logger.info("Read time diff : " + devicesStat.getReadTime() + "Write time diff" + devicesStat.getWriteTime());
 
+                logger.info("Read latency : " + devicesStat.getNewReadLatency() + " Write latency : " + devicesStat.getNewWriteLatency());
                 if (previousIOTimeMap.containsKey(devicesStat.getDeviceName())){
                     long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName());
                     double ioUsePercent = (double) (ioSpentTime * 100) / (10 * 1000);
