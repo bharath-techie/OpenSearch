@@ -9,21 +9,22 @@
 package org.opensearch.action.admin.cluster.remotestore.stats;
 
 import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.DefaultShardOperationFailedException;
 import org.opensearch.action.support.broadcast.node.TransportBroadcastByNodeAction;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
+import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.routing.PlainShardsIterator;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.ShardsIterator;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
-import org.opensearch.common.io.stream.StreamInput;
+import org.opensearch.core.action.support.DefaultShardOperationFailedException;
+import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.index.IndexService;
-import org.opensearch.index.remote.RemoteRefreshSegmentPressureService;
-import org.opensearch.index.remote.RemoteRefreshSegmentTracker;
+import org.opensearch.index.remote.RemoteSegmentTransferTracker;
+import org.opensearch.index.remote.RemoteStorePressureService;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.shard.ShardNotFoundException;
 import org.opensearch.indices.IndicesService;
@@ -48,7 +49,8 @@ public class TransportRemoteStoreStatsAction extends TransportBroadcastByNodeAct
     RemoteStoreStats> {
 
     private final IndicesService indicesService;
-    private final RemoteRefreshSegmentPressureService remoteRefreshSegmentPressureService;
+
+    private final RemoteStorePressureService remoteStorePressureService;
 
     @Inject
     public TransportRemoteStoreStatsAction(
@@ -57,7 +59,7 @@ public class TransportRemoteStoreStatsAction extends TransportBroadcastByNodeAct
         IndicesService indicesService,
         ActionFilters actionFilters,
         IndexNameExpressionResolver indexNameExpressionResolver,
-        RemoteRefreshSegmentPressureService remoteRefreshSegmentPressureService
+        RemoteStorePressureService remoteStorePressureService
     ) {
         super(
             RemoteStoreStatsAction.NAME,
@@ -69,7 +71,7 @@ public class TransportRemoteStoreStatsAction extends TransportBroadcastByNodeAct
             ThreadPool.Names.MANAGEMENT
         );
         this.indicesService = indicesService;
-        this.remoteRefreshSegmentPressureService = remoteRefreshSegmentPressureService;
+        this.remoteStorePressureService = remoteStorePressureService;
     }
 
     /**
@@ -89,14 +91,16 @@ public class TransportRemoteStoreStatsAction extends TransportBroadcastByNodeAct
         }
         return new PlainShardsIterator(
             newShardRoutings.stream()
-                .filter(shardRouting -> remoteRefreshSegmentPressureService.getRemoteRefreshSegmentTracker(shardRouting.shardId()) != null)
                 .filter(
                     shardRouting -> !request.local()
                         || (shardRouting.currentNodeId() == null
                             || shardRouting.currentNodeId().equals(clusterState.getNodes().getLocalNodeId()))
                 )
-                .filter(ShardRouting::primary)
-                .filter(shardRouting -> indicesService.indexService(shardRouting.index()).getIndexSettings().isRemoteStoreEnabled())
+                .filter(
+                    shardRouting -> Boolean.parseBoolean(
+                        clusterState.getMetadata().index(shardRouting.index()).getSettings().get(IndexMetadata.SETTING_REMOTE_STORE_ENABLED)
+                    )
+                )
                 .collect(Collectors.toList())
         );
     }
@@ -149,11 +153,10 @@ public class TransportRemoteStoreStatsAction extends TransportBroadcastByNodeAct
             throw new ShardNotFoundException(indexShard.shardId());
         }
 
-        RemoteRefreshSegmentTracker remoteRefreshSegmentTracker = remoteRefreshSegmentPressureService.getRemoteRefreshSegmentTracker(
+        RemoteSegmentTransferTracker remoteSegmentTransferTracker = remoteStorePressureService.getRemoteRefreshSegmentTracker(
             indexShard.shardId()
         );
-        assert Objects.nonNull(remoteRefreshSegmentTracker);
-
-        return new RemoteStoreStats(remoteRefreshSegmentTracker.stats());
+        assert Objects.nonNull(remoteSegmentTransferTracker);
+        return new RemoteStoreStats(remoteSegmentTransferTracker.stats(), indexShard.routingEntry());
     }
 }

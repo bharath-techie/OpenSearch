@@ -35,13 +35,13 @@ package org.opensearch.search;
 import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
 
 import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.QueryCachingPolicy;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.opensearch.Version;
 import org.opensearch.action.OriginalIndices;
 import org.opensearch.action.search.SearchType;
@@ -53,6 +53,8 @@ import org.opensearch.common.util.BigArrays;
 import org.opensearch.common.util.MockBigArrays;
 import org.opensearch.common.util.MockPageCacheRecycler;
 import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
+import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.core.indices.breaker.NoneCircuitBreakerService;
 import org.opensearch.index.IndexService;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.cache.IndexCache;
@@ -64,8 +66,6 @@ import org.opensearch.index.query.AbstractQueryBuilder;
 import org.opensearch.index.query.ParsedQuery;
 import org.opensearch.index.query.QueryShardContext;
 import org.opensearch.index.shard.IndexShard;
-import org.opensearch.index.shard.ShardId;
-import org.opensearch.indices.breaker.NoneCircuitBreakerService;
 import org.opensearch.search.internal.AliasFilter;
 import org.opensearch.search.internal.LegacyReaderContext;
 import org.opensearch.search.internal.PitReaderContext;
@@ -92,11 +92,11 @@ import java.util.function.Supplier;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.mockito.Mockito.any;
-import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.eq;
-import static org.mockito.Mockito.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.nullable;
 import static org.mockito.Mockito.when;
 
 public class DefaultSearchContextTests extends OpenSearchTestCase {
@@ -213,7 +213,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 Version.CURRENT,
                 false,
-                executor
+                executor,
+                null
             );
             contextWithoutScroll.from(300);
             contextWithoutScroll.close();
@@ -255,7 +256,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 Version.CURRENT,
                 false,
-                executor
+                executor,
+                null
             );
             context1.from(300);
             exception = expectThrows(IllegalArgumentException.class, () -> context1.preProcess(false));
@@ -325,7 +327,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 Version.CURRENT,
                 false,
-                executor
+                executor,
+                null
             );
 
             SliceBuilder sliceBuilder = mock(SliceBuilder.class);
@@ -364,7 +367,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 Version.CURRENT,
                 false,
-                executor
+                executor,
+                null
             );
             ParsedQuery parsedQuery = ParsedQuery.parsedMatchAllQuery();
             context3.sliceBuilder(null).parsedQuery(parsedQuery).preProcess(false);
@@ -399,7 +403,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 Version.CURRENT,
                 false,
-                executor
+                executor,
+                null
             );
             context4.sliceBuilder(new SliceBuilder(1, 2)).parsedQuery(parsedQuery).preProcess(false);
             Query query1 = context4.query();
@@ -429,7 +434,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 Version.CURRENT,
                 false,
-                executor
+                executor,
+                null
             );
             int numSlicesForPit = maxSlicesPerPit + randomIntBetween(1, 100);
             when(sliceBuilder.getMax()).thenReturn(numSlicesForPit);
@@ -526,7 +532,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 Version.CURRENT,
                 false,
-                executor
+                executor,
+                null
             );
             assertThat(context.searcher().hasCancellations(), is(false));
             context.searcher().addQueryCancellation(() -> {});

@@ -41,14 +41,13 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.settings.SettingsException;
-import org.opensearch.common.unit.ByteSizeUnit;
-import org.opensearch.common.unit.ByteSizeValue;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.core.common.Strings;
+import org.opensearch.core.common.unit.ByteSizeUnit;
+import org.opensearch.core.common.unit.ByteSizeValue;
+import org.opensearch.core.index.Index;
 import org.opensearch.index.translog.Translog;
-import org.opensearch.indices.IndicesService;
 import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.ingest.IngestService;
 import org.opensearch.node.Node;
@@ -64,7 +63,6 @@ import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 import static org.opensearch.common.util.FeatureFlags.SEARCHABLE_SNAPSHOT_EXTENDED_COMPATIBILITY;
-import static org.opensearch.common.util.FeatureFlags.SEARCH_PIPELINE;
 import static org.opensearch.index.mapper.MapperService.INDEX_MAPPING_DEPTH_LIMIT_SETTING;
 import static org.opensearch.index.mapper.MapperService.INDEX_MAPPING_FIELD_NAME_LENGTH_LIMIT_SETTING;
 import static org.opensearch.index.mapper.MapperService.INDEX_MAPPING_NESTED_DOCS_LIMIT_SETTING;
@@ -301,10 +299,11 @@ public final class IndexSettings {
         Property.Deprecated
     );
     public static final TimeValue DEFAULT_REFRESH_INTERVAL = new TimeValue(1, TimeUnit.SECONDS);
+    public static final TimeValue MINIMUM_REFRESH_INTERVAL = new TimeValue(-1, TimeUnit.MILLISECONDS);
     public static final Setting<TimeValue> INDEX_REFRESH_INTERVAL_SETTING = Setting.timeSetting(
         "index.refresh_interval",
         DEFAULT_REFRESH_INTERVAL,
-        new TimeValue(-1, TimeUnit.MILLISECONDS),
+        MINIMUM_REFRESH_INTERVAL,
         Property.Dynamic,
         Property.IndexScope
     );
@@ -589,6 +588,23 @@ public final class IndexSettings {
         Property.IndexScope
     );
 
+    public static final Setting<Boolean> INDEX_CONCURRENT_SEGMENT_SEARCH_SETTING = Setting.boolSetting(
+        "index.search.concurrent_segment_search.enabled",
+        false,
+        Property.IndexScope,
+        Property.Dynamic
+    );
+
+    public static final TimeValue DEFAULT_REMOTE_TRANSLOG_BUFFER_INTERVAL = new TimeValue(650, TimeUnit.MILLISECONDS);
+    public static final TimeValue MINIMUM_REMOTE_TRANSLOG_BUFFER_INTERVAL = TimeValue.ZERO;
+    public static final Setting<TimeValue> INDEX_REMOTE_TRANSLOG_BUFFER_INTERVAL_SETTING = Setting.timeSetting(
+        "index.remote_store.translog.buffer_interval",
+        DEFAULT_REMOTE_TRANSLOG_BUFFER_INTERVAL,
+        MINIMUM_REMOTE_TRANSLOG_BUFFER_INTERVAL,
+        Property.Dynamic,
+        Property.IndexScope
+    );
+
     private final Index index;
     private final Version version;
     private final Logger logger;
@@ -597,8 +613,7 @@ public final class IndexSettings {
     private final int numberOfShards;
     private final ReplicationType replicationType;
     private final boolean isRemoteStoreEnabled;
-    private final boolean isRemoteTranslogStoreEnabled;
-    private final TimeValue remoteTranslogUploadBufferInterval;
+    private volatile TimeValue remoteTranslogUploadBufferInterval;
     private final String remoteStoreTranslogRepository;
     private final String remoteStoreRepository;
     private final boolean isRemoteSnapshot;
@@ -666,7 +681,6 @@ public final class IndexSettings {
     private volatile long mappingTotalFieldsLimit;
     private volatile long mappingDepthLimit;
     private volatile long mappingFieldNameLengthLimit;
-    private volatile boolean searchSegmentOrderReversed;
 
     /**
      * The maximum number of refresh listeners allows on this shard.
@@ -765,21 +779,11 @@ public final class IndexSettings {
         nodeName = Node.NODE_NAME_SETTING.get(settings);
         this.indexMetadata = indexMetadata;
         numberOfShards = settings.getAsInt(IndexMetadata.SETTING_NUMBER_OF_SHARDS, null);
-        if (FeatureFlags.isEnabled(FeatureFlags.SEGMENT_REPLICATION_EXPERIMENTAL)
-            && indexMetadata.isSystem() == false
-            && settings.get(IndexMetadata.SETTING_REPLICATION_TYPE) == null) {
-            replicationType = IndicesService.CLUSTER_REPLICATION_TYPE_SETTING.get(settings);
-        } else {
-            replicationType = IndexMetadata.INDEX_REPLICATION_TYPE_SETTING.get(settings);
-        }
+        replicationType = IndexMetadata.INDEX_REPLICATION_TYPE_SETTING.get(settings);
         isRemoteStoreEnabled = settings.getAsBoolean(IndexMetadata.SETTING_REMOTE_STORE_ENABLED, false);
-        isRemoteTranslogStoreEnabled = settings.getAsBoolean(IndexMetadata.SETTING_REMOTE_TRANSLOG_STORE_ENABLED, false);
         remoteStoreTranslogRepository = settings.get(IndexMetadata.SETTING_REMOTE_TRANSLOG_STORE_REPOSITORY);
-        remoteTranslogUploadBufferInterval = settings.getAsTime(
-            IndexMetadata.SETTING_REMOTE_TRANSLOG_BUFFER_INTERVAL,
-            TimeValue.timeValueMillis(100)
-        );
-        remoteStoreRepository = settings.get(IndexMetadata.SETTING_REMOTE_STORE_REPOSITORY);
+        remoteTranslogUploadBufferInterval = INDEX_REMOTE_TRANSLOG_BUFFER_INTERVAL_SETTING.get(settings);
+        remoteStoreRepository = settings.get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY);
         isRemoteSnapshot = IndexModule.Type.REMOTE_SNAPSHOT.match(this.settings);
 
         if (isRemoteSnapshot && FeatureFlags.isEnabled(SEARCHABLE_SNAPSHOT_EXTENDED_COMPATIBILITY)) {
@@ -911,13 +915,16 @@ public final class IndexSettings {
         scopedSettings.addSettingsUpdateConsumer(INDEX_MERGE_ON_FLUSH_ENABLED, this::setMergeOnFlushEnabled);
         scopedSettings.addSettingsUpdateConsumer(INDEX_MERGE_ON_FLUSH_POLICY, this::setMergeOnFlushPolicy);
         scopedSettings.addSettingsUpdateConsumer(DEFAULT_SEARCH_PIPELINE, this::setDefaultSearchPipeline);
-    }
-
-    private void setSearchSegmentOrderReversed(boolean reversed) {
-        this.searchSegmentOrderReversed = reversed;
+        scopedSettings.addSettingsUpdateConsumer(
+            INDEX_REMOTE_TRANSLOG_BUFFER_INTERVAL_SETTING,
+            this::setRemoteTranslogUploadBufferInterval
+        );
     }
 
     private void setSearchIdleAfter(TimeValue searchIdleAfter) {
+        if (this.replicationType == ReplicationType.SEGMENT && this.getNumberOfReplicas() > 0) {
+            logger.warn("Search idle is not supported for indices with replicas using 'replication.type: SEGMENT'");
+        }
         this.searchIdleAfter = searchIdleAfter;
     }
 
@@ -1057,7 +1064,9 @@ public final class IndexSettings {
      * Returns if remote translog store is enabled for this index.
      */
     public boolean isRemoteTranslogStoreEnabled() {
-        return isRemoteTranslogStoreEnabled;
+        // Today enabling remote store automatically enables remote translog as well.
+        // which is why isRemoteStoreEnabled is used to represent isRemoteTranslogStoreEnabled
+        return isRemoteStoreEnabled;
     }
 
     /**
@@ -1094,13 +1103,6 @@ public final class IndexSettings {
      */
     public Settings getNodeSettings() {
         return nodeSettings;
-    }
-
-    /**
-     * Returns true if index level setting for leaf reverse order search optimization is enabled
-     */
-    public boolean getSearchSegmentOrderReversed() {
-        return this.searchSegmentOrderReversed;
     }
 
     /**
@@ -1145,7 +1147,9 @@ public final class IndexSettings {
      */
     public static boolean same(final Settings left, final Settings right) {
         return left.filter(IndexScopedSettings.INDEX_SETTINGS_KEY_PREDICATE)
-            .equals(right.filter(IndexScopedSettings.INDEX_SETTINGS_KEY_PREDICATE));
+            .equals(right.filter(IndexScopedSettings.INDEX_SETTINGS_KEY_PREDICATE))
+            && left.filter(IndexScopedSettings.ARCHIVED_SETTINGS_KEY_PREDICATE)
+                .equals(right.filter(IndexScopedSettings.ARCHIVED_SETTINGS_KEY_PREDICATE));
     }
 
     /**
@@ -1189,6 +1193,10 @@ public final class IndexSettings {
      */
     public TimeValue getRemoteTranslogUploadBufferInterval() {
         return remoteTranslogUploadBufferInterval;
+    }
+
+    public void setRemoteTranslogUploadBufferInterval(TimeValue remoteTranslogUploadBufferInterval) {
+        this.remoteTranslogUploadBufferInterval = remoteTranslogUploadBufferInterval;
     }
 
     /**
@@ -1606,10 +1614,6 @@ public final class IndexSettings {
     }
 
     public void setDefaultSearchPipeline(String defaultSearchPipeline) {
-        if (FeatureFlags.isEnabled(SEARCH_PIPELINE)) {
-            this.defaultSearchPipeline = defaultSearchPipeline;
-        } else {
-            throw new SettingsException("Unsupported setting: " + DEFAULT_SEARCH_PIPELINE.getKey());
-        }
+        this.defaultSearchPipeline = defaultSearchPipeline;
     }
 }

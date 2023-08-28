@@ -32,7 +32,7 @@
 
 package org.opensearch.search.aggregations.pipeline;
 
-import org.opensearch.BaseExceptionsHelper;
+import org.opensearch.ExceptionsHelper;
 import org.opensearch.action.index.IndexRequestBuilder;
 import org.opensearch.action.search.SearchPhaseExecutionException;
 import org.opensearch.action.search.SearchResponse;
@@ -55,11 +55,11 @@ import java.util.List;
 
 import static org.opensearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.opensearch.index.query.QueryBuilders.matchAllQuery;
+import static org.opensearch.search.aggregations.AggregationBuilders.avg;
 import static org.opensearch.search.aggregations.AggregationBuilders.filters;
 import static org.opensearch.search.aggregations.AggregationBuilders.histogram;
 import static org.opensearch.search.aggregations.AggregationBuilders.stats;
 import static org.opensearch.search.aggregations.AggregationBuilders.sum;
-import static org.opensearch.search.aggregations.AggregationBuilders.avg;
 import static org.opensearch.search.aggregations.PipelineAggregatorBuilders.derivative;
 import static org.opensearch.search.aggregations.PipelineAggregatorBuilders.movingAvg;
 import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertAcked;
@@ -639,7 +639,7 @@ public class DerivativeIT extends OpenSearchIntegTestCase {
                 .get();
             fail("Expected an Exception but didn't get one");
         } catch (Exception e) {
-            Throwable cause = BaseExceptionsHelper.unwrapCause(e);
+            Throwable cause = ExceptionsHelper.unwrapCause(e);
             if (cause == null) {
                 throw e;
             } else if (cause instanceof SearchPhaseExecutionException) {

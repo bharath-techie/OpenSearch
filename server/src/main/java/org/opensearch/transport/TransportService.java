@@ -35,34 +35,35 @@ package org.opensearch.transport;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.opensearch.OpenSearchServerException;
 import org.opensearch.Version;
-import org.opensearch.action.ActionListener;
 import org.opensearch.action.ActionListenerResponseHandler;
 import org.opensearch.action.support.PlainActionFuture;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.Nullable;
-import org.opensearch.common.component.AbstractLifecycleComponent;
-import org.opensearch.common.geo.GeoPoint;
-import org.opensearch.common.io.stream.StreamInput;
-import org.opensearch.common.io.stream.StreamOutput;
-import org.opensearch.common.io.stream.Writeable;
+import org.opensearch.common.io.stream.Streamables;
 import org.opensearch.common.lease.Releasable;
+import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.logging.Loggers;
 import org.opensearch.common.regex.Regex;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.transport.BoundTransportAddress;
-import org.opensearch.common.transport.TransportAddress;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.AbstractRunnable;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.common.util.io.IOUtils;
+import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.Strings;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.core.common.transport.BoundTransportAddress;
+import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
+import org.opensearch.core.service.ReportingService;
+import org.opensearch.core.transport.TransportResponse;
 import org.opensearch.node.NodeClosedException;
-import org.opensearch.node.ReportingService;
-import org.opensearch.script.JodaCompatibleZonedDateTime;
 import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskManager;
 import org.opensearch.threadpool.Scheduler;
@@ -164,11 +165,16 @@ public class TransportService extends AbstractLifecycleComponent
     };
 
     static {
-        // registers server specific streamables
-        registerStreamables();
+        /**
+         * Registers server specific types as a streamables for serialization
+         * over the {@link StreamOutput} and {@link StreamInput} wire
+         */
+        Streamables.registerStreamables();
+        /** Registers OpenSearch server specific exceptions (exceptions outside of core library) */
+        OpenSearchServerException.registerExceptions();
     }
 
-    /** does nothing. easy way to ensure class is loaded */
+    /** does nothing. easy way to ensure class is loaded so the above static block is called to register the streamables */
     public static void ensureClassloaded() {}
 
     /**
@@ -241,15 +247,6 @@ public class TransportService extends AbstractLifecycleComponent
         );
     }
 
-    /**
-     * Registers server specific types as a streamables for serialization
-     * over the {@link StreamOutput} and {@link StreamInput} wire
-     */
-    private static void registerStreamables() {
-        JodaCompatibleZonedDateTime.registerStreamables();
-        GeoPoint.registerStreamables();
-    }
-
     public RemoteClusterService getRemoteClusterService() {
         return remoteClusterService;
     }
@@ -307,7 +304,12 @@ public class TransportService extends AbstractLifecycleComponent
 
         if (remoteClusterClient) {
             // here we start to connect to the remote clusters
-            remoteClusterService.initializeRemoteClusters();
+            remoteClusterService.initializeRemoteClusters(
+                ActionListener.wrap(
+                    r -> logger.info("Remote clusters initialized successfully."),
+                    e -> logger.error("Remote clusters initialization failed partially", e)
+                )
+            );
         }
     }
 
@@ -544,7 +546,10 @@ public class TransportService extends AbstractLifecycleComponent
     ) {
         return (newConnection, actualProfile, listener) -> {
             // We don't validate cluster names to allow for CCS connections.
-            threadPool.getThreadContext().putHeader("extension_unique_id", extensionUniqueId);
+            String currentId = threadPool.getThreadContext().getHeader("extension_unique_id");
+            if (Strings.isNullOrEmpty(currentId) || !extensionUniqueId.equals(currentId)) {
+                threadPool.getThreadContext().putHeader("extension_unique_id", extensionUniqueId);
+            }
             handshake(newConnection, actualProfile.getHandshakeTimeout().millis(), cn -> true, ActionListener.map(listener, resp -> {
                 final DiscoveryNode remote = resp.discoveryNode;
 

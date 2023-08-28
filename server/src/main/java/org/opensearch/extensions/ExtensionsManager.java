@@ -8,28 +8,9 @@
 
 package org.opensearch.extensions;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.InetAddress;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.stream.Collectors;
-import java.util.Arrays;
-
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
 import org.opensearch.action.ActionModule;
 import org.opensearch.action.ActionModule.DynamicActionRegistry;
@@ -37,14 +18,17 @@ import org.opensearch.action.admin.cluster.state.ClusterStateResponse;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterSettingsResponse;
 import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.core.util.FileSystemUtils;
-import org.opensearch.common.io.stream.StreamInput;
+import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsModule;
-import org.opensearch.common.transport.TransportAddress;
-
+import org.opensearch.common.util.concurrent.AbstractRunnable;
+import org.opensearch.core.common.Strings;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.transport.TransportAddress;
+import org.opensearch.core.transport.TransportResponse;
 import org.opensearch.discovery.InitializeExtensionRequest;
 import org.opensearch.discovery.InitializeExtensionResponse;
+import org.opensearch.env.EnvironmentSettingsResponse;
 import org.opensearch.extensions.ExtensionsSettings.Extension;
 import org.opensearch.extensions.action.ExtensionActionRequest;
 import org.opensearch.extensions.action.ExtensionActionResponse;
@@ -56,14 +40,22 @@ import org.opensearch.extensions.rest.RegisterRestActionsRequest;
 import org.opensearch.extensions.rest.RestActionsRequestHandler;
 import org.opensearch.extensions.settings.CustomSettingsRequestHandler;
 import org.opensearch.extensions.settings.RegisterCustomSettingsRequest;
+import org.opensearch.identity.IdentityService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.ConnectTransportException;
 import org.opensearch.transport.TransportException;
-import org.opensearch.transport.TransportResponse;
 import org.opensearch.transport.TransportResponseHandler;
 import org.opensearch.transport.TransportService;
-import org.yaml.snakeyaml.Yaml;
-import org.opensearch.env.EnvironmentSettingsResponse;
+
+import java.io.IOException;
+import java.net.InetAddress;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 /**
  * The main class for managing Extension communication with the OpenSearch Node.
@@ -97,7 +89,6 @@ public class ExtensionsManager {
         REQUEST_OPENSEARCH_NAMED_WRITEABLE_REGISTRY
     }
 
-    private final Path extensionsPath;
     private ExtensionTransportActionsHandler extensionTransportActionsHandler;
     private Map<String, Extension> extensionSettingsMap;
     private Map<String, DiscoveryExtensionNode> initializedExtensions;
@@ -106,6 +97,7 @@ public class ExtensionsManager {
     private CustomSettingsRequestHandler customSettingsRequestHandler;
     private TransportService transportService;
     private ClusterService clusterService;
+    private final Set<Setting<?>> additionalSettings;
     private Settings environmentSettings;
     private AddSettingsUpdateConsumerRequestHandler addSettingsUpdateConsumerRequestHandler;
     private NodeClient client;
@@ -113,26 +105,24 @@ public class ExtensionsManager {
     /**
      * Instantiate a new ExtensionsManager object to handle requests and responses from extensions. This is called during Node bootstrap.
      *
-     * @param extensionsPath  Path to a directory containing extensions.
+     * @param additionalSettings  Additional settings to read in from extension initialization request
      * @throws IOException  If the extensions discovery file is not properly retrieved.
      */
-    public ExtensionsManager(Path extensionsPath) throws IOException {
+    public ExtensionsManager(Set<Setting<?>> additionalSettings) throws IOException {
         logger.info("ExtensionsManager initialized");
-        this.extensionsPath = extensionsPath;
         this.initializedExtensions = new HashMap<String, DiscoveryExtensionNode>();
         this.extensionIdMap = new HashMap<String, DiscoveryExtensionNode>();
         this.extensionSettingsMap = new HashMap<String, Extension>();
         // will be initialized in initializeServicesAndRestHandler which is called after the Node is initialized
         this.transportService = null;
         this.clusterService = null;
+        // Settings added to extensions.yml by ExtensionAwarePlugins, such as security settings
+        this.additionalSettings = new HashSet<>();
+        if (additionalSettings != null) {
+            this.additionalSettings.addAll(additionalSettings);
+        }
         this.client = null;
         this.extensionTransportActionsHandler = null;
-
-        /*
-         * Now Discover extensions
-         */
-        discover();
-
     }
 
     /**
@@ -152,9 +142,15 @@ public class ExtensionsManager {
         TransportService transportService,
         ClusterService clusterService,
         Settings initialEnvironmentSettings,
-        NodeClient client
+        NodeClient client,
+        IdentityService identityService
     ) {
-        this.restActionsRequestHandler = new RestActionsRequestHandler(actionModule.getRestController(), extensionIdMap, transportService);
+        this.restActionsRequestHandler = new RestActionsRequestHandler(
+            actionModule.getRestController(),
+            extensionIdMap,
+            transportService,
+            identityService
+        );
         this.customSettingsRequestHandler = new CustomSettingsRequestHandler(settingsModule);
         this.transportService = transportService;
         this.clusterService = clusterService;
@@ -162,7 +158,8 @@ public class ExtensionsManager {
         this.addSettingsUpdateConsumerRequestHandler = new AddSettingsUpdateConsumerRequestHandler(
             clusterService,
             transportService,
-            REQUEST_EXTENSION_UPDATE_SETTINGS
+            REQUEST_EXTENSION_UPDATE_SETTINGS,
+            settingsModule
         );
         this.client = client;
         this.extensionTransportActionsHandler = new ExtensionTransportActionsHandler(
@@ -296,60 +293,42 @@ public class ExtensionsManager {
         );
     }
 
-    /*
-     * Load and populate all extensions
-     */
-    protected void discover() throws IOException {
-        logger.info("Loading extensions : {}", extensionsPath);
-        if (!FileSystemUtils.isAccessibleDirectory(extensionsPath, logger)) {
-            return;
-        }
-
-        List<Extension> extensions = new ArrayList<Extension>();
-        if (Files.exists(extensionsPath.resolve("extensions.yml"))) {
-            try {
-                extensions = readFromExtensionsYml(extensionsPath.resolve("extensions.yml")).getExtensions();
-            } catch (IOException e) {
-                throw new IOException("Could not read from extensions.yml", e);
-            }
-            for (Extension extension : extensions) {
-                loadExtension(extension);
-            }
-            if (!extensionIdMap.isEmpty()) {
-                logger.info("Loaded all extensions");
-            }
-        } else {
-            logger.warn("Extensions.yml file is not present.  No extensions will be loaded.");
-        }
-    }
-
     /**
      * Loads a single extension
      * @param extension The extension to be loaded
      */
-    private void loadExtension(Extension extension) throws IOException {
-        if (extensionIdMap.containsKey(extension.getUniqueId())) {
-            logger.info("Duplicate uniqueId " + extension.getUniqueId() + ". Did not load extension: " + extension);
-        } else {
-            try {
-                DiscoveryExtensionNode discoveryExtensionNode = new DiscoveryExtensionNode(
-                    extension.getName(),
-                    extension.getUniqueId(),
-                    new TransportAddress(InetAddress.getByName(extension.getHostAddress()), Integer.parseInt(extension.getPort())),
-                    new HashMap<String, String>(),
-                    Version.fromString(extension.getOpensearchVersion()),
-                    Version.fromString(extension.getMinimumCompatibleVersion()),
-                    extension.getDependencies()
-                );
+    public void loadExtension(Extension extension) throws IOException {
+        validateExtension(extension);
+        DiscoveryExtensionNode discoveryExtensionNode = new DiscoveryExtensionNode(
+            extension.getName(),
+            extension.getUniqueId(),
+            new TransportAddress(InetAddress.getByName(extension.getHostAddress()), Integer.parseInt(extension.getPort())),
+            new HashMap<String, String>(),
+            Version.fromString(extension.getOpensearchVersion()),
+            Version.fromString(extension.getMinimumCompatibleVersion()),
+            extension.getDependencies()
+        );
+        extensionIdMap.put(extension.getUniqueId(), discoveryExtensionNode);
+        extensionSettingsMap.put(extension.getUniqueId(), extension);
+        logger.info("Loaded extension with uniqueId " + extension.getUniqueId() + ": " + extension);
+    }
 
-                extensionIdMap.put(extension.getUniqueId(), discoveryExtensionNode);
-                extensionSettingsMap.put(extension.getUniqueId(), extension);
-                logger.info("Loaded extension with uniqueId " + extension.getUniqueId() + ": " + extension);
-            } catch (OpenSearchException e) {
-                logger.error("Could not load extension with uniqueId " + extension.getUniqueId() + " due to " + e);
-            } catch (IllegalArgumentException e) {
-                throw e;
-            }
+    private void validateField(String fieldName, String value) throws IOException {
+        if (Strings.isNullOrEmpty(value)) {
+            throw new IOException("Required field [" + fieldName + "] is missing in the request");
+        }
+    }
+
+    private void validateExtension(Extension extension) throws IOException {
+        validateField("extension name", extension.getName());
+        validateField("extension uniqueId", extension.getUniqueId());
+        validateField("extension host address", extension.getHostAddress());
+        validateField("extension port", extension.getPort());
+        validateField("extension version", extension.getVersion());
+        validateField("opensearch version", extension.getOpensearchVersion());
+        validateField("minimum opensearch version", extension.getMinimumCompatibleVersion());
+        if (extensionIdMap.containsKey(extension.getUniqueId())) {
+            throw new IOException("Duplicate uniqueId [" + extension.getUniqueId() + "]. Did not load extension: " + extension);
         }
     }
 
@@ -397,27 +376,35 @@ public class ExtensionsManager {
                 return ThreadPool.Names.GENERIC;
             }
         };
-        try {
-            logger.info("Sending extension request type: " + REQUEST_EXTENSION_ACTION_NAME);
-            transportService.connectToExtensionNode(extension);
-            transportService.sendRequest(
-                extension,
-                REQUEST_EXTENSION_ACTION_NAME,
-                new InitializeExtensionRequest(transportService.getLocalNode(), extension),
-                initializeExtensionResponseHandler
-            );
-            inProgressFuture.orTimeout(EXTENSION_REQUEST_WAIT_TIMEOUT, TimeUnit.SECONDS).join();
-        } catch (CompletionException | ConnectTransportException e) {
-            if (e.getCause() instanceof TimeoutException || e instanceof ConnectTransportException) {
-                logger.info("No response from extension to request.", e);
-            } else if (e.getCause() instanceof RuntimeException) {
-                throw (RuntimeException) e.getCause();
-            } else if (e.getCause() instanceof Error) {
-                throw (Error) e.getCause();
-            } else {
-                throw new RuntimeException(e.getCause());
+
+        logger.info("Sending extension request type: " + REQUEST_EXTENSION_ACTION_NAME);
+        transportService.getThreadPool().generic().execute(new AbstractRunnable() {
+            @Override
+            public void onFailure(Exception e) {
+                extensionIdMap.remove(extension.getId());
+                if (e.getCause() instanceof ConnectTransportException) {
+                    logger.info("No response from extension to request.", e);
+                    throw (ConnectTransportException) e.getCause();
+                } else if (e.getCause() instanceof RuntimeException) {
+                    throw (RuntimeException) e.getCause();
+                } else if (e.getCause() instanceof Error) {
+                    throw (Error) e.getCause();
+                } else {
+                    throw new RuntimeException(e.getCause());
+                }
             }
-        }
+
+            @Override
+            protected void doRun() throws Exception {
+                transportService.connectToExtensionNode(extension);
+                transportService.sendRequest(
+                    extension,
+                    REQUEST_EXTENSION_ACTION_NAME,
+                    new InitializeExtensionRequest(transportService.getLocalNode(), extension),
+                    initializeExtensionResponseHandler
+                );
+            }
+        });
     }
 
     /**
@@ -456,72 +443,6 @@ public class ExtensionsManager {
         }
     }
 
-    private ExtensionsSettings readFromExtensionsYml(Path filePath) throws IOException {
-        Yaml yaml = new Yaml();
-        try (InputStream inputStream = Files.newInputStream(filePath)) {
-            Map<String, Object> obj = yaml.load(inputStream);
-            if (obj == null) {
-                inputStream.close();
-                throw new IOException("extensions.yml is empty");
-            }
-            List<HashMap<String, ?>> unreadExtensions = new ArrayList<>((Collection<HashMap<String, ?>>) obj.get("extensions"));
-            List<Extension> readExtensions = new ArrayList<Extension>();
-            for (HashMap<String, ?> extensionMap : unreadExtensions) {
-                try {
-                    // checking to see whether any required fields are missing from extension.yml file or not
-                    String[] requiredFields = {
-                        "name",
-                        "uniqueId",
-                        "hostAddress",
-                        "port",
-                        "version",
-                        "opensearchVersion",
-                        "minimumCompatibleVersion" };
-                    List<String> missingFields = Arrays.stream(requiredFields)
-                        .filter(field -> !extensionMap.containsKey(field))
-                        .collect(Collectors.toList());
-                    if (!missingFields.isEmpty()) {
-                        throw new IOException("Extension is missing these required fields : " + missingFields);
-                    }
-
-                    // Parse extension dependencies
-                    List<ExtensionDependency> extensionDependencyList = new ArrayList<ExtensionDependency>();
-                    if (extensionMap.get("dependencies") != null) {
-                        List<HashMap<String, ?>> extensionDependencies = new ArrayList<>(
-                            (Collection<HashMap<String, ?>>) extensionMap.get("dependencies")
-                        );
-                        for (HashMap<String, ?> dependency : extensionDependencies) {
-                            extensionDependencyList.add(
-                                new ExtensionDependency(
-                                    dependency.get("uniqueId").toString(),
-                                    Version.fromString(dependency.get("version").toString())
-                                )
-                            );
-                        }
-                    }
-
-                    // Create extension read from yml config
-                    readExtensions.add(
-                        new Extension(
-                            extensionMap.get("name").toString(),
-                            extensionMap.get("uniqueId").toString(),
-                            extensionMap.get("hostAddress").toString(),
-                            extensionMap.get("port").toString(),
-                            extensionMap.get("version").toString(),
-                            extensionMap.get("opensearchVersion").toString(),
-                            extensionMap.get("minimumCompatibleVersion").toString(),
-                            extensionDependencyList
-                        )
-                    );
-                } catch (IOException e) {
-                    logger.warn("loading extension has been failed because of exception : " + e.getMessage());
-                }
-            }
-            inputStream.close();
-            return new ExtensionsSettings(readExtensions);
-        }
-    }
-
     static String getRequestExtensionActionName() {
         return REQUEST_EXTENSION_ACTION_NAME;
     }
@@ -536,10 +457,6 @@ public class ExtensionsManager {
 
     static Logger getLogger() {
         return logger;
-    }
-
-    Path getExtensionsPath() {
-        return extensionsPath;
     }
 
     TransportService getTransportService() {
@@ -592,5 +509,9 @@ public class ExtensionsManager {
 
     Settings getEnvironmentSettings() {
         return environmentSettings;
+    }
+
+    public Set<Setting<?>> getAdditionalSettings() {
+        return this.additionalSettings;
     }
 }
