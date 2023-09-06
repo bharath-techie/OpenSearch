@@ -59,6 +59,7 @@ import org.opensearch.search.backpressure.SearchBackpressureService;
 import org.opensearch.search.pipeline.SearchPipelineService;
 import org.opensearch.tasks.TaskCancellationMonitoringService;
 import org.opensearch.threadpool.ThreadPool;
+import org.opensearch.throttling.tracker.NodePerformanceTracker;
 import org.opensearch.transport.TransportService;
 
 import java.io.Closeable;
@@ -83,10 +84,12 @@ public class NodeService implements Closeable {
     private final ScriptService scriptService;
     private final HttpServerTransport httpServerTransport;
     private final ResponseCollectorService responseCollectorService;
+    private final PerformanceCollectorService performanceCollectorService;
     private final SearchTransportService searchTransportService;
     private final IndexingPressureService indexingPressureService;
     private final AggregationUsageService aggregationUsageService;
     private final SearchBackpressureService searchBackpressureService;
+    private final NodePerformanceTracker nodePerformanceTracker;
     private final SearchPipelineService searchPipelineService;
     private final ClusterService clusterService;
     private final Discovery discovery;
@@ -114,7 +117,9 @@ public class NodeService implements Closeable {
         SearchBackpressureService searchBackpressureService,
         SearchPipelineService searchPipelineService,
         FileCache fileCache,
-        TaskCancellationMonitoringService taskCancellationMonitoringService
+        TaskCancellationMonitoringService taskCancellationMonitoringService,
+        NodePerformanceTracker nodePerformanceTracker,
+        PerformanceCollectorService performanceCollectorService
     ) {
         this.settings = settings;
         this.threadPool = threadPool;
@@ -137,6 +142,8 @@ public class NodeService implements Closeable {
         this.clusterService = clusterService;
         this.fileCache = fileCache;
         this.taskCancellationMonitoringService = taskCancellationMonitoringService;
+        this.nodePerformanceTracker = nodePerformanceTracker;
+        this.performanceCollectorService = performanceCollectorService;
         clusterService.addStateApplier(ingestService);
         clusterService.addStateApplier(searchPipelineService);
     }
@@ -259,6 +266,10 @@ public class NodeService implements Closeable {
 
     public SearchBackpressureService getSearchBackpressureService() {
         return searchBackpressureService;
+    }
+
+    public NodePerformanceTracker getNodePerformanceTracker() {
+        return nodePerformanceTracker;
     }
 
     public TaskCancellationMonitoringService getTaskCancellationMonitoringService() {
