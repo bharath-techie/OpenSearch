@@ -11,22 +11,25 @@ package org.opensearch.client;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.opensearch.OpenSearchStatusException;
-import org.opensearch.action.search.CreatePitRequest;
-import org.opensearch.action.search.CreatePitResponse;
-import org.opensearch.action.search.DeletePitInfo;
-import org.opensearch.action.search.DeletePitRequest;
-import org.opensearch.action.search.DeletePitResponse;
-import org.opensearch.action.search.GetAllPitNodesResponse;
+import org.opensearch.action.search.*;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.action.ActionListener;
 import org.junit.Before;
+import org.opensearch.monitor.jvm.JvmInfo;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+
+import static org.hamcrest.Matchers.containsString;
 
 /**
  * Tests point in time API with rest high level client
@@ -70,6 +73,84 @@ public class PitIT extends OpenSearchRestHighLevelClientTestCase {
         DeletePitResponse deletePitResponse = execute(deletePitRequest, highLevelClient()::deletePit, highLevelClient()::deletePitAsync);
         assertTrue(deletePitResponse.getDeletePitResults().get(0).isSuccessful());
         assertTrue(deletePitResponse.getDeletePitResults().get(0).getPitId().equals(createPitResponse.getId()));
+    }
+
+    public void testMaxRunningSearches() throws Exception {
+        MemoryMXBean MEMORY_MX_BEAN = ManagementFactory.getMemoryMXBean();
+        logger.info("USED size here : {}", MEMORY_MX_BEAN.getHeapMemoryUsage().getUsed()/1024/1024);
+        logger.info("heap size of env[{}]", JvmInfo.jvmInfo().getMem().getHeapMax());
+        try {
+            int numThreads = 50;
+            List<Thread> threadsList = new LinkedList<>();
+            logger.info(threadsList.size());
+            CyclicBarrier barrier = new CyclicBarrier(numThreads + 1);
+            for (int i = 0; i < numThreads; i++) {
+                threadsList.add(new Thread(() -> {
+                    try {
+                        SearchRequest validRequest = new SearchRequest();
+                        validRequest.indices("index");
+                        logger.info("USED size before : {}", MEMORY_MX_BEAN.getHeapMemoryUsage().getUsed() / 1024 / 1024);
+                        //client
+
+                        SearchResponse searchResponse = execute(validRequest, highLevelClient()::search, highLevelClient()::searchAsync);
+                        assertNotNull(searchResponse);
+                        logger.info("USED size after : {}", MEMORY_MX_BEAN.getHeapMemoryUsage().getUsed() / 1024 / 1024);
+                    } catch (IOException e) {
+                        fail("submit request failed");
+                    } finally {
+                        try {
+
+                            barrier.await();
+                        } catch (Exception e) {
+                            fail();
+                        }
+                    }
+                }
+                ));
+            }
+            threadsList.forEach(Thread::start);
+            barrier.await();
+            for (Thread thread : threadsList) {
+                logger.info("USED size thread : {}", MEMORY_MX_BEAN.getHeapMemoryUsage().getUsed() / 1024 / 1024);
+                thread.join();
+            }
+
+
+            //updateClusterSettings(AsynchronousSearchActiveStore.NODE_CONCURRENT_RUNNING_SEARCHES_SETTING.getKey(), 0);
+            threadsList.clear();
+            AtomicInteger numFailures = new AtomicInteger();
+            for (int i = 0; i < numThreads; i++) {
+                threadsList.add(new Thread(() -> {
+                    try {
+                        SearchRequest validRequest = new SearchRequest();
+                        //validRequest.waitForCompletionTimeout(TimeValue.timeValueMillis(1));
+                        SearchResponse searchResponse = execute(validRequest, highLevelClient()::search, highLevelClient()::searchAsync);
+                    } catch (Exception e) {
+                        assertTrue(e instanceof ResponseException);
+                        assertThat(e.getMessage(), containsString("Trying to create too many concurrent searches"));
+                        numFailures.getAndIncrement();
+
+                    } finally {
+                        try {
+                            numFailures.getAndIncrement();
+                            barrier.await();
+                        } catch (Exception e) {
+                            fail();
+                        }
+                    }
+                }
+                ));
+            }
+            threadsList.forEach(Thread::start);
+            barrier.await();
+            for (Thread thread : threadsList) {
+                thread.join();
+            }
+            assertEquals(numFailures.get(), 50);
+        } catch (Exception e) {
+            logger.info("========== EXCEPTION : " + e.getMessage());
+            logger.info("============== USED SIZE : " + MEMORY_MX_BEAN.getHeapMemoryUsage().getUsed() / 1024 / 1024);
+        }
     }
 
     public void testDeleteAllAndListAllPits() throws IOException, InterruptedException {
