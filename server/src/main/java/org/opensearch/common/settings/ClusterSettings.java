@@ -655,6 +655,7 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 // Settings related to admission control
                 PerformanceTrackerSettings.GLOBAL_CPU_USAGE_AC_WINDOW_DURATION_SETTING,
                 PerformanceTrackerSettings.GLOBAL_JVM_USAGE_AC_WINDOW_DURATION_SETTING,
+                PerformanceTrackerSettings.GLOBAL_IO_WINDOW_DURATION_SETTING,
 
                 // Settings related to Searchable Snapshots
                 Node.NODE_SEARCH_CACHE_SIZE_SETTING,
@@ -675,7 +676,8 @@ public final class ClusterSettings extends AbstractScopedSettings {
 
                 // Remote cluster state settings
                 RemoteClusterStateService.REMOTE_CLUSTER_STATE_ENABLED_SETTING,
-                RemoteStoreNodeService.REMOTE_STORE_COMPATIBILITY_MODE_SETTING
+                RemoteStoreNodeService.REMOTE_STORE_COMPATIBILITY_MODE_SETTING,
+                IndicesService.CLUSTER_REMOTE_TRANSLOG_BUFFER_INTERVAL_SETTING
             )
         )
     );
@@ -688,8 +690,6 @@ public final class ClusterSettings extends AbstractScopedSettings {
      * setting should be moved to {@link #BUILT_IN_CLUSTER_SETTINGS}.
      */
     public static final Map<List<String>, List<Setting>> FEATURE_FLAGGED_CLUSTER_SETTINGS = Map.of(
-        List.of(FeatureFlags.REMOTE_STORE),
-        List.of(IndicesService.CLUSTER_REMOTE_TRANSLOG_BUFFER_INTERVAL_SETTING),
         List.of(FeatureFlags.CONCURRENT_SEGMENT_SEARCH),
         List.of(
             SearchService.CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING,

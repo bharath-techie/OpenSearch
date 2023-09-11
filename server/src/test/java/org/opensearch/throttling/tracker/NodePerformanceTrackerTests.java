@@ -11,6 +11,8 @@ package org.opensearch.throttling.tracker;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.env.NodeEnvironment;
+import org.opensearch.monitor.fs.FsService;
 import org.opensearch.node.NodePerformanceStatistics;
 import org.opensearch.node.PerformanceCollectorService;
 import org.opensearch.test.OpenSearchTestCase;
@@ -52,7 +54,8 @@ public class NodePerformanceTrackerTests extends OpenSearchTestCase {
             performanceCollectorService,
             threadPool,
             Settings.EMPTY,
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+            mock(FsService.class)
         );
         tracker.start();
         Thread.sleep(2000);
