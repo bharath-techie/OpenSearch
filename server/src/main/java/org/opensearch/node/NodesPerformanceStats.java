@@ -60,6 +60,7 @@ public class NodesPerformanceStats implements Writeable, ToXContentFragment {
                     "elapsed_time",
                     new TimeValue(System.currentTimeMillis() - perfStats.timestamp, TimeUnit.MILLISECONDS).toString()
                 );
+                perfStats.averageDiskStats.toXContent(builder, params);
             }
             builder.endObject();
         }

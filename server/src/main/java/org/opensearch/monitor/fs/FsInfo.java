@@ -32,6 +32,8 @@
 
 package org.opensearch.monitor.fs;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.Version;
 import org.opensearch.common.Nullable;
 import org.opensearch.core.common.io.stream.StreamInput;
@@ -41,6 +43,7 @@ import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.core.xcontent.ToXContentFragment;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.throttling.tracker.AverageCpuUsageTracker;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -223,6 +226,7 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
      * @opensearch.internal]
      */
     public static class DeviceStats implements Writeable, ToXContentFragment {
+        private static final Logger logger = LogManager.getLogger(DeviceStats.class);
 
         final int majorDeviceNumber;
         final int minorDeviceNumber;
@@ -389,11 +393,14 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
         public long readOperations() {
             if (previousReadsCompleted == -1) return -1;
 
+            //logger.info("Current reads : {} , Previous reads : {}", currentReadsCompleted, previousReadsCompleted);
+
             return (currentReadsCompleted - previousReadsCompleted);
         }
 
         public long writeOperations() {
             if (previousWritesCompleted == -1) return -1;
+            //logger.info("Current writes : {} , Previous writes : {}", currentWritesCompleted, previousWritesCompleted);
 
             return (currentWritesCompleted - previousWritesCompleted);
         }
@@ -410,6 +417,14 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             if (previousSectorsRead == -1) return -1;
 
             return (currentSectorsRead - previousSectorsRead) / 2;
+        }
+
+        public long getCurrentReadKilobytes() {
+            return currentSectorsRead / 2;
+        }
+
+        public long getCurrentWriteKilobytes() {
+            return currentSectorsWritten / 2;
         }
 
         public long writeKilobytes() {

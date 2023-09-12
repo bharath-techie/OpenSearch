@@ -9,22 +9,22 @@
 package org.opensearch.common.util;
 
 /**
- * MovingAverage is used to calculate the moving average of last 'n' observations.
+ * MovingAverage is used to calculate the moving average of last 'n' observations of double type.
  *
  * @opensearch.internal
  */
-public class MovingAverage {
+public class DoubleMovingAverage {
     private final int windowSize;
-    private final long[] observations;
+    private final double[] observations;
 
     private volatile long count = 0;
-    private volatile double sum = 0;
-    private volatile double average = 0;
+    private volatile double sum = 0.0;
+    private volatile double average = 0.0;
 
-    public MovingAverage(int windowSize) {
+    public DoubleMovingAverage(int windowSize) {
         checkWindowSize(windowSize);
         this.windowSize = windowSize;
-        this.observations = new long[windowSize];
+        this.observations = new double[windowSize];
     }
 
     /**
@@ -33,8 +33,8 @@ public class MovingAverage {
      * @param newWindowSize new window size.
      * @return copy of original object with updated size.
      */
-    public MovingAverage copyWithSize(int newWindowSize) {
-        MovingAverage copy = new MovingAverage(newWindowSize);
+    public DoubleMovingAverage copyWithSize(int newWindowSize) {
+        DoubleMovingAverage copy = new DoubleMovingAverage(newWindowSize);
         // Start is inclusive, but end is exclusive
         long start, end = count;
         if (isReady() == false) {
@@ -61,13 +61,13 @@ public class MovingAverage {
     /**
      * Records a new observation and evicts the n-th last observation.
      */
-    public synchronized double record(long value) {
-        long delta = value - observations[(int) (count % observations.length)];
+    public synchronized double record(double value) {
+        double delta = value - observations[(int) (count % observations.length)];
         observations[(int) (count % observations.length)] = value;
 
         count++;
         sum += delta;
-        average = sum / Math.min(count, observations.length);
+        average = sum / (double) Math.min(count, observations.length);
         return average;
     }
 

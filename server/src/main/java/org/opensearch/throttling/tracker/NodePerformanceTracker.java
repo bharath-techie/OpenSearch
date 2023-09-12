@@ -27,6 +27,8 @@ import java.io.IOException;
 public class NodePerformanceTracker extends AbstractLifecycleComponent {
     private double cpuUtilizationPercent;
     private double memoryUtilizationPercent;
+
+    private AverageDiskStats averageDiskStats;
     private ThreadPool threadPool;
     private volatile Scheduler.Cancellable scheduledFuture;
     private final ClusterSettings clusterSettings;
@@ -68,8 +70,16 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
         return memoryUsageTracker.getAverage();
     }
 
-    private double getAverageIOUsed() {
-        return ioUsageTracker.getAverage();
+    private AverageDiskStats getAverageIOUsed() {
+        return ioUsageTracker.getAverageDiskStats();
+    }
+
+    private void setAverageDiskStats(AverageDiskStats averageDiskStats) {
+        this.averageDiskStats = averageDiskStats;
+    }
+
+    private AverageDiskStats getAverageDiskStats() {
+        return averageDiskStats;
     }
 
     private void setCpuUtilizationPercent(double cpuUtilizationPercent) {
@@ -90,11 +100,13 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
 
     void doRun() {
         setCpuUtilizationPercent(getAverageCpuUsed());
-        setMemoryUtilizationPercent(getAverageIOUsed());
+        setMemoryUtilizationPercent(getAverageMemoryUsed());
+        setAverageDiskStats(getAverageIOUsed());
         performanceCollectorService.addNodePerfStatistics(
             LOCAL_NODE,
             getCpuUtilizationPercent(),
             getMemoryUtilizationPercent(),
+            getAverageDiskStats(),
             System.currentTimeMillis()
         );
     }

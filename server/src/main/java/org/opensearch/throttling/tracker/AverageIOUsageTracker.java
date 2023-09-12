@@ -10,25 +10,39 @@ package org.opensearch.throttling.tracker;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.unit.TimeValue;
-import org.opensearch.monitor.fs.FsInfo;
+import org.opensearch.common.util.DoubleMovingAverage;
+import org.opensearch.common.util.MovingAverage;
 import org.opensearch.monitor.fs.FsService;
+import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
+import java.io.IOException;
 
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.Map;
-import java.util.Queue;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
-public class AverageIOUsageTracker extends AbstractAverageUsageTracker {
+public class AverageIOUsageTracker extends AbstractLifecycleComponent {
 
     private static final Logger logger = LogManager.getLogger(AverageCpuUsageTracker.class);
 
-    private Map<String, DevicePreviousStats> previousIOTimeMap;
-
     private FsService fsService;
+
+    private final ThreadPool threadPool;
+
+    private IoUsageFetcher ioUsageFetcher;
+    private final TimeValue windowDuration;
+    private final TimeValue pollingInterval;
+    private volatile Scheduler.Cancellable scheduledFuture;
+    private final AtomicReference<MovingAverage> ioTimeObservations = new AtomicReference<>();
+    private final AtomicReference<MovingAverage> readIopsObservations = new AtomicReference<>();
+    private final AtomicReference<MovingAverage> writeIopsObservations = new AtomicReference<>();
+    private final AtomicReference<MovingAverage> readKbObservations = new AtomicReference<>();
+    private final AtomicReference<MovingAverage> writeKbObservations = new AtomicReference<>();
+    private final AtomicReference<DoubleMovingAverage> readLatencyObservations = new AtomicReference<>();
+    private final AtomicReference<DoubleMovingAverage> writeLatencyObservations = new AtomicReference<>();
+
+    private long runs = 1;
 
     public AverageIOUsageTracker(
         ThreadPool threadPool,
@@ -37,13 +51,20 @@ public class AverageIOUsageTracker extends AbstractAverageUsageTracker {
         ClusterSettings clusterSettings,
         FsService fsService
     ) {
-        super(threadPool, pollingInterval, windowDuration);
+        //super(threadPool, pollingInterval, windowDuration);
         setFsService(fsService);
+        this.threadPool = threadPool;
+        this.pollingInterval = pollingInterval;
+        this.windowDuration = windowDuration;
+        this.setWindowDuration(windowDuration);
+        this.ioUsageFetcher = new IoUsageFetcher(fsService);
         clusterSettings.addSettingsUpdateConsumer(
-            PerformanceTrackerSettings.GLOBAL_CPU_USAGE_AC_WINDOW_DURATION_SETTING,
+            PerformanceTrackerSettings.GLOBAL_IO_WINDOW_DURATION_SETTING,
             this::setWindowDuration
         );
     }
+
+
 
     public FsService getFsService() {
         return fsService;
@@ -53,66 +74,92 @@ public class AverageIOUsageTracker extends AbstractAverageUsageTracker {
         this.fsService = fsService;
     }
 
-    class DevicePreviousStats {
-        public long ioTime;
-        public double readTime;
-        public double writeTime;
-        public double readOps;
-        public double writeOps;
-        public DevicePreviousStats(long ioTime, double readTime, double writeTime, double readOps, double writeOps) {
-            this.ioTime = ioTime;
-            this.readTime = readTime;
-            this.writeTime = writeTime;
-            this.readOps = readOps;
-            this.writeOps = writeOps;
-        }
+    public double getIoPercentAverage() {
+        return ioTimeObservations.get().getAverage();
     }
 
-    private long monitorIOUtilisation() {
-        logger.info("IO stats is triggered");
-        Map<String, DevicePreviousStats> currentIOTimeMap = new HashMap<>();
-        for (FsInfo.DeviceStats devicesStat : this.fsService.stats().getIoStats().getDevicesStats()) {
-            logger.info("Device Id: {} , IO time : {}", devicesStat.getDeviceName(), devicesStat.getCurrentIOTime());
-            logger.info("Read Latency : {} , Write latency : {} ", devicesStat.getCurrentReadLatency(), devicesStat.getCurrentWriteLatency());
-            logger.info("Write time : {} , Read time : {}", devicesStat.getCurrentWriteTime(), devicesStat.getCurrentReadTime());
-            logger.info("Read latency diff : {} , Write latency diff : {}", devicesStat.getReadLatency(), devicesStat.getWriteLatency());
-            logger.info("Read time diff : {}, Write time diff : {}", devicesStat.getReadTime(), devicesStat.getWriteTime());
+    public double getReadIopsAverage() {
+        return readIopsObservations.get().getAverage();
+    }
 
-            logger.info("Read latency : " + devicesStat.getNewReadLatency() + " Write latency : " + devicesStat.getNewWriteLatency());
+    public double getWriteIopsAverage() {
+        return writeIopsObservations.get().getAverage();
+    }
 
+    public double getReadKbAverage() {
+        return readKbObservations.get().getAverage();
+    }
 
-            if (previousIOTimeMap.containsKey(devicesStat.getDeviceName())){
-                long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).ioTime;
-                double ioUsePercent = (double) (ioSpentTime * 100) / (10 * 1000);
-                //ioExecutionEWMA.addValue(ioUsePercent / 100.0);
+    public double getWriteKbAverage() {
+        return writeKbObservations.get().getAverage();
+    }
 
-                double readOps = devicesStat.currentReadOperations() - previousIOTimeMap.get(devicesStat.getDeviceName()).readOps;
-                double writeOps = devicesStat.currentWriteOpetations() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeOps;
+    public double getReadLatencyAverage() {
+        return readLatencyObservations.get().getAverage();
+    }
 
-                double readTime = devicesStat.getCurrentReadTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).readTime;
-                double writeTime = devicesStat.getWriteTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeTime;
+    public double getWriteLatencyAverage() {
+        return writeLatencyObservations.get().getAverage();
+    }
 
-                double readLatency = readOps / readTime;
-                double wrieLatency = writeOps / writeTime;
+    public AverageDiskStats getAverageDiskStats() {
+        return new AverageDiskStats(getReadIopsAverage(), getWriteIopsAverage(), getReadKbAverage(), getWriteKbAverage(),
+            getReadLatencyAverage(), getWriteLatencyAverage(), getIoPercentAverage());
+    }
 
-                logger.info("read ops : {} , writeops : {} , readtime: {} , writetime: {}", readOps, writeOps, readTime, writeTime);
-                logger.info("Read latency final : " + readLatency  + "write latency final : " + wrieLatency);
+    public void setWindowDuration(TimeValue windowDuration) {
+        int windowSize = (int) (windowDuration.nanos() / pollingInterval.nanos());
+        logger.debug("updated window size: {}", windowSize);
+        ioTimeObservations.set(new MovingAverage(windowSize));
+        readIopsObservations.set(new MovingAverage(windowSize));
+        writeIopsObservations.set(new MovingAverage(windowSize));
+        readKbObservations.set(new MovingAverage(windowSize));
+        writeKbObservations.set(new MovingAverage(windowSize));
+        readLatencyObservations.set(new DoubleMovingAverage(windowSize));
+        writeLatencyObservations.set(new DoubleMovingAverage(windowSize));
+    }
 
-            }
-
-            DevicePreviousStats ps = new DevicePreviousStats(devicesStat.getCurrentIOTime(), devicesStat.getCurrentReadTime(),
-                devicesStat.getCurrentWriteTime(), devicesStat.currentReadOperations(), devicesStat.currentWriteOpetations());
-
-            currentIOTimeMap.put(devicesStat.getDeviceName(), ps);
-            return devicesStat.readOperations() + devicesStat.writeOperations();
+    private void recordUsage(IoUsageFetcher.DiskStats usage) {
+        if(usage.getIoTime() == 0.0) {
+            runs++;
+            return;
+        } else {
+            runs = 1;
         }
-        previousIOTimeMap = currentIOTimeMap;
-        return 0;
-
+        ioTimeObservations.get().record(usage.getIoTime());
+        readIopsObservations.get().record((long)usage.getReadOps());
+        readKbObservations.get().record(usage.getReadkb());
+        double readOps = usage.getReadOps() < 1 ? 1.0 : usage.getReadOps() * 1.0;
+        double writeOps = usage.getWriteOps() < 1 ? 1.0 : usage.getWriteOps() * 1.0;
+        double readTime = usage.getReadTime() < 1 ? 0.0 : usage.getReadTime();
+        double writeTime = usage.getWriteTime() < 1 ? 0.0 : usage.getWriteTime();
+        double readLatency = (readTime / readOps);// * runs;
+        double writeLatency = (writeTime/ writeOps);// * runs;
+        writeLatencyObservations.get().record(writeLatency);
+        readLatencyObservations.get().record(readLatency);
+        writeKbObservations.get().record(usage.getWritekb());
+        writeIopsObservations.get().record((long) usage.getWriteOps());
     }
 
     @Override
-    public long getUsage() {
-        return monitorIOUtilisation();
+    protected void doStart() {
+        scheduledFuture = threadPool.scheduleWithFixedDelay(() -> {
+            IoUsageFetcher.DiskStats usage = getUsage();
+            recordUsage(usage);
+        }, pollingInterval, ThreadPool.Names.GENERIC);
+    }
+
+    @Override
+    protected void doStop() {
+        if (scheduledFuture != null) {
+            scheduledFuture.cancel();
+        }
+    }
+
+    @Override
+    protected void doClose() throws IOException {}
+
+    public IoUsageFetcher.DiskStats getUsage() {
+        return ioUsageFetcher.getDiskUtilizationStats();
     }
 }
