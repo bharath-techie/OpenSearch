@@ -81,9 +81,12 @@ public class IoUsageFetcher {
         double writeLatency = 0.0;
         double readOps = 0.0;
         double writeOps = 0.0;
+        if(this.fsService.stats().getIoStats() == null) {
+            return null;
+        }
         for (FsInfo.DeviceStats devicesStat : this.fsService.stats().getIoStats().getDevicesStats()) {
             if (previousIOTimeMap != null && previousIOTimeMap.containsKey(devicesStat.getDeviceName())){
-                logger.info(this.fsService.stats().getTimestamp());
+                //logger.info(this.fsService.stats().getTimestamp());
                 long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).ioTime;
                 ioUsePercent = (ioSpentTime * 100) / (1000);
                 readOps += devicesStat.currentReadOperations() - previousIOTimeMap.get(devicesStat.getDeviceName()).readOps;
@@ -104,11 +107,11 @@ public class IoUsageFetcher {
                 devicesStat.getCurrentReadKilobytes(), devicesStat.getCurrentWriteKilobytes());
             currentIOTimeMap.put(devicesStat.getDeviceName(), ps);
         }
-        logger.info("Read in MB : {} , Write in MB : {}", readkb/1000, writekb/1000);
+    //    logger.info("Read in MB : {} , Write in MB : {}", readkb/1000, writekb/1000);
 //        readLatency += (readOps / readTime) * 100;
 //        writeLatency += (writeOps / writeTime) * 100;
-        logger.info("read ops : {} , writeops : {} , readtime: {} , writetime: {}", readOps, writeOps, readTime, writeTime);
-        logger.info("Read latency : {}  write latency : {}" , readLatency, writeLatency);
+//        logger.info("read ops : {} , writeops : {} , readtime: {} , writetime: {}", readOps, writeOps, readTime, writeTime);
+//        logger.info("Read latency : {}  write latency : {}" , readLatency, writeLatency);
         logger.info("IO use percent : {}", ioUsePercent);
         previousIOTimeMap = currentIOTimeMap;
 

@@ -145,6 +145,7 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
     protected void doStart() {
         scheduledFuture = threadPool.scheduleWithFixedDelay(() -> {
             IoUsageFetcher.DiskStats usage = getUsage();
+            if(usage == null) return;
             recordUsage(usage);
         }, pollingInterval, ThreadPool.Names.GENERIC);
     }

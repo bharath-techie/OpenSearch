@@ -23,7 +23,7 @@ public class PerformanceTrackerSettings {
         private static final long WINDOW_DURATION = 30;
         private static final long REFRESH_INTERVAL = 1000;
 
-        private static final long IO_POLLING_INTERVAL = 60000;
+        private static final long IO_POLLING_INTERVAL = 1000;
         private static final long IO_WINDOW_DURATION = 60;
     }
 

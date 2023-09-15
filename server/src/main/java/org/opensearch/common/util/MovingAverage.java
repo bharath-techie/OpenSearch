@@ -18,7 +18,7 @@ public class MovingAverage {
     private final long[] observations;
 
     private volatile long count = 0;
-    private volatile double sum = 0;
+    private volatile long sum = 0;
     private volatile double average = 0;
 
     public MovingAverage(int windowSize) {
@@ -67,7 +67,7 @@ public class MovingAverage {
 
         count++;
         sum += delta;
-        average = sum / Math.min(count, observations.length);
+        average = (double) sum / Math.min(count, observations.length);
         return average;
     }
 
