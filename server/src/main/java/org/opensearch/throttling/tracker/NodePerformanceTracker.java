@@ -14,6 +14,7 @@ import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
+import org.opensearch.monitor.fs.FsService;
 import org.opensearch.node.PerformanceCollectorService;
 import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
@@ -26,16 +27,22 @@ import java.io.IOException;
 public class NodePerformanceTracker extends AbstractLifecycleComponent {
     private double cpuUtilizationPercent;
     private double memoryUtilizationPercent;
+
+    private AverageDiskStats averageDiskStats;
     private ThreadPool threadPool;
     private volatile Scheduler.Cancellable scheduledFuture;
     private final ClusterSettings clusterSettings;
     private AverageCpuUsageTracker cpuUsageTracker;
     private AverageMemoryUsageTracker memoryUsageTracker;
+
+    private AverageIOUsageTracker ioUsageTracker;
     private PerformanceCollectorService performanceCollectorService;
 
     private PerformanceTrackerSettings performanceTrackerSettings;
     private static final Logger logger = LogManager.getLogger(NodePerformanceTracker.class);
     private final TimeValue interval;
+
+    private final FsService fsService;
 
     public static final String LOCAL_NODE = "LOCAL";
 
@@ -43,12 +50,14 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
         PerformanceCollectorService performanceCollectorService,
         ThreadPool threadPool,
         Settings settings,
-        ClusterSettings clusterSettings
+        ClusterSettings clusterSettings,
+        FsService fsService
     ) {
         this.performanceCollectorService = performanceCollectorService;
         this.threadPool = threadPool;
         this.clusterSettings = clusterSettings;
         this.performanceTrackerSettings = new PerformanceTrackerSettings(settings, clusterSettings);
+        this.fsService = fsService;
         interval = new TimeValue(performanceTrackerSettings.getRefreshInterval());
         initialize();
     }
@@ -59,6 +68,18 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
 
     private double getAverageMemoryUsed() {
         return memoryUsageTracker.getAverage();
+    }
+
+    private AverageDiskStats getAverageIOUsed() {
+        return ioUsageTracker.getAverageDiskStats();
+    }
+
+    private void setAverageDiskStats(AverageDiskStats averageDiskStats) {
+        this.averageDiskStats = averageDiskStats;
+    }
+
+    private AverageDiskStats getAverageDiskStats() {
+        return averageDiskStats;
     }
 
     private void setCpuUtilizationPercent(double cpuUtilizationPercent) {
@@ -80,10 +101,12 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
     void doRun() {
         setCpuUtilizationPercent(getAverageCpuUsed());
         setMemoryUtilizationPercent(getAverageMemoryUsed());
+        setAverageDiskStats(getAverageIOUsed());
         performanceCollectorService.addNodePerfStatistics(
             LOCAL_NODE,
             getCpuUtilizationPercent(),
             getMemoryUtilizationPercent(),
+            getAverageDiskStats(),
             System.currentTimeMillis()
         );
     }
@@ -102,6 +125,14 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
             performanceTrackerSettings.getMemoryWindowDuration(),
             clusterSettings
         );
+
+        ioUsageTracker = new AverageIOUsageTracker(
+            threadPool,
+            performanceTrackerSettings.getIoPollingInterval(),
+            performanceTrackerSettings.getIoWindowDuration(),
+            clusterSettings,
+            fsService
+        );
     }
 
     @Override
@@ -115,6 +146,7 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
         }, interval, ThreadPool.Names.GENERIC);
         cpuUsageTracker.doStart();
         memoryUsageTracker.doStart();
+        ioUsageTracker.doStart();
     }
 
     @Override
@@ -124,11 +156,13 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
         }
         cpuUsageTracker.doStop();
         memoryUsageTracker.doStop();
+        ioUsageTracker.doStop();
     }
 
     @Override
     protected void doClose() throws IOException {
         cpuUsageTracker.doClose();
         memoryUsageTracker.doClose();
+        ioUsageTracker.doClose();
     }
 }

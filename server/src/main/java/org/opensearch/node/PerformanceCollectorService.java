@@ -13,6 +13,7 @@ import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
+import org.opensearch.throttling.tracker.AverageDiskStats;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -43,13 +44,17 @@ public class PerformanceCollectorService implements ClusterStateListener {
         nodeIdToPerfStats.remove(nodeId);
     }
 
-    public void addNodePerfStatistics(String nodeId, double cpuUtilizationPercent, double memoryUtilizationPercent, long timestamp) {
+    public void addNodePerfStatistics(String nodeId, double cpuUtilizationPercent, double memoryUtilizationPercent,
+                                      AverageDiskStats averageDiskStats,
+                                      long timestamp) {
         nodeIdToPerfStats.compute(nodeId, (id, nodePerfStats) -> {
             if (nodePerfStats == null) {
-                return new NodePerformanceStatistics(nodeId, cpuUtilizationPercent, memoryUtilizationPercent, timestamp);
+                return new NodePerformanceStatistics(nodeId, cpuUtilizationPercent, memoryUtilizationPercent,
+                    averageDiskStats, timestamp);
             } else {
                 nodePerfStats.cpuUtilizationPercent = cpuUtilizationPercent;
                 nodePerfStats.memoryUtilizationPercent = memoryUtilizationPercent;
+                nodePerfStats.averageDiskStats = averageDiskStats;
                 nodePerfStats.timestamp = timestamp;
                 return nodePerfStats;
             }

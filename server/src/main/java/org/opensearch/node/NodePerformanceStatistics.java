@@ -11,6 +11,7 @@ package org.opensearch.node;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.throttling.tracker.AverageDiskStats;
 
 import java.io.IOException;
 import java.util.Locale;
@@ -25,10 +26,14 @@ public class NodePerformanceStatistics implements Writeable {
     double cpuUtilizationPercent;
     double memoryUtilizationPercent;
 
-    public NodePerformanceStatistics(String nodeId, double cpuUtilizationPercent, double memoryUtilizationPercent, long timestamp) {
+    AverageDiskStats averageDiskStats;
+
+    public NodePerformanceStatistics(String nodeId, double cpuUtilizationPercent, double memoryUtilizationPercent,
+                                     AverageDiskStats averageDiskStats, long timestamp) {
         this.nodeId = nodeId;
         this.cpuUtilizationPercent = cpuUtilizationPercent;
         this.memoryUtilizationPercent = memoryUtilizationPercent;
+        this.averageDiskStats = averageDiskStats;
         this.timestamp = timestamp;
     }
 
@@ -36,6 +41,7 @@ public class NodePerformanceStatistics implements Writeable {
         this.nodeId = in.readString();
         this.cpuUtilizationPercent = in.readDouble();
         this.memoryUtilizationPercent = in.readDouble();
+        this.averageDiskStats = new AverageDiskStats(in);
         this.timestamp = in.readLong();
     }
 
@@ -44,6 +50,7 @@ public class NodePerformanceStatistics implements Writeable {
         out.writeString(this.nodeId);
         out.writeDouble(this.cpuUtilizationPercent);
         out.writeDouble(this.memoryUtilizationPercent);
+        this.averageDiskStats.writeTo(out);
         out.writeLong(this.timestamp);
     }
 
@@ -63,6 +70,7 @@ public class NodePerformanceStatistics implements Writeable {
             nodePerformanceStatistics.nodeId,
             nodePerformanceStatistics.cpuUtilizationPercent,
             nodePerformanceStatistics.memoryUtilizationPercent,
+            nodePerformanceStatistics.averageDiskStats,
             nodePerformanceStatistics.timestamp
         );
     }

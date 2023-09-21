@@ -32,6 +32,7 @@
 
 package org.opensearch.action.admin.cluster.node.stats;
 
+import org.mockito.Mockito;
 import org.opensearch.action.admin.indices.stats.CommonStats;
 import org.opensearch.action.admin.indices.stats.CommonStatsFlags;
 import org.opensearch.cluster.coordination.PendingClusterStateStats;
@@ -66,6 +67,7 @@ import org.opensearch.script.ScriptStats;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.test.VersionUtils;
 import org.opensearch.threadpool.ThreadPoolStats;
+import org.opensearch.throttling.tracker.AverageDiskStats;
 import org.opensearch.transport.TransportStats;
 
 import java.io.IOException;
@@ -786,6 +788,7 @@ public class NodeStatsTests extends OpenSearchTestCase {
                         nodeId,
                         randomDoubleBetween(1.0, 100.0, true),
                         randomDoubleBetween(1.0, 100.0, true),
+                        Mockito.mock(AverageDiskStats.class),
                         System.currentTimeMillis()
                     );
                     nodePerfStats.put(nodeId, stats);

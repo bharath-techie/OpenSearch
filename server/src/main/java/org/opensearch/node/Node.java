@@ -795,7 +795,8 @@ public class Node implements Closeable {
                 performanceCollectorService,
                 threadPool,
                 settings,
-                clusterService.getClusterSettings()
+                clusterService.getClusterSettings(),
+                monitorService.fsService()
             );
 
             final AliasValidator aliasValidator = new AliasValidator();
