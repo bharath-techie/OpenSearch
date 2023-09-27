@@ -228,7 +228,6 @@ public class FsHealthService extends AbstractLifecycleComponent implements NodeH
                         }
                         Files.delete(tempDataPath);
                         final long elapsedTime = currentTimeMillisSupplier.getAsLong() - executionStartTime;
-                        logger.info("health check took {}", elapsedTime);
                         if (elapsedTime > slowPathLoggingThreshold.millis()) {
                             logger.warn(
                                 "health check of [{}] took [{}ms] which is above the warn threshold of [{}]",

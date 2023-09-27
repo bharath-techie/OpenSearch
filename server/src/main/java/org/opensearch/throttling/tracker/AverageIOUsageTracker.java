@@ -20,8 +20,14 @@ import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
 import java.io.IOException;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+/**
+ * This class calculates the average of various IO stats such as IOPS, throughput and IO use percent
+ * for a given window and polling interval
+ */
 public class AverageIOUsageTracker extends AbstractLifecycleComponent {
 
     private static final Logger logger = LogManager.getLogger(AverageCpuUsageTracker.class);
@@ -41,9 +47,7 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
     private final AtomicReference<MovingAverage> writeKbObservations = new AtomicReference<>();
     private final AtomicReference<DoubleMovingAverage> readLatencyObservations = new AtomicReference<>();
     private final AtomicReference<DoubleMovingAverage> writeLatencyObservations = new AtomicReference<>();
-
-    private long runs = 1;
-
+    private final Map<String, IoUsageFetcher.DiskStats> previousIOTimeMap = new HashMap<>();
     public AverageIOUsageTracker(
         ThreadPool threadPool,
         TimeValue pollingInterval,
@@ -51,7 +55,6 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
         ClusterSettings clusterSettings,
         FsService fsService
     ) {
-        //super(threadPool, pollingInterval, windowDuration);
         setFsService(fsService);
         this.threadPool = threadPool;
         this.pollingInterval = pollingInterval;
@@ -120,24 +123,18 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
     }
 
     private void recordUsage(IoUsageFetcher.DiskStats usage) {
-        if(usage.getIoTime() == 0.0) {
-            runs++;
-            return;
-        } else {
-            runs = 1;
-        }
         ioTimeObservations.get().record(usage.getIoTime());
         readIopsObservations.get().record((long)usage.getReadOps());
-        readKbObservations.get().record(usage.getReadkb());
+        readKbObservations.get().record(usage.getReadThroughputInKB());
         double readOps = usage.getReadOps() < 1 ? 1.0 : usage.getReadOps() * 1.0;
         double writeOps = usage.getWriteOps() < 1 ? 1.0 : usage.getWriteOps() * 1.0;
         double readTime = usage.getReadTime() < 1 ? 0.0 : usage.getReadTime();
         double writeTime = usage.getWriteTime() < 1 ? 0.0 : usage.getWriteTime();
-        double readLatency = (readTime / readOps);// * runs;
-        double writeLatency = (writeTime/ writeOps);// * runs;
+        double readLatency = (readTime / readOps);
+        double writeLatency = (writeTime/ writeOps);
         writeLatencyObservations.get().record(writeLatency);
         readLatencyObservations.get().record(readLatency);
-        writeKbObservations.get().record(usage.getWritekb());
+        writeKbObservations.get().record(usage.getWriteThroughputInKB());
         writeIopsObservations.get().record((long) usage.getWriteOps());
     }
 
@@ -161,6 +158,6 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
     protected void doClose() throws IOException {}
 
     public IoUsageFetcher.DiskStats getUsage() {
-        return ioUsageFetcher.getDiskUtilizationStats();
+        return ioUsageFetcher.getDiskUtilizationStats(previousIOTimeMap);
     }
 }

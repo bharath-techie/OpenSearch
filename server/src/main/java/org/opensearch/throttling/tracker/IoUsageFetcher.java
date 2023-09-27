@@ -16,8 +16,12 @@ import org.opensearch.monitor.fs.FsService;
 import java.util.HashMap;
 import java.util.Map;
 
-public class IoUsageFetcher {
-    private static final Logger logger = LogManager.getLogger(AverageCpuUsageTracker.class);
+/**
+ * This class calculates the delta of IO utilization data such as IOPS, throughput, IO use percent etc.
+ * from FS stats across all data disks
+ */
+class IoUsageFetcher {
+    private static final Logger logger = LogManager.getLogger(IoUsageFetcher.class);
     private Map<String, DiskStats> previousIOTimeMap;
     private FsService fsService;
     public IoUsageFetcher(FsService fsService){
@@ -30,16 +34,17 @@ public class IoUsageFetcher {
         public double writeTime;
         public double readOps;
         public double writeOps;
-        public long readkb;
-        public long writekb;
-        public DiskStats(long ioTime, double readTime, double writeTime, double readOps, double writeOps, long readkb, long writekb) {
+        public long readThroughputInKB;
+        public long writeThroughputInKB;
+        public DiskStats(long ioTime, double readTime, double writeTime, double readOps, double writeOps,
+                         long readThroughputInKB, long writeThroughputInKB) {
             this.ioTime = ioTime;
             this.readTime = readTime;
             this.writeTime = writeTime;
             this.readOps = readOps;
             this.writeOps = writeOps;
-            this.readkb = readkb;
-            this.writekb = writekb;
+            this.readThroughputInKB = readThroughputInKB;
+            this.writeThroughputInKB = writeThroughputInKB;
         }
 
         public long getIoTime() {
@@ -54,8 +59,8 @@ public class IoUsageFetcher {
             return readTime;
         }
 
-        public long getReadkb() {
-            return readkb;
+        public long getReadThroughputInKB() {
+            return readThroughputInKB;
         }
 
         public double getWriteOps() {
@@ -66,54 +71,47 @@ public class IoUsageFetcher {
             return writeTime;
         }
 
-        public long getWritekb() {
-            return writekb;
+        public long getWriteThroughputInKB() {
+            return writeThroughputInKB;
         }
     }
-    public DiskStats getDiskUtilizationStats() {
+    public DiskStats getDiskUtilizationStats(Map<String, DiskStats> previousIOTimeMap) {
         Map<String, DiskStats> currentIOTimeMap = new HashMap<>();
         long ioUsePercent = 0;
         long readkb = 0;
         long writekb = 0;
         double readTime = 0;
         double writeTime = 0;
-        double readLatency = 0.0;
-        double writeLatency = 0.0;
         double readOps = 0.0;
         double writeOps = 0.0;
+        // For non linux machines, this will be null
         if(this.fsService.stats().getIoStats() == null) {
             return null;
         }
+        // Sum the stats across all data volumes
         for (FsInfo.DeviceStats devicesStat : this.fsService.stats().getIoStats().getDevicesStats()) {
             if (previousIOTimeMap != null && previousIOTimeMap.containsKey(devicesStat.getDeviceName())){
-                //logger.info(this.fsService.stats().getTimestamp());
                 long ioSpentTime = devicesStat.getCurrentIOTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).ioTime;
-                ioUsePercent = (ioSpentTime * 100) / (1000);
+                ioUsePercent = ioSpentTime / 10;
                 readOps += devicesStat.currentReadOperations() - previousIOTimeMap.get(devicesStat.getDeviceName()).readOps;
                 writeOps += devicesStat.currentWriteOpetations() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeOps;
-                readkb += devicesStat.getCurrentReadKilobytes() - previousIOTimeMap.get(devicesStat.getDeviceName()).readkb;
-                writekb += devicesStat.getCurrentWriteKilobytes() - previousIOTimeMap.get(devicesStat.getDeviceName()).writekb;
+                readkb += devicesStat.getCurrentReadKilobytes() - previousIOTimeMap.get(devicesStat.getDeviceName()).readThroughputInKB;
+                writekb += devicesStat.getCurrentWriteKilobytes() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeThroughputInKB;
                 readTime += devicesStat.getCurrentReadTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).readTime;
                 writeTime += devicesStat.getCurrentWriteTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeTime;
+                // Avoid dividing by fractions which will give false positives in results
                 if(readTime < 1) readTime = 1;
                 if(readOps < 1) readOps = 1;
                 if(writeOps < 1) writeOps = 1;
                 if(writeTime < 1) writeTime = 1;
-                readLatency += (readTime / readOps);
-                writeLatency += (writeTime / writeOps);
             }
             DiskStats ps = new DiskStats(devicesStat.getCurrentIOTime(), devicesStat.getCurrentReadTime(),
                 devicesStat.getCurrentWriteTime(), devicesStat.currentReadOperations(), devicesStat.currentWriteOpetations(),
                 devicesStat.getCurrentReadKilobytes(), devicesStat.getCurrentWriteKilobytes());
             currentIOTimeMap.put(devicesStat.getDeviceName(), ps);
         }
-    //    logger.info("Read in MB : {} , Write in MB : {}", readkb/1000, writekb/1000);
-//        readLatency += (readOps / readTime) * 100;
-//        writeLatency += (writeOps / writeTime) * 100;
-//        logger.info("read ops : {} , writeops : {} , readtime: {} , writetime: {}", readOps, writeOps, readTime, writeTime);
-//        logger.info("Read latency : {}  write latency : {}" , readLatency, writeLatency);
-        logger.info("IO use percent : {}", ioUsePercent);
-        previousIOTimeMap = currentIOTimeMap;
+        logger.debug("IO use percent : {}", ioUsePercent);
+        previousIOTimeMap.putAll(currentIOTimeMap);
 
         return new DiskStats(ioUsePercent, readTime, writeTime, readOps, writeOps, readkb, writekb);
     }

@@ -125,8 +125,6 @@ public class FsProbe {
                     final long sectorsWritten = Long.parseLong(fields[9]);
                     final double readTime = Double.parseDouble(fields[6]);
                     final double writeTime = Double.parseDouble(fields[10]);
-                    final double readLatency = readTime / readsCompleted;
-                    final double writeLatency = writeTime / writesCompleted;
                     final long ioTime = Long.parseLong(fields[12]);
                     final FsInfo.DeviceStats deviceStats = new FsInfo.DeviceStats(
                         majorDeviceNumber,
@@ -139,8 +137,6 @@ public class FsProbe {
                         ioTime,
                         readTime,
                         writeTime,
-                        readLatency,
-                        writeLatency,
                         deviceMap.get(Tuple.tuple(majorDeviceNumber, minorDeviceNumber))
                     );
                     devicesStats.add(deviceStats);

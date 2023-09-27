@@ -48,7 +48,7 @@ public class NodesPerformanceStats implements Writeable, ToXContentFragment {
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.startObject("nodes_performance_stats");
+        builder.startObject("performance_stats");
         for (String nodeId : nodePerfStats.keySet()) {
             builder.startObject(nodeId);
             NodePerformanceStatistics perfStats = nodePerfStats.get(nodeId);
