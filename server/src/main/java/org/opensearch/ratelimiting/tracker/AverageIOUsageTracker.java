@@ -47,6 +47,8 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
     private final AtomicReference<MovingAverage> writeKbObservations = new AtomicReference<>();
     private final AtomicReference<MovingAverageDouble> readLatencyObservations = new AtomicReference<>();
     private final AtomicReference<MovingAverageDouble> writeLatencyObservations = new AtomicReference<>();
+
+    private final AtomicReference<MovingAverageDouble> queueSizeObservations = new AtomicReference<>();
     private final Map<String, IoUsageFetcher.DiskStats> previousIOTimeMap = new HashMap<>();
     public AverageIOUsageTracker(
         ThreadPool threadPool,
@@ -61,6 +63,7 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
         this.windowDuration = windowDuration;
         this.setWindowDuration(windowDuration);
         this.ioUsageFetcher = new IoUsageFetcher(fsService);
+
         // Add this post integration
 //        clusterSettings.addSettingsUpdateConsumer(
 //            PerformanceTrackerSettings.GLOBAL_IO_WINDOW_DURATION_SETTING,
@@ -106,9 +109,11 @@ public class AverageIOUsageTracker extends AbstractLifecycleComponent {
         return writeLatencyObservations.get().getAverage();
     }
 
+    public double getQueueSizeAverage() { return queueSizeObservations.get().getAverage(); }
+
     public AverageDiskStats getAverageDiskStats() {
         return new AverageDiskStats(getReadIopsAverage(), getWriteIopsAverage(), getReadKbAverage(), getWriteKbAverage(),
-            getReadLatencyAverage(), getWriteLatencyAverage(), getIoPercentAverage());
+            getReadLatencyAverage(), getWriteLatencyAverage(), getIoPercentAverage(), getQueueSizeAverage());
     }
 
     public void setWindowDuration(TimeValue windowDuration) {

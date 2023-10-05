@@ -35,8 +35,10 @@ class IoUsageFetcher {
         public double writeOps;
         public long readThroughputInKB;
         public long writeThroughputInKB;
+
+        public double queueSize;
         public DiskStats(long ioTime, double readTime, double writeTime, double readOps, double writeOps,
-                         long readThroughputInKB, long writeThroughputInKB) {
+                         long readThroughputInKB, long writeThroughputInKB, double queueSize) {
             this.ioTime = ioTime;
             this.readTime = readTime;
             this.writeTime = writeTime;
@@ -44,6 +46,7 @@ class IoUsageFetcher {
             this.writeOps = writeOps;
             this.readThroughputInKB = readThroughputInKB;
             this.writeThroughputInKB = writeThroughputInKB;
+            this.queueSize = queueSize;
         }
 
         public long getIoTime() {
@@ -83,6 +86,7 @@ class IoUsageFetcher {
         double writeTime = 0;
         double readOps = 0.0;
         double writeOps = 0.0;
+        double queueSize = 0.0;
         // For non linux machines, this will be null
         if(this.fsService.stats().getIoStats() == null) {
             return null;
@@ -98,6 +102,7 @@ class IoUsageFetcher {
                 writekb += devicesStat.getCurrentWriteKilobytes() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeThroughputInKB;
                 readTime += devicesStat.getCurrentReadTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).readTime;
                 writeTime += devicesStat.getCurrentWriteTime() - previousIOTimeMap.get(devicesStat.getDeviceName()).writeTime;
+                queueSize += devicesStat.getCurrentQueueSize() - previousIOTimeMap.get(devicesStat.getDeviceName()).queueSize;
                 // Avoid dividing by fractions which will give false positives in results
                 if(readTime < 1) readTime = 1;
                 if(readOps < 1) readOps = 1;
@@ -106,12 +111,12 @@ class IoUsageFetcher {
             }
             DiskStats ps = new DiskStats(devicesStat.getCurrentIOTime(), devicesStat.getCurrentReadTime(),
                 devicesStat.getCurrentWriteTime(), devicesStat.currentReadOperations(), devicesStat.currentWriteOperations(),
-                devicesStat.getCurrentReadKilobytes(), devicesStat.getCurrentWriteKilobytes());
+                devicesStat.getCurrentReadKilobytes(), devicesStat.getCurrentWriteKilobytes(), devicesStat.getCurrentQueueSize());
             currentIOTimeMap.put(devicesStat.getDeviceName(), ps);
         }
         logger.debug("IO use percent : {}", ioUsePercent);
         previousIOTimeMap.putAll(currentIOTimeMap);
 
-        return new DiskStats(ioUsePercent, readTime, writeTime, readOps, writeOps, readkb, writekb);
+        return new DiskStats(ioUsePercent, readTime, writeTime, readOps, writeOps, readkb, writekb, queueSize);
     }
 }

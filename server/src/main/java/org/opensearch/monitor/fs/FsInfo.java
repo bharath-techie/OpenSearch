@@ -242,6 +242,10 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
         final double currentWriteTime;
         final double previousWriteTime;
 
+        final double currentQueueSize;
+
+        final double previousQueueSize;
+
         public DeviceStats(
             final int majorDeviceNumber,
             final int minorDeviceNumber,
@@ -253,6 +257,7 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             final long currentIOTime,
             final double currentReadTime,
             final double currentWriteTime,
+            final double currentQueueSize,
             final DeviceStats previousDeviceStats
         ) {
             this(
@@ -272,7 +277,9 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
                 currentReadTime,
                 previousDeviceStats != null ? previousDeviceStats.previousReadTime : -1.0,
                 currentWriteTime,
-                previousDeviceStats != null ? previousDeviceStats.previousWriteTime : -1.0
+                previousDeviceStats != null ? previousDeviceStats.previousWriteTime : -1.0,
+                currentQueueSize,
+                previousDeviceStats != null ? previousDeviceStats.previousQueueSize : -1.0
             );
         }
 
@@ -293,7 +300,9 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             final double currentReadTime,
             final double previousReadTime,
             final double currentWriteTime,
-            final double previousWriteTime
+            final double previousWriteTime,
+            final double currentQueueSize,
+            final double previousQueueSize
         ) {
             this.majorDeviceNumber = majorDeviceNumber;
             this.minorDeviceNumber = minorDeviceNumber;
@@ -312,6 +321,8 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             this.previousReadTime = previousReadTime;
             this.currentWriteTime = currentWriteTime;
             this.previousWriteTime = previousWriteTime;
+            this.currentQueueSize = currentQueueSize;
+            this.previousQueueSize = previousQueueSize;
         }
 
         public DeviceStats(StreamInput in) throws IOException {
@@ -332,6 +343,8 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             previousReadTime = in.readDouble();
             currentWriteTime = in.readDouble();
             previousWriteTime = in.readDouble();
+            currentQueueSize = in.readDouble();
+            previousQueueSize = in.readDouble();
         }
 
         @Override
@@ -352,6 +365,8 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
             out.writeDouble(currentReadTime);
             out.writeDouble(currentWriteTime);
             out.writeDouble(previousWriteTime);
+            out.writeDouble(currentQueueSize);
+            out.writeDouble(previousQueueSize);
         }
 
         public long operations() {
@@ -405,6 +420,8 @@ public class FsInfo implements Iterable<FsInfo.Path>, Writeable, ToXContentFragm
         public double getCurrentWriteTime() {
             return this.currentWriteTime;
         }
+
+        public double getCurrentQueueSize() { return this.currentQueueSize; }
 
         public String getDeviceName() {
             return this.deviceName;

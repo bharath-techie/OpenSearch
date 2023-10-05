@@ -8,7 +8,6 @@
 
 package org.opensearch.ratelimiting.tracker;
 
-import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
@@ -17,7 +16,6 @@ import org.opensearch.core.xcontent.XContentBuilder;
 
 import java.io.IOException;
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
 
 public class AverageDiskStats implements Writeable {
     private final double readIopsAverage;
@@ -28,8 +26,11 @@ public class AverageDiskStats implements Writeable {
     private final double writeLatencyAverage;
     private final double ioUtilizationPercent;
 
+    private final double queueSize;
+
     public AverageDiskStats(double readIopsAverage, double writeIopsAverage, double readKbAverage, double writeKbAverage,
-                            double readLatencyAverage, double writeLatencyAverage, double ioUtilizationPercent) {
+                            double readLatencyAverage, double writeLatencyAverage, double ioUtilizationPercent,
+                            double queueSize) {
         this.readIopsAverage = readIopsAverage;
         this.writeIopsAverage = writeIopsAverage;
         this.readKbAverage = readKbAverage;
@@ -37,6 +38,7 @@ public class AverageDiskStats implements Writeable {
         this.readLatencyAverage = readLatencyAverage;
         this.writeLatencyAverage = writeLatencyAverage;
         this.ioUtilizationPercent = ioUtilizationPercent;
+        this.queueSize = queueSize;
     }
 
     public AverageDiskStats(StreamInput in) throws IOException {
@@ -47,6 +49,7 @@ public class AverageDiskStats implements Writeable {
         this.writeKbAverage = in.readDouble();
         this.writeLatencyAverage = in.readDouble();
         this.ioUtilizationPercent = in.readDouble();
+        this.queueSize = in.readDouble();
     }
 
     public double getIoUtilizationPercent() {
@@ -82,6 +85,14 @@ public class AverageDiskStats implements Writeable {
 
     }
 
+    @Override
+    public String toString() {
+        return String.format("IO_UTIL : {} , Queue_size: {}, Read_latency: {} , Read_Iops: {}, " +
+            "ReadThroughput: {}, Write_latency : {}, Write_Iops : {}, WriteThroughput : {}", ioUtilizationPercent,
+            queueSize, readLatencyAverage, readIopsAverage, readKbAverage, writeLatencyAverage, writeIopsAverage,
+            writeKbAverage);
+    }
+
     public XContentBuilder toXContent(XContentBuilder builder, ToXContent.Params params) throws IOException {
         builder.startObject("io_stats");
         builder.field("read_iops_average", String.format(Locale.ROOT, "%.1f", readIopsAverage ));
@@ -91,6 +102,7 @@ public class AverageDiskStats implements Writeable {
         builder.field("read_latency_average", String.format(Locale.ROOT, "%.8f", readLatencyAverage));
         builder.field("write_latency_average", String.format(Locale.ROOT, "%.8f", writeLatencyAverage));
         builder.field("io_utilization_percent", String.format(Locale.ROOT, "%.3f", ioUtilizationPercent));
+        builder.field("queue_size", String.format(Locale.ROOT, "%.3f", queueSize));
         builder.endObject();
         return builder;
     }
