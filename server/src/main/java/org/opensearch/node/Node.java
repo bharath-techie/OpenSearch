@@ -195,6 +195,7 @@ import org.opensearch.plugins.SearchPipelinePlugin;
 import org.opensearch.plugins.SearchPlugin;
 import org.opensearch.plugins.SystemIndexPlugin;
 import org.opensearch.plugins.TelemetryPlugin;
+import org.opensearch.ratelimiting.tracker.NodePerformanceTracker;
 import org.opensearch.repositories.RepositoriesModule;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.rest.RestController;
@@ -1118,6 +1119,12 @@ public class Node implements Closeable {
             );
             resourcesToClose.add(persistentTasksClusterService);
             final PersistentTasksService persistentTasksService = new PersistentTasksService(clusterService, threadPool, client);
+            final NodePerformanceTracker nodePerformanceTracker = new NodePerformanceTracker(
+                threadPool,
+                settings,
+                clusterService.getClusterSettings(),
+                monitorService.fsService()
+            );
 
             modules.add(b -> {
                 b.bind(Node.class).toInstance(this);
@@ -1206,6 +1213,7 @@ public class Node implements Closeable {
                 b.bind(SearchRequestStats.class).toInstance(searchRequestStats);
                 b.bind(RemoteClusterStateService.class).toProvider(() -> remoteClusterStateService);
                 b.bind(PersistedStateRegistry.class).toInstance(persistedStateRegistry);
+                b.bind(NodePerformanceTracker.class).toInstance(nodePerformanceTracker);
             });
             injector = modules.createInjector();
 
@@ -1315,6 +1323,7 @@ public class Node implements Closeable {
         injector.getInstance(RepositoriesService.class).start();
         injector.getInstance(SearchService.class).start();
         injector.getInstance(FsHealthService.class).start();
+        injector.getInstance(NodePerformanceTracker.class).start();
         nodeService.getMonitorService().start();
         nodeService.getSearchBackpressureService().start();
         nodeService.getTaskCancellationMonitoringService().start();
@@ -1482,6 +1491,7 @@ public class Node implements Closeable {
         injector.getInstance(GatewayService.class).stop();
         injector.getInstance(SearchService.class).stop();
         injector.getInstance(TransportService.class).stop();
+        injector.getInstance(NodePerformanceTracker.class).stop();
         nodeService.getTaskCancellationMonitoringService().stop();
 
         pluginLifecycleComponents.forEach(LifecycleComponent::stop);
@@ -1547,6 +1557,8 @@ public class Node implements Closeable {
         toClose.add(() -> stopWatch.stop().start("transport"));
         toClose.add(injector.getInstance(TransportService.class));
         toClose.add(nodeService.getTaskCancellationMonitoringService());
+        toClose.add(() -> stopWatch.stop().start("node_performance_tracker"));
+        toClose.add(injector.getInstance(NodePerformanceTracker.class));
 
         for (LifecycleComponent plugin : pluginLifecycleComponents) {
             toClose.add(() -> stopWatch.stop().start("plugin(" + plugin.getClass().getName() + ")"));
