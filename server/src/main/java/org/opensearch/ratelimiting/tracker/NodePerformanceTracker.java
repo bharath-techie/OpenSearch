@@ -12,6 +12,7 @@ import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
+import org.opensearch.monitor.fs.FsService;
 import org.opensearch.threadpool.ThreadPool;
 
 /**
@@ -22,13 +23,17 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
     private final ClusterSettings clusterSettings;
     private AverageCpuUsageTracker cpuUsageTracker;
     private AverageMemoryUsageTracker memoryUsageTracker;
-
+    private AverageDiskStats averageDiskStats;
+    private AverageIOUsageTracker ioUsageTracker;
+    private final FsService fsService;
     private PerformanceTrackerSettings performanceTrackerSettings;
 
-    public NodePerformanceTracker(ThreadPool threadPool, Settings settings, ClusterSettings clusterSettings) {
+    public NodePerformanceTracker(ThreadPool threadPool, Settings settings, ClusterSettings clusterSettings,
+                                  FsService fsService) {
         this.threadPool = threadPool;
         this.clusterSettings = clusterSettings;
         this.performanceTrackerSettings = new PerformanceTrackerSettings(settings);
+        this.fsService = fsService;
         initialize();
     }
 
@@ -79,6 +84,29 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
             PerformanceTrackerSettings.GLOBAL_JVM_USAGE_AC_WINDOW_DURATION_SETTING,
             this::setMemoryWindowDuration
         );
+        ioUsageTracker = new AverageIOUsageTracker(
+            threadPool,
+            performanceTrackerSettings.getIoPollingInterval(),
+            performanceTrackerSettings.getIoWindowDuration(),
+            clusterSettings,
+            fsService
+        );
+        clusterSettings.addSettingsUpdateConsumer(
+            PerformanceTrackerSettings.GLOBAL_IO_WINDOW_DURATION_SETTING,
+            this::setIoWindowDuration
+        );
+    }
+
+    private AverageDiskStats getAverageIOUsed() {
+        return ioUsageTracker.getAverageDiskStats();
+    }
+
+    private void setAverageDiskStats(AverageDiskStats averageDiskStats) {
+        this.averageDiskStats = averageDiskStats;
+    }
+
+    public AverageDiskStats getAverageDiskStats() {
+        return ioUsageTracker.getAverageDiskStats();
     }
 
     private void setMemoryWindowDuration(TimeValue windowDuration) {
@@ -89,6 +117,11 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
     private void setCpuWindowDuration(TimeValue windowDuration) {
         cpuUsageTracker.setWindowSize(windowDuration);
         performanceTrackerSettings.setCpuWindowDuration(windowDuration);
+    }
+
+    private void setIoWindowDuration(TimeValue windowDuration) {
+        ioUsageTracker.setWindowDuration(windowDuration);
+        performanceTrackerSettings.setIOWindowDuration(windowDuration);
     }
 
     /**
@@ -102,17 +135,20 @@ public class NodePerformanceTracker extends AbstractLifecycleComponent {
     protected void doStart() {
         cpuUsageTracker.doStart();
         memoryUsageTracker.doStart();
+        ioUsageTracker.doStart();
     }
 
     @Override
     protected void doStop() {
         cpuUsageTracker.doStop();
         memoryUsageTracker.doStop();
+        ioUsageTracker.doStop();
     }
 
     @Override
     protected void doClose() {
         cpuUsageTracker.doClose();
         memoryUsageTracker.doClose();
+        ioUsageTracker.doClose();
     }
 }

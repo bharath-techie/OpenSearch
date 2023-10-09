@@ -17,6 +17,7 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
+import org.opensearch.ratelimiting.tracker.AverageDiskStats;
 import org.opensearch.ratelimiting.tracker.NodePerformanceTracker;
 import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
@@ -74,14 +75,18 @@ public class PerformanceCollectorService extends AbstractLifecycleComponent impl
     /**
      * Collect node performance statistics along with the timestamp
      */
-    public void collectNodePerfStatistics(String nodeId, long timestamp, double memoryUtilizationPercent, double cpuUtilizationPercent) {
+    public void collectNodePerfStatistics(String nodeId, long timestamp, double memoryUtilizationPercent,
+                                          double cpuUtilizationPercent,
+                                          AverageDiskStats averageDiskStats) {
         nodeIdToPerfStats.compute(nodeId, (id, nodePerfStats) -> {
             if (nodePerfStats == null) {
-                return new NodePerformanceStats(nodeId, timestamp, memoryUtilizationPercent, cpuUtilizationPercent);
+                return new NodePerformanceStats(nodeId, timestamp, memoryUtilizationPercent, cpuUtilizationPercent,
+                    averageDiskStats);
             } else {
                 nodePerfStats.cpuUtilizationPercent = cpuUtilizationPercent;
                 nodePerfStats.memoryUtilizationPercent = memoryUtilizationPercent;
                 nodePerfStats.timestamp = timestamp;
+                nodePerfStats.averageDiskStats = averageDiskStats;
                 return nodePerfStats;
             }
         });
@@ -121,7 +126,8 @@ public class PerformanceCollectorService extends AbstractLifecycleComponent impl
                 clusterService.state().nodes().getLocalNodeId(),
                 System.currentTimeMillis(),
                 nodePerformanceTracker.getMemoryUtilizationPercent(),
-                nodePerformanceTracker.getCpuUtilizationPercent()
+                nodePerformanceTracker.getCpuUtilizationPercent(),
+                nodePerformanceTracker.getAverageDiskStats()
             );
         }
     }

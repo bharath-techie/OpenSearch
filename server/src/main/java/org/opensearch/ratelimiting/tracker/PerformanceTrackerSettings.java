@@ -26,6 +26,8 @@ public class PerformanceTrackerSettings {
          * This is the default window duration on which the average resource utilization values will be calculated
          */
         private static final long WINDOW_DURATION_IN_SECONDS = 30;
+        private static final long IO_POLLING_INTERVAL = 1000;
+        private static final long IO_WINDOW_DURATION = 60;
     }
 
     public static final Setting<TimeValue> GLOBAL_CPU_USAGE_AC_POLLING_INTERVAL_SETTING = Setting.positiveTimeSetting(
@@ -52,16 +54,32 @@ public class PerformanceTrackerSettings {
         Setting.Property.Dynamic,
         Setting.Property.NodeScope
     );
+
+    public static final Setting<TimeValue> GLOBAL_IO_AC_POLLING_INTERVAL_SETTING = Setting.positiveTimeSetting(
+        "node.perf_tracker.global_io_usage.polling_interval",
+        TimeValue.timeValueMillis(Defaults.IO_POLLING_INTERVAL),
+        Setting.Property.NodeScope
+    );
+    public static final Setting<TimeValue> GLOBAL_IO_WINDOW_DURATION_SETTING = Setting.positiveTimeSetting(
+        "node.perf_tracker.global_io_usage.window_duration",
+        TimeValue.timeValueSeconds(Defaults.IO_WINDOW_DURATION),
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
     private volatile TimeValue cpuWindowDuration;
     private volatile TimeValue cpuPollingInterval;
     private volatile TimeValue memoryWindowDuration;
     private volatile TimeValue memoryPollingInterval;
+    private volatile TimeValue ioWindowDuration;
+    private volatile TimeValue ioPollingInterval;
 
     public PerformanceTrackerSettings(Settings settings) {
         this.cpuPollingInterval = GLOBAL_CPU_USAGE_AC_POLLING_INTERVAL_SETTING.get(settings);
         this.cpuWindowDuration = GLOBAL_CPU_USAGE_AC_WINDOW_DURATION_SETTING.get(settings);
         this.memoryPollingInterval = GLOBAL_JVM_USAGE_AC_POLLING_INTERVAL_SETTING.get(settings);
         this.memoryWindowDuration = GLOBAL_JVM_USAGE_AC_WINDOW_DURATION_SETTING.get(settings);
+        this.ioWindowDuration = GLOBAL_IO_WINDOW_DURATION_SETTING.get(settings);
+        this.ioPollingInterval = GLOBAL_IO_AC_POLLING_INTERVAL_SETTING.get(settings);
     }
 
     public TimeValue getCpuWindowDuration() {
@@ -86,5 +104,19 @@ public class PerformanceTrackerSettings {
 
     public void setMemoryWindowDuration(TimeValue memoryWindowDuration) {
         this.memoryWindowDuration = memoryWindowDuration;
+    }
+
+    public void setIOWindowDuration(TimeValue ioWindowDuration) {
+        this.ioWindowDuration = ioWindowDuration;
+    }
+
+    public TimeValue getIoWindowDuration() { return ioWindowDuration; }
+
+    public void setIoPollingInterval(TimeValue ioPollingInterval) {
+        this.ioPollingInterval = ioPollingInterval;
+    }
+
+    public TimeValue getIoPollingInterval() {
+        return ioPollingInterval;
     }
 }

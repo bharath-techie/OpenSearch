@@ -1073,7 +1073,8 @@ public class Node implements Closeable {
             final NodePerformanceTracker nodePerformanceTracker = new NodePerformanceTracker(
                 threadPool,
                 settings,
-                clusterService.getClusterSettings()
+                clusterService.getClusterSettings(),
+                monitorService.fsService()
             );
             final PerformanceCollectorService performanceCollectorService = new PerformanceCollectorService(
                 nodePerformanceTracker,

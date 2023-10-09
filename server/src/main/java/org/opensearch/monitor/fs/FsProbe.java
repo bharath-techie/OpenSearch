@@ -119,10 +119,16 @@ public class FsProbe {
                         continue;
                     }
                     final String deviceName = fields[2];
+                    //String queueSize =  readDiskDeviceStats(deviceName).get(0).trim().split("\\s+")[10];
+
                     final long readsCompleted = Long.parseLong(fields[3]);
                     final long sectorsRead = Long.parseLong(fields[5]);
                     final long writesCompleted = Long.parseLong(fields[7]);
                     final long sectorsWritten = Long.parseLong(fields[9]);
+                    final double readTime = Double.parseDouble(fields[6]);
+                    final double writeTime = Double.parseDouble(fields[10]);
+                    final long ioTime = fields.length >= 12 ? Long.parseLong(fields[12]) : -1;
+                    final double avgQueueSize = fields.length >= 13 ? ( Double.parseDouble(fields[13]) / 1000.0): -1;
                     final FsInfo.DeviceStats deviceStats = new FsInfo.DeviceStats(
                         majorDeviceNumber,
                         minorDeviceNumber,
@@ -131,6 +137,10 @@ public class FsProbe {
                         sectorsRead,
                         writesCompleted,
                         sectorsWritten,
+                        ioTime,
+                        readTime,
+                        writeTime,
+                        avgQueueSize,
                         deviceMap.get(Tuple.tuple(majorDeviceNumber, minorDeviceNumber))
                     );
                     devicesStats.add(deviceStats);
@@ -147,6 +157,11 @@ public class FsProbe {
             );
             return null;
         }
+    }
+
+    @SuppressForbidden(reason = "read /proc/diskstats")
+    List<String> readDiskDeviceStats(String device) throws IOException {
+        return Files.readAllLines(PathUtils.get("/sys/block/" + device  + "/stat"));
     }
 
     @SuppressForbidden(reason = "read /proc/diskstats")

@@ -62,6 +62,7 @@ public class NodesPerformanceStats implements Writeable, ToXContentFragment {
                 );
                 builder.field("cpu_utilization_percent", String.format(Locale.ROOT, "%.1f", perfStats.cpuUtilizationPercent));
                 builder.field("memory_utilization_percent", String.format(Locale.ROOT, "%.1f", perfStats.memoryUtilizationPercent));
+                perfStats.averageDiskStats.toXContent(builder, params);
             }
             builder.endObject();
         }

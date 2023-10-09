@@ -91,6 +91,12 @@ public class FsProbeTests extends OpenSearchTestCase {
                     assertThat(deviceStats.previousWritesCompleted, equalTo(-1L));
                     assertThat(deviceStats.currentSectorsWritten, greaterThanOrEqualTo(0L));
                     assertThat(deviceStats.previousSectorsWritten, equalTo(-1L));
+                    assertThat(deviceStats.previousIOTime, equalTo(-1L));
+                    assertThat(deviceStats.currentIOTime, greaterThanOrEqualTo(0L));
+                    assertThat(deviceStats.previousReadTime, equalTo(-1.0));
+                    assertThat(deviceStats.previousReadTime, greaterThanOrEqualTo(0.0));
+                    assertThat(deviceStats.previousWriteTime, equalTo(-1.0));
+                    assertThat(deviceStats.previousWriteTime, greaterThanOrEqualTo(0.0));
                 }
             } else {
                 assertNull(stats.getIoStats());
@@ -243,6 +249,14 @@ public class FsProbeTests extends OpenSearchTestCase {
         assertThat(first.devicesStats[0].previousWritesCompleted, equalTo(-1L));
         assertThat(first.devicesStats[0].currentSectorsWritten, equalTo(118857776L));
         assertThat(first.devicesStats[0].previousSectorsWritten, equalTo(-1L));
+        //newly added stats
+        assertThat(first.devicesStats[0].currentIOTime, equalTo(1918440L));
+        assertThat(first.devicesStats[0].previousIOTime, equalTo(-1L));
+        assertThat(first.devicesStats[0].currentReadTime, equalTo(1918440L));
+        assertThat(first.devicesStats[0].previousReadTime, equalTo(-1L));
+        assertThat(first.devicesStats[0].currentWriteTime, equalTo(1918440L));
+        assertThat(first.devicesStats[0].previousWriteTime, equalTo(-1L));
+
         assertThat(first.devicesStats[1].majorDeviceNumber, equalTo(253));
         assertThat(first.devicesStats[1].minorDeviceNumber, equalTo(2));
         assertThat(first.devicesStats[1].deviceName, equalTo("dm-2"));
@@ -254,6 +268,13 @@ public class FsProbeTests extends OpenSearchTestCase {
         assertThat(first.devicesStats[1].previousWritesCompleted, equalTo(-1L));
         assertThat(first.devicesStats[1].currentSectorsWritten, equalTo(64126096L));
         assertThat(first.devicesStats[1].previousSectorsWritten, equalTo(-1L));
+        //newly added stats
+        assertThat(first.devicesStats[0].currentIOTime, equalTo(1918440L));
+        assertThat(first.devicesStats[0].previousIOTime, equalTo(-1L));
+        assertThat(first.devicesStats[0].currentReadTime, equalTo(1918440L));
+        assertThat(first.devicesStats[0].previousReadTime, equalTo(-1L));
+        assertThat(first.devicesStats[0].currentWriteTime, equalTo(1918440L));
+        assertThat(first.devicesStats[0].previousWriteTime, equalTo(-1L));
 
         diskStats.set(
             Arrays.asList(

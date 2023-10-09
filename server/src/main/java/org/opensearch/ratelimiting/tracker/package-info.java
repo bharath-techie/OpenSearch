@@ -6,7 +6,4 @@
  * compatible open source license.
  */
 
-/**
- * Node level performance stats tracker package
- */
 package org.opensearch.ratelimiting.tracker;

@@ -11,6 +11,7 @@ package org.opensearch.node;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.ratelimiting.tracker.AverageDiskStats;
 
 import java.io.IOException;
 import java.util.Locale;
@@ -25,11 +26,15 @@ public class NodePerformanceStats implements Writeable {
     double cpuUtilizationPercent;
     double memoryUtilizationPercent;
 
-    public NodePerformanceStats(String nodeId, long timestamp, double memoryUtilizationPercent, double cpuUtilizationPercent) {
+    AverageDiskStats averageDiskStats;
+
+    public NodePerformanceStats(String nodeId, long timestamp, double memoryUtilizationPercent, double cpuUtilizationPercent,
+                                AverageDiskStats averageDiskStats) {
         this.nodeId = nodeId;
         this.cpuUtilizationPercent = cpuUtilizationPercent;
         this.memoryUtilizationPercent = memoryUtilizationPercent;
         this.timestamp = timestamp;
+        this.averageDiskStats = averageDiskStats;
     }
 
     public NodePerformanceStats(StreamInput in) throws IOException {
@@ -37,6 +42,7 @@ public class NodePerformanceStats implements Writeable {
         this.timestamp = in.readLong();
         this.cpuUtilizationPercent = in.readDouble();
         this.memoryUtilizationPercent = in.readDouble();
+        this.averageDiskStats = new AverageDiskStats(in);
     }
 
     @Override
@@ -45,6 +51,7 @@ public class NodePerformanceStats implements Writeable {
         out.writeLong(this.timestamp);
         out.writeDouble(this.cpuUtilizationPercent);
         out.writeDouble(this.memoryUtilizationPercent);
+        averageDiskStats.writeTo(out);
     }
 
     @Override
@@ -63,7 +70,8 @@ public class NodePerformanceStats implements Writeable {
             nodePerformanceStats.nodeId,
             nodePerformanceStats.timestamp,
             nodePerformanceStats.memoryUtilizationPercent,
-            nodePerformanceStats.cpuUtilizationPercent
+            nodePerformanceStats.cpuUtilizationPercent,
+            nodePerformanceStats.averageDiskStats
         );
     }
 
