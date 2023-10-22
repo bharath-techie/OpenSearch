@@ -10,33 +10,39 @@ package org.opensearch.ratelimitting.admissioncontrol.stats;
 
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.core.xcontent.ToXContentFragment;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.ratelimitting.admissioncontrol.controllers.AdmissionController;
-import org.opensearch.ratelimitting.admissioncontrol.controllers.CPUBasedAdmissionController;
 
 import java.io.IOException;
 import java.util.Map;
 
-import static org.opensearch.ratelimitting.admissioncontrol.settings.CPUBasedAdmissionControllerSettings.CPU_BASED_ADMISSION_CONTROLLER;
-public class CPUBasedAdmissionControllerStats extends BaseAdmissionControllerStats {
-
-    /**
-     * Returns the name of the writeable object
-     */
-    @Override
-    public String getWriteableName() {
-        return CPU_BASED_ADMISSION_CONTROLLER;
-    }
-
+/**
+ * Class for admission controller ( such as CPU ) stats which includes rejection count for each action type
+ */
+public class AdmissionControllerStats implements Writeable, ToXContentFragment {
     public Map<String, Long> rejectionCount;
+    public String admissionControllerName;
 
-    public CPUBasedAdmissionControllerStats(AdmissionController admissionController){
+    public AdmissionControllerStats(AdmissionController admissionController, String admissionControllerName) {
         this.rejectionCount = admissionController.getRejectionStats();
+        this.admissionControllerName = admissionControllerName;
     }
 
-    public CPUBasedAdmissionControllerStats(StreamInput in) throws IOException {
+    public AdmissionControllerStats(StreamInput in) throws IOException {
         this.rejectionCount = in.readMap(StreamInput::readString, StreamInput::readLong);
+        this.admissionControllerName = in.readString();
     }
+
+    public String getAdmissionControllerName() {
+        return admissionControllerName;
+    }
+
+    public Map<String, Long> getRejectionCount() {
+        return rejectionCount;
+    }
+
     /**
      * Write this into the {@linkplain StreamOutput}.
      *
@@ -45,6 +51,7 @@ public class CPUBasedAdmissionControllerStats extends BaseAdmissionControllerSta
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeMap(this.rejectionCount, StreamOutput::writeString, StreamOutput::writeLong);
+        out.writeString(this.admissionControllerName);
     }
 
     /**
