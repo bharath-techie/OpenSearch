@@ -50,6 +50,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.transport.BoundTransportAddress;
 import org.opensearch.core.common.transport.TransportAddress;
+import org.opensearch.node.ResourceUsageCollectorService;
 import org.opensearch.telemetry.tracing.noop.NoopTracer;
 import org.opensearch.test.MockLogAppender;
 import org.opensearch.test.OpenSearchTestCase;
@@ -80,6 +81,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 import static java.util.Collections.emptySet;
+import static org.mockito.Mockito.mock;
 import static org.opensearch.cluster.NodeConnectionsService.CLUSTER_NODE_RECONNECT_INTERVAL_SETTING;
 import static org.opensearch.common.settings.Settings.builder;
 import static org.opensearch.common.unit.TimeValue.timeValueMillis;
@@ -554,7 +556,8 @@ public class NodeConnectionsServiceTests extends OpenSearchTestCase {
                 boundAddress -> DiscoveryNode.createLocal(Settings.EMPTY, buildNewFakeTransportAddress(), UUIDs.randomBase64UUID()),
                 null,
                 emptySet(),
-                NoopTracer.INSTANCE
+                NoopTracer.INSTANCE,
+                mock(ResourceUsageCollectorService.class)
             );
         }
 
