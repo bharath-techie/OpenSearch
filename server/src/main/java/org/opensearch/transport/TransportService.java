@@ -219,6 +219,53 @@ public class TransportService extends AbstractLifecycleComponent
         Function<BoundTransportAddress, DiscoveryNode> localNodeFactory,
         @Nullable ClusterSettings clusterSettings,
         Set<String> taskHeaders,
+        Tracer tracer) {
+        this(
+            settings,
+            transport,
+            threadPool,
+            transportInterceptor,
+            localNodeFactory,
+            clusterSettings,
+            taskHeaders,
+            new ClusterConnectionManager(settings, transport),
+            tracer,
+            null
+        );
+
+    }
+    public TransportService(
+        Settings settings,
+        Transport transport,
+        ThreadPool threadPool,
+        TransportInterceptor transportInterceptor,
+        Function<BoundTransportAddress, DiscoveryNode> localNodeFactory,
+        @Nullable ClusterSettings clusterSettings,
+        Set<String> taskHeaders,
+        ConnectionManager connectionManager,
+        Tracer tracer) {
+        this(
+            settings,
+            transport,
+            threadPool,
+            transportInterceptor,
+            localNodeFactory,
+            clusterSettings,
+            taskHeaders,
+            new ClusterConnectionManager(settings, transport),
+            tracer,
+            null
+        );
+    }
+
+    public TransportService(
+        Settings settings,
+        Transport transport,
+        ThreadPool threadPool,
+        TransportInterceptor transportInterceptor,
+        Function<BoundTransportAddress, DiscoveryNode> localNodeFactory,
+        @Nullable ClusterSettings clusterSettings,
+        Set<String> taskHeaders,
         ConnectionManager connectionManager,
         Tracer tracer,
         ResourceUsageCollectorService resourceUsageCollectorService
@@ -932,62 +979,23 @@ public class TransportService extends AbstractLifecycleComponent
     }
 
     private void addResourceUsageStatsToThreadContext(String action) {
-        //if(action.startsWith("indices:data/read/search")) {
-            if (resourceUsageCollectorService.getLocalNodeStatistics().isPresent()) {
-                threadPool.getThreadContext().addResponseHeader("PERF_STATS",
-                    resourceUsageCollectorService.getLocalNodeStatistics().get().toString());
+        if (resourceUsageCollectorService.getLocalNodeStatistics().isPresent()) {
+            try {
+                ResourceUsageStatsReference statsReference = threadPool.getThreadContext()
+                    .getTransient("PERF_STATS" + localNode.getId());
+                if(statsReference != null) {
+                    statsReference.setResourceUsageStats(resourceUsageCollectorService.getLocalNodeStatistics().get().toString());
+                } else {
+                    threadPool.getThreadContext().putTransient("PERF_STATS" + localNode.getId(),
+                        new ResourceUsageStatsReference(resourceUsageCollectorService.getLocalNodeStatistics().get().toString()));
+                }
+            } catch (Exception e) {
+                logger.info("===EXCEPTION===  {} ===action=== {}", e.getMessage(), action);
             }
-        //}
-    }
-
-    public final <T extends TransportResponse> void sendRequest(
-        final Transport.Connection connection,
-        final String action,
-        final TransportRequest request,
-        final TransportRequestOptions options,
-        final TransportResponseHandler<T> handler,
-        final boolean shouldAddResourceUsageStats
-    ) {
-        final TransportResponseHandler<T> delegate;
-        if(shouldAddResourceUsageStats) {
-            delegate = new TransportResponseHandler<T>() {
-                @Override
-                public void handleResponse(T response) {
-                    if(resourceUsageCollectorService.getLocalNodeStatistics().isPresent()) {
-                        threadPool.getThreadContext().addResponseHeader("PERF_STATS",
-                            resourceUsageCollectorService.getLocalNodeStatistics().get().toString());
-                    }
-                    handler.handleResponse(response);
-                }
-
-                @Override
-                public void handleException(TransportException exp) {
-                    if(resourceUsageCollectorService.getLocalNodeStatistics().isPresent()) {
-                        threadPool.getThreadContext().addResponseHeader("PERF_STATS",
-                            resourceUsageCollectorService.getLocalNodeStatistics().get().toString());
-                    }
-                    handler.handleException(exp);
-                }
-
-                @Override
-                public String executor() {
-                    return handler.executor();
-                }
-
-                @Override
-                public T read(StreamInput in) throws IOException {
-                    return handler.read(in);
-                }
-
-                @Override
-                public String toString() {
-                    return getClass().getName() + "/[" + action + "]:" + handler.toString();
-                }
-            };
-        } else {
-            delegate = handler;
+            // Todo : remove this , added this for asserting response equaling request
+            threadPool.getThreadContext().addResponseHeader("PERF_STATS" + localNode.getId(),
+                resourceUsageCollectorService.getLocalNodeStatistics().get().toString());
         }
-        sendRequest(connection, action, request, options, delegate);
     }
 
     /**
@@ -1319,24 +1327,27 @@ public class TransportService extends AbstractLifecycleComponent
         if (tracerLog.isTraceEnabled() && shouldTraceAction(action)) {
             tracerLog.trace("[{}][{}] received request", requestId, action);
         }
-        addStatsToResourceUsageCollectorService();
+        addStatsToResourceUsageCollectorServiceFromRequestHeaders();
         messageListener.onRequestReceived(requestId, action);
     }
 
     private void addStatsToResourceUsageCollectorService() {
         try {
             Map<String, List<String>> responseHeaders = threadPool.getThreadContext().getResponseHeaders();
+
             if (responseHeaders.size() > 0) {
                 List<String> perfStats = responseHeaders.get("PERF_STATS");
+                if(perfStats.size() == 0) return;
                 // nodeid:111113131313,11.0,11.0
                 // NodeResourceUsageStats[aaxnzZb7R3KdRqjqXfv8SQ](Timestamp: 1699253278365, CPU utilization percent: 3.1, Memory utilization percent: 25.0)
 
                 StringBuilder sb = new StringBuilder();
-                String nodeId = perfStats.get(0).substring(0, perfStats.get(0).indexOf(':') + 1);
+                String nodeId = perfStats.get(0).substring(0, perfStats.get(0).indexOf(':'));
+                if(nodeId.length() == 0)
                 if (resourceUsageCollectorService.getNodeStatistics(nodeId).isPresent()) {
                     long timestamp = resourceUsageCollectorService.getNodeStatistics(nodeId).get().getTimestamp();
                     if (System.currentTimeMillis() - timestamp < 1000) {
-                        logger.warn("Node resource usage stats is updated recently - so skipping");
+                        logger.info("Node resource usage stats is updated recently - so skipping");
                     } else {
                         String[] parse = perfStats.get(0).split(":");
                         String[] parse1 = parse[1].split(",");
@@ -1344,7 +1355,7 @@ public class TransportService extends AbstractLifecycleComponent
                         String cpu = parse1[1];
                         String memory = parse1[2];
                         resourceUsageCollectorService.collectNodeResourceUsageStats(nodeId, Long.valueOf(datatimestamp), Double.valueOf(cpu), Double.valueOf(memory));
-                        //logger.warn("Updates stats");
+                        logger.info("Updates stats");
                     }
                 } else {
                     String[] parse = perfStats.get(0).split(":");
@@ -1353,15 +1364,48 @@ public class TransportService extends AbstractLifecycleComponent
                     String cpu = parse1[1];
                     String memory = parse1[2];
                     resourceUsageCollectorService.collectNodeResourceUsageStats(nodeId, Long.valueOf(datatimestamp), Double.valueOf(cpu), Double.valueOf(memory));
-                    logger.warn("added stats");
+                    logger.info("added stats");
                 }
-                //            String[] parse = responseHeaders.get("PERF_STATS").get(0).split(":")[1].split("NodeResourceUsageStats\\[")[1].split("]");
-                //            String nodeId = parse[0];
-                //            String[] parse1 = parse[1].split("\\(")[1].split(": ");
-                //            String timestamp = parse1[1].split(",")[0];
-                //            String cpu = parse1[2].split(",")[0];
-                //            String memory = parse1[3].split("\\)")[0];
+            }
+        } catch(Exception e){
+            logger.warn("Adding stats failed : ", e);
+        }
+    }
 
+    private void addStatsToResourceUsageCollectorServiceFromRequestHeaders() {
+        try {
+
+            for(Map.Entry<String,String> entry : threadPool.getThreadContext().getHeaders().entrySet()) {
+                if(entry.getKey().contains("PERF_STATS")) {
+                    String perfStats = entry.getValue();
+                    assert(threadPool.getThreadContext().getResponseHeaders().get(entry.getKey()).contains(entry.getValue()));
+                    String nodeId = perfStats.substring(0, perfStats.indexOf(':'));
+                    if (resourceUsageCollectorService.getNodeStatistics(nodeId).isPresent()) {
+                        long timestamp = resourceUsageCollectorService.getNodeStatistics(nodeId).get().getTimestamp();
+                        if (System.currentTimeMillis() - timestamp < 1000) {
+                            logger.info("Node resource usage stats is updated recently - so skipping");
+                        } else {
+                            String[] parse = perfStats.split(":");
+                            String[] parse1 = parse[1].split(",");
+                            String datatimestamp = parse1[0];
+                            String cpu = parse1[1];
+                            String memory = parse1[2];
+                            resourceUsageCollectorService.collectNodeResourceUsageStats(nodeId,
+                                Long.valueOf(datatimestamp), Double.valueOf(cpu), Double.valueOf(memory));
+                            logger.info("Updated stats");
+                        }
+                    } else {
+                        String[] parse = perfStats.split(":");
+                        String[] parse1 = parse[1].split(",");
+                        String datatimestamp = parse1[0];
+                        String cpu = parse1[1];
+                        String memory = parse1[2];
+                        resourceUsageCollectorService.collectNodeResourceUsageStats(nodeId,
+                            Long.valueOf(datatimestamp),
+                            Double.valueOf(cpu), Double.valueOf(memory));
+                        logger.info("added stats");
+                    }
+                }
             }
         } catch(Exception e){
             logger.warn("Adding stats failed : ", e);
