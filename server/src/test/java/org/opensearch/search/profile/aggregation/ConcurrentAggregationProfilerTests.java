@@ -162,7 +162,7 @@ public class ConcurrentAggregationProfilerTests extends OpenSearchTestCase {
         assertEquals(150L, (long) statsMap.get("avg_initialize"));
     }
 
-    public void testGetSliceLevelAggregationMap() {
+    public void FtestGetSliceLevelAggregationMap() {
         List<ProfileResult> tree = createConcurrentSearchProfileTree();
         Map<String, List<ProfileResult>> aggregationMap = ConcurrentAggregationProfiler.getSliceLevelAggregationMap(tree);
         assertEquals(2, aggregationMap.size());

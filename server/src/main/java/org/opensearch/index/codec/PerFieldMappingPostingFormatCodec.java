@@ -37,6 +37,7 @@ import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.DocValuesFormat;
 import org.apache.lucene.codecs.PostingsFormat;
 import org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat;
+//import org.apache.lucene.codecs.
 import org.apache.lucene.codecs.lucene95.Lucene95Codec;
 import org.opensearch.common.lucene.Lucene;
 import org.opensearch.index.mapper.CompletionFieldMapper;

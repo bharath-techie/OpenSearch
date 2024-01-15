@@ -180,6 +180,7 @@ public class FiltersAggregator extends BucketsAggregator {
         return new LeafBucketCollectorBase(sub, null) {
             @Override
             public void collect(int doc, long bucket) throws IOException {
+                System.out.println("doc id : " + doc);
                 boolean matched = false;
                 for (int i = 0; i < bits.length; i++) {
                     if (bits[i].get(doc)) {

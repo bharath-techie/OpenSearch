@@ -45,6 +45,7 @@ import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.transport.BoundTransportAddress;
 import org.opensearch.core.transport.TransportResponse;
+import org.opensearch.node.ResourceUsageCollectorService;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.CloseableConnection;
@@ -66,6 +67,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 
 import static org.apache.lucene.tests.util.LuceneTestCase.rarely;
+import static org.mockito.Mockito.mock;
 
 /**
  * A basic transport implementation that allows to intercept requests that have been sent
@@ -96,7 +98,8 @@ public class MockTransport extends StubbableTransport {
             clusterSettings,
             taskHeaders,
             connectionManager,
-            tracer
+            tracer,
+            mock(ResourceUsageCollectorService.class)
         );
     }
 

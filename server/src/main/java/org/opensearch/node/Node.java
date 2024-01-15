@@ -896,6 +896,17 @@ public class Node implements Closeable {
 
             final RestController restController = actionModule.getRestController();
 
+            final NodeResourceUsageTracker nodeResourceUsageTracker = new NodeResourceUsageTracker(
+                threadPool,
+                settings,
+                clusterService.getClusterSettings()
+            );
+            final ResourceUsageCollectorService resourceUsageCollectorService = new ResourceUsageCollectorService(
+                nodeResourceUsageTracker,
+                clusterService,
+                threadPool
+            );
+
             final AdmissionControlService admissionControlService = new AdmissionControlService(
                 settings,
                 clusterService.getClusterSettings(),
@@ -944,6 +955,7 @@ public class Node implements Closeable {
                 pluginsService.filterPlugins(ActionPlugin.class).stream().flatMap(p -> p.getTaskHeaders().stream()),
                 Stream.of(Task.X_OPAQUE_ID)
             ).collect(Collectors.toSet());
+
             final TransportService transportService = newTransportService(
                 settings,
                 transport,
@@ -952,7 +964,8 @@ public class Node implements Closeable {
                 localNodeFactory,
                 settingsModule.getClusterSettings(),
                 taskHeaders,
-                tracer
+                tracer,
+                resourceUsageCollectorService
             );
             TopNSearchTasksLogger taskConsumer = new TopNSearchTasksLogger(settings, settingsModule.getClusterSettings());
             transportService.getTaskManager().registerTaskResourceConsumer(taskConsumer);
@@ -1102,16 +1115,6 @@ public class Node implements Closeable {
                 threadPool,
                 transportService.getTaskManager(),
                 taskCancellationMonitoringSettings
-            );
-            final NodeResourceUsageTracker nodeResourceUsageTracker = new NodeResourceUsageTracker(
-                threadPool,
-                settings,
-                clusterService.getClusterSettings()
-            );
-            final ResourceUsageCollectorService resourceUsageCollectorService = new ResourceUsageCollectorService(
-                nodeResourceUsageTracker,
-                clusterService,
-                threadPool
             );
             this.nodeService = new NodeService(
                 settings,
@@ -1322,9 +1325,11 @@ public class Node implements Closeable {
         Function<BoundTransportAddress, DiscoveryNode> localNodeFactory,
         ClusterSettings clusterSettings,
         Set<String> taskHeaders,
-        Tracer tracer
+        Tracer tracer,
+        ResourceUsageCollectorService resourceUsageCollectorService
     ) {
-        return new TransportService(settings, transport, threadPool, interceptor, localNodeFactory, clusterSettings, taskHeaders, tracer);
+        return new TransportService(settings, transport, threadPool, interceptor, localNodeFactory, clusterSettings,
+            taskHeaders, tracer, resourceUsageCollectorService);
     }
 
     protected void processRecoverySettings(ClusterSettings clusterSettings, RecoverySettings recoverySettings) {

@@ -33,6 +33,7 @@
 package org.opensearch.index.search.nested;
 
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.document.NumericDocValuesField;
@@ -195,6 +196,7 @@ public class NestedSortingTests extends AbstractFieldDataTestCase {
         document = new Document();
         document.add(new StringField(NestedPathFieldMapper.NAME, "parent", Field.Store.NO));
         document.add(new StringField("field1", "b", Field.Store.NO));
+        //document.add(new AggregationPoint("minute=40,hour=12,day=30", 30, 40, 50));
         docs.add(document);
         writer.addDocuments(docs);
 

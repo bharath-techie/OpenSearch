@@ -25,7 +25,7 @@ public class ResourceTrackerSettings {
         /**
          * This is the default window duration on which the average resource utilization values will be calculated
          */
-        private static final long WINDOW_DURATION_IN_SECONDS = 30;
+        private static final long WINDOW_DURATION_IN_SECONDS = 1;
     }
 
     public static final Setting<TimeValue> GLOBAL_CPU_USAGE_AC_POLLING_INTERVAL_SETTING = Setting.positiveTimeSetting(

@@ -60,9 +60,18 @@ public class ThreadContextTests extends OpenSearchTestCase {
         assertEquals("bar", threadContext.getHeader("foo"));
         assertEquals(Integer.valueOf(1), threadContext.getTransient("ctx.foo"));
         assertEquals("1", threadContext.getHeader("default"));
+        threadContext.addResponseHeader("resp", "val");
+        threadContext.putTransient("PERF_STATS_NODE1", "abc");
+        threadContext.addResponseHeader("resp", "val1");
+        threadContext.putHeader("PERF", "1");
+        assertEquals("val1", threadContext.getResponseHeaders().get("resp").get(1));
+        //threadContext.putTransient("PERF_STATS_NODE1", "cde");
         try (ThreadContext.StoredContext ctx = threadContext.stashContext()) {
             assertNull(threadContext.getHeader("foo"));
+            assertNull(threadContext.getHeader("PERF"));
             assertNull(threadContext.getTransient("ctx.foo"));
+            assertNotNull(threadContext.getTransient("PERF_STATS_NODE1"));
+            assertNull(threadContext.getResponseHeaders().get("resp"));
             assertEquals("1", threadContext.getHeader("default"));
         }
 
@@ -463,9 +472,13 @@ public class ThreadContextTests extends OpenSearchTestCase {
             threadContext.putHeader("foo", "bar");
             threadContext.putTransient("ctx.foo", 1);
 
+            // This is part of propagators
+            threadContext.putTransient("PERF_STATS", "abc");
+
             assertEquals("bar", threadContext.getHeader("foo"));
             assertNotNull(threadContext.getTransient("ctx.foo"));
             assertNull(threadContext.getHeader("default"));
+            //threadContext.stashContext();
             threadContext.writeTo(out);
         }
         {
@@ -475,7 +488,60 @@ public class ThreadContextTests extends OpenSearchTestCase {
 
             assertEquals("bar", otherhreadContext.getHeader("foo"));
             assertNull(otherhreadContext.getTransient("ctx.foo"));
+            assertNotNull(otherhreadContext.getHeader("PERF_STATS"));
             assertEquals("5", otherhreadContext.getHeader("default"));
+        }
+    }
+
+    public void testSerializeInDifferentContextNoDefaults1() throws IOException {
+        BytesStreamOutput out = new BytesStreamOutput();
+        {
+            ThreadContext threadContext = new ThreadContext(Settings.EMPTY);
+
+            // This is part of propagators
+            threadContext.putTransient("PERF_STATS", "abc");
+            assertNotNull(threadContext.getTransient("PERF_STATS"));
+            threadContext.writeTo(out);
+        }
+        {
+            Settings otherSettings = Settings.builder().put("request.headers.default", "5").build();
+            ThreadContext otherhreadContext = new ThreadContext(otherSettings);
+            otherhreadContext.readHeaders(out.bytes().streamInput());
+
+            // Here its not null - as the transient headers get propagated as part of request headers
+            // during serialization
+            assertNotNull(otherhreadContext.getHeader("PERF_STATS"));
+        }
+    }
+
+    public void testSerializeInDifferentContextNoDefaultsStash() throws IOException {
+        BytesStreamOutput out = new BytesStreamOutput();
+        {
+            ThreadContext threadContext = new ThreadContext(Settings.EMPTY);
+
+            // This is part of propagators
+            threadContext.putTransient("PERF_STATS", "abc");
+            threadContext.putTransient("random", "cde");
+            assertNotNull(threadContext.getTransient("PERF_STATS"));
+            threadContext.stashContext();
+
+            // After stash perf stats is not cleared up since its part of propagators
+            assertNotNull(threadContext.getTransient("PERF_STATS"));
+
+            // This is cleared since its not part of propagators
+            assertNull(threadContext.getTransient("random"));
+
+            // serializing the threadcontext
+            threadContext.writeTo(out);
+        }
+        {
+            Settings otherSettings = Settings.builder().put("request.headers.default", "5").build();
+            ThreadContext otherhreadContext = new ThreadContext(otherSettings);
+            otherhreadContext.readHeaders(out.bytes().streamInput());
+
+            // Here its not null - as the transient headers get propagated as part of request headers
+            // during serialization
+            assertNotNull(otherhreadContext.getHeader("PERF_STATS"));
         }
     }
 

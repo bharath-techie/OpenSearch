@@ -41,6 +41,7 @@ public class NodeResourceUsageStats implements Writeable {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
+
         out.writeString(this.nodeId);
         out.writeLong(this.timestamp);
         out.writeDouble(this.cpuUtilizationPercent);
@@ -49,12 +50,13 @@ public class NodeResourceUsageStats implements Writeable {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder("NodeResourceUsageStats[");
-        sb.append(nodeId).append("](");
-        sb.append("Timestamp: ").append(timestamp);
-        sb.append(", CPU utilization percent: ").append(String.format(Locale.ROOT, "%.1f", cpuUtilizationPercent));
-        sb.append(", Memory utilization percent: ").append(String.format(Locale.ROOT, "%.1f", memoryUtilizationPercent));
-        sb.append(")");
+        StringBuilder sb = new StringBuilder();
+        sb.append(nodeId).append(":");
+        sb.append(timestamp);
+        sb.append(",");
+        sb.append(memoryUtilizationPercent);
+        sb.append(",");
+        sb.append(cpuUtilizationPercent);
         return sb.toString();
     }
 

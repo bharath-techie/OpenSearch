@@ -95,6 +95,7 @@ public class SumAggregator extends NumericMetricsAggregator.SingleValue {
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long bucket) throws IOException {
+                System.out.println("Doc id "  + doc);
                 sums = bigArrays.grow(sums, bucket + 1);
                 compensations = bigArrays.grow(compensations, bucket + 1);
 
