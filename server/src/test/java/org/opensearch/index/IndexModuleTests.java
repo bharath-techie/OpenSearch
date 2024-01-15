@@ -107,6 +107,7 @@ import org.opensearch.indices.fielddata.cache.IndicesFieldDataCache;
 import org.opensearch.indices.mapper.MapperRegistry;
 import org.opensearch.indices.recovery.DefaultRecoverySettings;
 import org.opensearch.indices.recovery.RecoveryState;
+import org.opensearch.node.ResourceUsageCollectorService;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
@@ -207,7 +208,8 @@ public class IndexModuleTests extends OpenSearchTestCase {
             boundAddress -> DiscoveryNode.createLocal(settings, boundAddress.publishAddress(), UUIDs.randomBase64UUID()),
             null,
             Collections.emptySet(),
-            NoopTracer.INSTANCE
+            NoopTracer.INSTANCE,
+            mock(ResourceUsageCollectorService.class)
         );
         repositoriesService = new RepositoriesService(
             settings,

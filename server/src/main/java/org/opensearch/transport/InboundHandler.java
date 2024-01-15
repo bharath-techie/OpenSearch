@@ -139,6 +139,8 @@ public class InboundHandler {
             if (header.isRequest()) {
                 handleRequest(channel, header, message);
             } else {
+                // THIS IS RESPONSE
+                // Responses do not support short circuiting currently
                 // Responses do not support short circuiting currently
                 assert message.isShortCircuit() == false;
                 final TransportResponseHandler<?> handler;

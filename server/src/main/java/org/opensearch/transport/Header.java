@@ -123,8 +123,10 @@ public class Header {
 
     void finishParsingHeader(StreamInput input) throws IOException {
         this.headers = ThreadContext.readHeadersFromStream(input);
-
+        //if(this.headers)
+        //System.out.println("HEADER");
         if (isRequest()) {
+            //System.out.println("Request");
             final String[] featuresFound = input.readStringArray();
             if (featuresFound.length == 0) {
                 features = Collections.emptySet();
@@ -133,6 +135,7 @@ public class Header {
             }
             this.actionName = input.readString();
         } else {
+            //System.out.println("Response");
             this.actionName = RESPONSE_NAME;
         }
     }

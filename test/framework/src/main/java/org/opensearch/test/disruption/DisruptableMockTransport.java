@@ -42,6 +42,7 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.transport.BoundTransportAddress;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.transport.TransportResponse;
+import org.opensearch.node.ResourceUsageCollectorService;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.test.transport.MockTransport;
 import org.opensearch.threadpool.ThreadPool;
@@ -62,6 +63,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
+import static org.mockito.Mockito.mock;
 import static org.opensearch.test.OpenSearchTestCase.copyWriteable;
 
 public abstract class DisruptableMockTransport extends MockTransport {
@@ -95,7 +97,8 @@ public abstract class DisruptableMockTransport extends MockTransport {
         Set<String> taskHeaders,
         Tracer tracer
     ) {
-        return new TransportService(settings, this, threadPool, interceptor, localNodeFactory, clusterSettings, taskHeaders, tracer);
+        return new TransportService(settings, this, threadPool, interceptor, localNodeFactory, clusterSettings, taskHeaders, tracer,
+            mock(ResourceUsageCollectorService.class));
     }
 
     @Override

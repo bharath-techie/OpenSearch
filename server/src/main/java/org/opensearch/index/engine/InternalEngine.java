@@ -1754,6 +1754,7 @@ public class InternalEngine extends Engine {
     final boolean refresh(String source, SearcherScope scope, boolean block) throws EngineException {
         // both refresh types will result in an internal refresh but only the external will also
         // pass the new reader reference to the external reader manager.
+        System.out.println("======= REFRESH called =====");
         final long localCheckpointBeforeRefresh = localCheckpointTracker.getProcessedCheckpoint();
         boolean refreshed;
         try {
@@ -1852,6 +1853,8 @@ public class InternalEngine extends Engine {
                 // or (4) the local checkpoint information in the last commit is stale, which slows down future recoveries.
                 boolean hasUncommittedChanges = indexWriter.hasUncommittedChanges();
                 boolean shouldPeriodicallyFlush = shouldPeriodicallyFlush();
+                System.out.println("HAS UNCOMMITED CHANGES : " + hasUncommittedChanges);
+                System.out.println("shouldPeriodicallyFlush : " + shouldPeriodicallyFlush);
                 if (hasUncommittedChanges
                     || force
                     || shouldPeriodicallyFlush
@@ -2525,6 +2528,7 @@ public class InternalEngine extends Engine {
                 if (currentForceMergeUUID != null) {
                     commitData.put(FORCE_MERGE_UUID_KEY, currentForceMergeUUID);
                 }
+                System.out.println("committing writer with commit data [{}]" +  commitData);
                 logger.trace("committing writer with commit data [{}]", commitData);
                 return commitData.entrySet().iterator();
             });
@@ -2796,6 +2800,7 @@ public class InternalEngine extends Engine {
      * Refresh this engine **internally** iff the requesting seq_no is greater than the last refreshed checkpoint.
      */
     protected final void refreshIfNeeded(String source, long requestingSeqNo) {
+        System.out.println("======= REFRESH If Needed called =====");
         if (lastRefreshedCheckpoint() < requestingSeqNo) {
             synchronized (refreshIfNeededMutex) {
                 if (lastRefreshedCheckpoint() < requestingSeqNo) {
