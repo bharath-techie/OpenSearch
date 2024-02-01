@@ -562,7 +562,7 @@ public abstract class BaseSingleTreeBuilder {
             case "day":
                 return val / DAY;
             case "month":
-                return val/DAY * 30; // TODO
+                return val/ (DAY * 30); // TODO
             case "year":
                 return val / YEAR;
             default:

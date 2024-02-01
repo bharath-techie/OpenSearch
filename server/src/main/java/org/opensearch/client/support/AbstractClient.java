@@ -385,6 +385,8 @@ import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.search.SearchScrollAction;
 import org.opensearch.action.search.SearchScrollRequest;
 import org.opensearch.action.search.SearchScrollRequestBuilder;
+import org.opensearch.action.search.SearchStarTreeAction;
+import org.opensearch.action.search.SearchStarTreeResponse;
 import org.opensearch.action.support.PlainActionFuture;
 import org.opensearch.action.support.master.AcknowledgedResponse;
 import org.opensearch.action.termvectors.MultiTermVectorsAction;
@@ -630,6 +632,11 @@ public abstract class AbstractClient implements Client {
     @Override
     public void createPit(final CreatePitRequest createPITRequest, final ActionListener<CreatePitResponse> listener) {
         execute(CreatePitAction.INSTANCE, createPITRequest, listener);
+    }
+
+    @Override
+    public void searchStarTree(final SearchRequest searchRequest, final ActionListener<SearchStarTreeResponse> listener) {
+        execute(SearchStarTreeAction.INSTANCE, searchRequest, listener);
     }
 
     @Override

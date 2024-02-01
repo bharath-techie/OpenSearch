@@ -264,6 +264,7 @@ import org.opensearch.action.search.PutSearchPipelineAction;
 import org.opensearch.action.search.PutSearchPipelineTransportAction;
 import org.opensearch.action.search.SearchAction;
 import org.opensearch.action.search.SearchScrollAction;
+import org.opensearch.action.search.SearchStarTreeAction;
 import org.opensearch.action.search.TransportClearScrollAction;
 import org.opensearch.action.search.TransportCreatePitAction;
 import org.opensearch.action.search.TransportDeletePitAction;
@@ -271,6 +272,7 @@ import org.opensearch.action.search.TransportGetAllPitsAction;
 import org.opensearch.action.search.TransportMultiSearchAction;
 import org.opensearch.action.search.TransportSearchAction;
 import org.opensearch.action.search.TransportSearchScrollAction;
+import org.opensearch.action.search.TransportSearchStarTreeAction;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.AutoCreateIndex;
 import org.opensearch.action.support.DestructiveOperations;
@@ -457,6 +459,7 @@ import org.opensearch.rest.action.search.RestMultiSearchAction;
 import org.opensearch.rest.action.search.RestPutSearchPipelineAction;
 import org.opensearch.rest.action.search.RestSearchAction;
 import org.opensearch.rest.action.search.RestSearchScrollAction;
+import org.opensearch.rest.action.search.RestSearchStarTreeAction;
 import org.opensearch.tasks.Task;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.usage.UsageService;
@@ -747,6 +750,8 @@ public class ActionModule extends AbstractModule {
         actions.register(PitSegmentsAction.INSTANCE, TransportPitSegmentsAction.class);
         actions.register(GetAllPitsAction.INSTANCE, TransportGetAllPitsAction.class);
 
+        actions.register(SearchStarTreeAction.INSTANCE, TransportSearchStarTreeAction.class);
+
         if (FeatureFlags.isEnabled(FeatureFlags.EXTENSIONS)) {
             // ExtensionProxyAction
             actions.register(ExtensionProxyAction.INSTANCE, ExtensionProxyTransportAction.class);
@@ -945,6 +950,8 @@ public class ActionModule extends AbstractModule {
         registerHandler.accept(new RestGetAllPitsAction(nodesInCluster));
         registerHandler.accept(new RestPitSegmentsAction(nodesInCluster));
         registerHandler.accept(new RestDeleteDecommissionStateAction());
+
+        registerHandler.accept(new RestSearchStarTreeAction());
 
         // Search pipelines API
         registerHandler.accept(new RestPutSearchPipelineAction());

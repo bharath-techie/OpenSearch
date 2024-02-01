@@ -33,6 +33,7 @@ package org.opensearch.search.aggregations.bucket.terms;
 
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.util.NumericUtils;
@@ -41,6 +42,7 @@ import org.opensearch.common.Numbers;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.util.LongArray;
+import org.opensearch.index.codec.freshstartree.codec.StarTreeAggregatedValues;
 import org.opensearch.index.fielddata.FieldData;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.aggregations.Aggregator;
@@ -117,12 +119,31 @@ public class NumericTermsAggregator extends TermsAggregator {
     @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         SortedNumericDocValues values = resultStrategy.getValues(ctx);
+        StarTreeAggregatedValues aggrVal = (StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues();
         return resultStrategy.wrapCollector(new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {
-                if (values.advanceExact(doc)) {
-                    int valuesCount = values.docValueCount();
+                NumericDocValues dv = aggrVal.metricValues.get("status_sum");
+                NumericDocValues dv1 = aggrVal.dimensionValues.get("day");
+                NumericDocValues dv2 = aggrVal.dimensionValues.get("status");
+                NumericDocValues dv3 = aggrVal.dimensionValues.get("hour");
+                if(dv.advanceExact(doc)) {
+                    long tempval = dv.longValue();
+                    System.out.println("dv.longValue() = " + dv.longValue());
 
+
+                    if ((longFilter == null) || (longFilter.accept(tempval))) {
+                        long bucketOrdinal = bucketOrds.add(owningBucketOrd, tempval);
+                        if (bucketOrdinal < 0) { // already seen
+                            bucketOrdinal = -1 - bucketOrdinal;
+                            collectExistingBucket(sub, doc, bucketOrdinal);
+                        } else {
+                            collectBucket(sub, doc, bucketOrdinal);
+                        }
+                    }
+                }
+                else if (values.advanceExact(doc)) {
+                    int valuesCount = values.docValueCount();
                     long previous = Long.MAX_VALUE;
                     for (int i = 0; i < valuesCount; ++i) {
                         long val = values.nextValue();

@@ -8,31 +8,49 @@
 
 package org.opensearch.action.search;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.stream.Collectors;
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.opensearch.OpenSearchException;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
+import org.opensearch.action.support.GroupedActionListener;
 import org.opensearch.action.support.HandledTransportAction;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.search.SearchPhaseResult;
+import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.internal.ShardSearchContextId;
+import org.opensearch.search.internal.ShardSearchRequest;
+import org.opensearch.search.query.QuerySearchResult;
 import org.opensearch.tasks.Task;
+import org.opensearch.transport.Transport;
 import org.opensearch.transport.TransportRequest;
 import org.opensearch.transport.TransportService;
 
-import java.io.IOException;
-import java.util.Arrays;
 
 /**
  * Transport action for creating PIT reader context
  */
-public class TransportCreatePitAction extends HandledTransportAction<CreatePitRequest, CreatePitResponse> {
+public class TransportSearchStarTreeAction extends HandledTransportAction<SearchRequest, SearchStarTreeResponse> {
 
     public static final String CREATE_PIT_ACTION = "create_pit";
     private final TransportService transportService;
@@ -43,7 +61,7 @@ public class TransportCreatePitAction extends HandledTransportAction<CreatePitRe
     private final CreatePitController createPitController;
 
     @Inject
-    public TransportCreatePitAction(
+    public TransportSearchStarTreeAction(
         TransportService transportService,
         ActionFilters actionFilters,
         SearchTransportService searchTransportService,
@@ -52,7 +70,7 @@ public class TransportCreatePitAction extends HandledTransportAction<CreatePitRe
         NamedWriteableRegistry namedWriteableRegistry,
         CreatePitController createPitController
     ) {
-        super(CreatePitAction.NAME, transportService, actionFilters, in -> new CreatePitRequest(in));
+        super(SearchStarTreeAction.NAME, transportService, actionFilters, in -> new SearchRequest(in));
         this.transportService = transportService;
         this.searchTransportService = searchTransportService;
         this.clusterService = clusterService;
@@ -62,72 +80,72 @@ public class TransportCreatePitAction extends HandledTransportAction<CreatePitRe
     }
 
     @Override
-    protected void doExecute(Task task, CreatePitRequest request, ActionListener<CreatePitResponse> listener) {
+    protected void doExecute(Task task, SearchRequest searchRequest, ActionListener<SearchStarTreeResponse> listener) {
+//        final StepListener<SearchResponse> createPitListener = new StepListener<>();
+//        SearchTask searchTask = searchRequest.createTask(
+//            task.getId(),
+//            task.getType(),
+//            task.getAction(),
+//            task.getParentTaskId(),
+//            Collections.emptyMap()
+//        );
+//        executeSearchStarTree(searchTask, searchRequest, createPitListener);
+//        createPitListener.whenComplete(
+//            r -> {
+//                System.out.println("logs");
+//                executeSearchStarTree(searchTask, searchRequest, r, );
+//            }, e -> {
+//                createPitListener.onFailure(e);
+//            }
+//        );
+
+
         final StepListener<SearchResponse> createPitListener = new StepListener<>();
-        final ActionListener<CreatePitResponse> updatePitIdListener = ActionListener.wrap(r -> listener.onResponse(r), e -> {
+        final ActionListener<SearchStarTreeResponse> updatePitIdListener = ActionListener.wrap(r -> listener.onResponse(r), e -> {
             logger.error(
                 () -> new ParameterizedMessage(
-                    "PIT creation failed while updating PIT ID for indices [{}]",
-                    Arrays.toString(request.indices())
+                    "Star tree search failed [{}]",
+                    e.getMessage()
                 )
             );
             listener.onFailure(e);
         });
-        createPitController.executeCreatePit(request, task, createPitListener, updatePitIdListener);
+      //  createPitController.executeCreatePit(searchRequest, task, createPitListener, updatePitIdListener);
+
+
     }
 
-    /**
-     * Request to create pit reader context with keep alive
-     */
-    public static class CreateReaderContextRequest extends TransportRequest {
-        private final ShardId shardId;
-        private final TimeValue keepAlive;
+    void executeSearchStarTree(Task task, SearchRequest searchRequest, StepListener<SearchResponse> createPitListener) {
+        logger.debug(
+            () -> new ParameterizedMessage("Executing creation of PIT context for indices [{}]", Arrays.toString(searchRequest.indices()))
+        );
+        transportSearchAction.executeRequest(
+            task,
+            searchRequest,
+            TransportCreatePitAction.CREATE_PIT_ACTION,
+            true,
+            new TransportSearchAction.SinglePhaseSearchAction() {
+                @Override
+                public void executeOnShardTarget(
+                    SearchTask searchTask,
+                    SearchShardTarget target,
+                    Transport.Connection connection,
+                    ActionListener<SearchPhaseResult> searchPhaseResultActionListener
+                ) {
+                    ShardSearchRequest req = new ShardSearchRequest(target.getShardId(), 1, null);
 
-        public CreateReaderContextRequest(ShardId shardId, TimeValue keepAlive) {
-            this.shardId = shardId;
-            this.keepAlive = keepAlive;
-        }
-
-        public ShardId getShardId() {
-            return shardId;
-        }
-
-        public TimeValue getKeepAlive() {
-            return keepAlive;
-        }
-
-        public CreateReaderContextRequest(StreamInput in) throws IOException {
-            super(in);
-            this.shardId = new ShardId(in);
-            this.keepAlive = in.readTimeValue();
-        }
-
-        @Override
-        public void writeTo(StreamOutput out) throws IOException {
-            super.writeTo(out);
-            shardId.writeTo(out);
-            out.writeTimeValue(keepAlive);
-        }
+//                    searchTransportService.sendExecuteStarTreeQuery(
+//                        connection,
+//                        req,
+//                        searchTask,
+//                        ActionListener.wrap(r -> searchPhaseResultActionListener.onResponse(r), searchPhaseResultActionListener::onFailure)
+//                    );
+                }
+            },
+            createPitListener
+        );
     }
 
-    /**
-     * Create pit reader context response which holds the contextId
-     */
-    public static class CreateReaderContextResponse extends SearchPhaseResult {
-        public CreateReaderContextResponse(ShardSearchContextId shardSearchContextId) {
-            this.contextId = shardSearchContextId;
-        }
 
-        public CreateReaderContextResponse(StreamInput in) throws IOException {
-            super(in);
-            contextId = new ShardSearchContextId(in);
-        }
-
-        @Override
-        public void writeTo(StreamOutput out) throws IOException {
-            super.writeTo(out);
-            contextId.writeTo(out);
-        }
-    }
 
 }

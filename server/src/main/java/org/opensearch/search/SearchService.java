@@ -32,10 +32,18 @@
 
 package org.opensearch.search;
 
+import java.util.Arrays;
+import java.util.HashSet;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.search.FieldDoc;
+import org.apache.lucene.search.ScoreMode;
+import org.apache.lucene.search.SimpleCollector;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TotalHits;
+import org.apache.lucene.util.DocIdSetBuilder;
 import org.opensearch.LegacyESVersion;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.ActionRunnable;
@@ -45,6 +53,7 @@ import org.opensearch.action.search.DeletePitResponse;
 import org.opensearch.action.search.ListPitInfo;
 import org.opensearch.action.search.PitSearchContextIdForNode;
 import org.opensearch.action.search.SearchShardTask;
+import org.opensearch.action.search.SearchStarTreeResponse;
 import org.opensearch.action.search.SearchType;
 import org.opensearch.action.search.UpdatePitContextRequest;
 import org.opensearch.action.search.UpdatePitContextResponse;
@@ -57,6 +66,7 @@ import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.lucene.Lucene;
+import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
@@ -74,9 +84,13 @@ import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.core.indices.breaker.CircuitBreakerService;
+import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.index.IndexNotFoundException;
 import org.opensearch.index.IndexService;
 import org.opensearch.index.IndexSettings;
+import org.opensearch.index.codec.freshstartree.builder.BaseSingleTreeBuilder;
+import org.opensearch.index.codec.freshstartree.codec.StarTreeAggregatedValues;
+import org.opensearch.index.codec.freshstartree.query.StarTreeQuery;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.query.InnerHitContextBuilder;
 import org.opensearch.index.query.MatchAllQueryBuilder;
@@ -97,6 +111,7 @@ import org.opensearch.search.aggregations.AggregationInitializationException;
 import org.opensearch.search.aggregations.AggregatorFactories;
 import org.opensearch.search.aggregations.InternalAggregation;
 import org.opensearch.search.aggregations.InternalAggregation.ReduceContext;
+import org.opensearch.search.aggregations.InternalAggregations;
 import org.opensearch.search.aggregations.MultiBucketConsumerService;
 import org.opensearch.search.aggregations.SearchContextAggregations;
 import org.opensearch.search.aggregations.pipeline.PipelineAggregator.PipelineTree;
@@ -114,6 +129,7 @@ import org.opensearch.search.fetch.subphase.FetchFieldsContext;
 import org.opensearch.search.fetch.subphase.ScriptFieldsContext.ScriptField;
 import org.opensearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.opensearch.search.internal.AliasFilter;
+import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.internal.InternalScrollSearchRequest;
 import org.opensearch.search.internal.LegacyReaderContext;
 import org.opensearch.search.internal.PitReaderContext;
@@ -922,6 +938,90 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         });
     }
 
+    public void searchStarTree(ShardSearchRequest request, SearchShardTask task, ActionListener<SearchStarTreeResponse> listener)
+        throws IOException {
+        try {
+            final IndexService indexService = indicesService.indexServiceSafe(request.shardId().getIndex());
+            final IndexShard shard = indexService.getShard(request.shardId().id());
+            ReaderContext readerContext = createOrGetReaderContext(request, true);
+            try (
+                Releasable ignored = readerContext.markAsUsed(getKeepAlive(request));
+                final DefaultSearchContext context = createSearchContext(readerContext, request, defaultSearchTimeout, false);
+            ) {
+                final ContextIndexSearcher searcher = context.searcher();
+                HashMap<String, Long> map = new HashMap<>();
+                SimpleCollector collector = getSumCollector(map);
+                searcher.search(new StarTreeQuery(new HashMap<>(), new HashSet<>()), collector);
+                SearchStarTreeResponse r = new SearchStarTreeResponse(map, readerContext.id());
+                QuerySearchResult result = new QuerySearchResult();
+                result.topDocs(
+                    new TopDocsAndMaxScore(new TopDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), Lucene.EMPTY_SCORE_DOCS), Float.NaN),
+                    new DocValueFormat[0]
+                );
+                //InternalAggregations aggregations = new InternalAggregations();
+                result.aggregations();
+                listener.onResponse(r);
+            } catch (Exception e) {
+                logger.trace("Star tree query phase failed", e);
+                listener.onFailure(e);
+                processFailure(readerContext, e);
+                throw e;
+            }
+        } catch (Exception e) {
+            listener.onFailure(e);
+        }
+    }
+
+    private SimpleCollector getSumCollector(HashMap<String, Long> map) {
+        return new SimpleCollector() {
+            private LeafReaderContext context;
+            private DocIdSetBuilder docsBuilder;
+            public int totalHits;
+
+            public long sum = 0;
+
+            @Override
+            public void collect(int doc)
+                throws IOException {
+                docsBuilder.grow(1).add(doc);
+                StarTreeAggregatedValues sv = (StarTreeAggregatedValues) context.reader().getAggregatedDocValues();
+                NumericDocValues status_dim = sv.dimensionValues.get("status");
+                NumericDocValues hour_dim = sv.dimensionValues.get("hour");
+                NumericDocValues day_dim = sv.dimensionValues.get("day");
+                NumericDocValues status_sum_metric = sv.metricValues.get("status_sum");
+
+                status_sum_metric.advanceExact(doc);
+                sum += status_sum_metric.longValue();
+
+                hour_dim.advanceExact(doc);
+                day_dim.advanceExact(doc);
+                status_dim.advanceExact(doc);
+
+                long status = status_dim.longValue();
+                long hour = hour_dim.longValue() * BaseSingleTreeBuilder.HOUR;
+                long day = day_dim.longValue() * BaseSingleTreeBuilder.DAY;
+
+                map.put(status + ":" + hour + ":" + day, sum);
+                logger.info("Hour : {} , Day : {} , Status : {} = Sum : {}" , hour, day, status, sum);
+
+                totalHits++;
+            }
+
+            @Override
+            protected void doSetNextReader(LeafReaderContext context) throws IOException {
+                assert docsBuilder == null;
+                docsBuilder = new DocIdSetBuilder(Integer.MAX_VALUE);
+                totalHits = 0;
+                this.context = context;
+            }
+
+            @Override
+            public ScoreMode scoreMode() {
+                return ScoreMode.COMPLETE_NO_SCORES;
+            }
+        };
+    }
+
     /**
      * Update PIT reader with pit id, keep alive and created time etc
      */
@@ -1053,8 +1153,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             // might end up with incorrect state since we are using now() or script services
             // during rewrite and normalized / evaluate templates etc.
             QueryShardContext context = new QueryShardContext(searchContext.getQueryShardContext());
-            Rewriteable.rewrite(request.getRewriteable(), context, true);
-            assert searchContext.getQueryShardContext().isCacheable();
+            //Rewriteable.rewrite(request.getRewriteable(), context, true);
+            //assert searchContext.getQueryShardContext().isCacheable();
             success = true;
         } finally {
             if (success == false) {

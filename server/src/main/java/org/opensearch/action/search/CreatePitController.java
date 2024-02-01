@@ -117,6 +117,38 @@ public class CreatePitController {
         );
     }
 
+    public void searchStarTree(
+        SearchRequest searchRequest,
+        Task task,
+        StepListener<SearchResponse> createPitListener,
+        ActionListener<SearchStarTreeResponse> updatePitIdListener
+    ) {
+        SearchTask searchTask = searchRequest.createTask(
+            task.getId(),
+            task.getType(),
+            task.getAction(),
+            task.getParentTaskId(),
+            Collections.emptyMap()
+        );
+        /**
+         * This is needed for cross cluster functionality to work with PITs and current ccsMinimizeRoundTrips is
+         * not supported for point in time
+         */
+        searchRequest.setCcsMinimizeRoundtrips(false);
+        /**
+         * Phase 1 of create PIT
+         */
+        executeCreatePit(searchTask, searchRequest, createPitListener);
+
+        /**
+         * Phase 2 of create PIT where we update pit id in pit contexts
+         */
+//        createPitListener.whenComplete(
+//            searchResponse -> { executeSearchStarTree(searchRequest, searchResponse, updatePitIdListener); },
+//            updatePitIdListener::onFailure
+//        );
+    }
+
     /**
      * Creates PIT reader context with temporary keep alive
      */
@@ -152,9 +184,106 @@ public class CreatePitController {
         );
     }
 
-    /**
-     * Updates PIT ID, keep alive and createdTime of PIT reader context
-     */
+
+//    void executeSearchStarTree(
+//        SearchRequest searchRequest,
+//        SearchResponse searchResponse,
+//        ActionListener<SearchStarTreeResponse> updatePitIdListener
+//    ) {
+//        logger.debug(
+//            () -> new ParameterizedMessage(
+//                "Updating PIT context with PIT ID [{}], creation time and keep alive",
+//                searchResponse.pointInTimeId()
+//            )
+//        );
+//        /**
+//         * store the create time ( same create time for all PIT contexts across shards ) to be used
+//         * for list PIT api
+//         */
+//        final long relativeStartNanos = System.nanoTime();
+//        final TransportSearchAction.SearchTimeProvider timeProvider = new TransportSearchAction.SearchTimeProvider(
+//            searchRequest.getOrCreateAbsoluteStartMillis(),
+//            relativeStartNanos,
+//            System::nanoTime
+//        );
+//        final long creationTime = timeProvider.getAbsoluteStartMillis();
+//        CreatePitResponse createPITResponse = new CreatePitResponse(
+//            searchResponse.pointInTimeId(),
+//            creationTime,
+//            searchResponse.getTotalShards(),
+//            searchResponse.getSuccessfulShards(),
+//            searchResponse.getSkippedShards(),
+//            searchResponse.getFailedShards(),
+//            searchResponse.getShardFailures()
+//        );
+//        SearchContextId contextId = SearchContextId.decode(namedWriteableRegistry, createPITResponse.getId());
+//        final StepListener<BiFunction<String, String, DiscoveryNode>> lookupListener = getConnectionLookupListener(contextId);
+//        lookupListener.whenComplete(nodelookup -> {
+//            final ActionListener<UpdatePitContextResponse> groupedActionListener = getGroupedListener(
+//                updatePitIdListener,
+//                createPITResponse,
+//                contextId.shards().size(),
+//                contextId.shards().values()
+//            );
+//            for (Map.Entry<ShardId, SearchContextIdForNode> entry : contextId.shards().entrySet()) {
+//                DiscoveryNode node = nodelookup.apply(entry.getValue().getClusterAlias(), entry.getValue().getNode());
+//                if (node == null) {
+//                    node = this.clusterService.state().getNodes().get(entry.getValue().getNode());
+//                }
+//                if (node == null) {
+//                    logger.error(
+//                        () -> new ParameterizedMessage(
+//                            "Create pit update phase for PIT ID [{}] failed " + "because node [{}] not found",
+//                            searchResponse.pointInTimeId(),
+//                            entry.getValue().getNode()
+//                        )
+//                    );
+//                    groupedActionListener.onFailure(
+//                        new OpenSearchException(
+//                            "Create pit update phase for PIT ID ["
+//                                + searchResponse.pointInTimeId()
+//                                + "] failed because node["
+//                                + entry.getValue().getNode()
+//                                + "] "
+//                                + "not found"
+//                        )
+//                    );
+//                    return;
+//                }
+//                try {
+//                    final Transport.Connection connection = searchTransportService.getConnection(entry.getValue().getClusterAlias(), node);
+////                    searchTransportService.updatePitContext(
+////                        connection,
+////                        new UpdatePitContextRequest(
+////                            entry.getValue().getSearchContextId(),
+////                            createPITResponse.getId(),
+////                            request.getKeepAlive().millis(),
+////                            creationTime
+////                        ),
+////                        groupedActionListener
+////                    );
+//                } catch (Exception e) {
+//                    String nodeName = node.getName();
+//                    logger.error(
+//                        () -> new ParameterizedMessage(
+//                            "Create pit update phase failed for PIT ID [{}] on node [{}]",
+//                            searchResponse.pointInTimeId(),
+//                            nodeName
+//                        ),
+//                        e
+//                    );
+//                    groupedActionListener.onFailure(
+//                        new OpenSearchException(
+//                            "Create pit update phase for PIT ID [" + searchResponse.pointInTimeId() + "] failed on node[" + node + "]",
+//                            e
+//                        )
+//                    );
+//                }
+//            }
+//        }, updatePitIdListener::onFailure);
+//    }
+
+
     void executeUpdatePitId(
         CreatePitRequest request,
         SearchRequest searchRequest,
@@ -254,6 +383,7 @@ public class CreatePitController {
         }, updatePitIdListener::onFailure);
     }
 
+
     private StepListener<BiFunction<String, String, DiscoveryNode>> getConnectionLookupListener(SearchContextId contextId) {
         ClusterState state = clusterService.state();
         final Set<String> clusters = contextId.shards()
@@ -284,6 +414,25 @@ public class CreatePitController {
             @Override
             public void onFailure(final Exception e) {
                 cleanupContexts(contexts, createPITResponse.getId());
+                updatePitIdListener.onFailure(e);
+            }
+        }, size);
+    }
+
+    private ActionListener<SearchStarTreeResponse> getStarTreeGroupedListener(
+        ActionListener<SearchStarTreeResponse> updatePitIdListener,
+        int size,
+        Collection<SearchContextIdForNode> contexts
+    ) {
+        return new GroupedActionListener<>(new ActionListener<>() {
+            @Override
+            public void onResponse(final Collection<SearchStarTreeResponse> responses) {
+                //updatePitIdListener.onResponse(responses);
+            }
+
+            @Override
+            public void onFailure(final Exception e) {
+                //cleanupContexts(contexts, createPITResponse.getId());
                 updatePitIdListener.onFailure(e);
             }
         }, size);

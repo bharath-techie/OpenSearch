@@ -72,6 +72,7 @@ import org.opensearch.action.search.SearchRequestBuilder;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.search.SearchScrollRequest;
 import org.opensearch.action.search.SearchScrollRequestBuilder;
+import org.opensearch.action.search.SearchStarTreeResponse;
 import org.opensearch.action.termvectors.MultiTermVectorsRequest;
 import org.opensearch.action.termvectors.MultiTermVectorsRequestBuilder;
 import org.opensearch.action.termvectors.MultiTermVectorsResponse;
@@ -339,6 +340,9 @@ public interface Client extends OpenSearchClient, Releasable {
      * Create point in time for one or more indices
      */
     void createPit(CreatePitRequest createPITRequest, ActionListener<CreatePitResponse> listener);
+
+    void searchStarTree(SearchRequest createPITRequest, ActionListener<SearchStarTreeResponse> listener);
+
 
     /**
      * Delete one or more point in time contexts

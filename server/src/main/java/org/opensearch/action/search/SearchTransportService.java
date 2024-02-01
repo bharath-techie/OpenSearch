@@ -99,6 +99,7 @@ public class SearchTransportService {
     public static final String FETCH_ID_SCROLL_ACTION_NAME = "indices:data/read/search[phase/fetch/id/scroll]";
     public static final String FETCH_ID_ACTION_NAME = "indices:data/read/search[phase/fetch/id]";
     public static final String QUERY_CAN_MATCH_NAME = "indices:data/read/search[can_match]";
+    public static final String QUERY_STAR_TREE = "indices:data/read/search[startree]";
     public static final String CREATE_READER_CONTEXT_ACTION_NAME = "indices:data/read/search[create_context]";
     public static final String UPDATE_READER_CONTEXT_ACTION_NAME = "indices:data/read/search[update_context]";
 
@@ -175,6 +176,22 @@ public class SearchTransportService {
             task,
             TransportRequestOptions.EMPTY,
             new ActionListenerResponseHandler<>(actionListener, TransportCreatePitAction.CreateReaderContextResponse::new)
+        );
+    }
+
+    public void sendExecuteStarTreeQuery(
+        Transport.Connection connection,
+        ShardSearchRequest request,
+        SearchTask task,
+        ActionListener<SearchStarTreeResponse> actionListener
+    ) {
+        transportService.sendChildRequest(
+            connection,
+            QUERY_STAR_TREE,
+            request,
+            task,
+            TransportRequestOptions.EMPTY,
+            new ActionListenerResponseHandler<>(actionListener, SearchStarTreeResponse::new)
         );
     }
 
@@ -686,6 +703,32 @@ public class SearchTransportService {
             transportService,
             CREATE_READER_CONTEXT_ACTION_NAME,
             TransportCreatePitAction.CreateReaderContextResponse::new
+        );
+
+        transportService.registerRequestHandler(
+            QUERY_STAR_TREE,
+            ThreadPool.Names.SAME,
+            ShardSearchRequest::new,
+            (request, channel, task) -> {
+                ChannelActionListener<
+                    SearchStarTreeResponse,
+                    ShardSearchRequest> listener = new ChannelActionListener<>(
+                    channel,
+                    QUERY_STAR_TREE,
+                    request
+                );
+                searchService.searchStarTree(request,
+                    (SearchShardTask) task,
+                    ActionListener.wrap(
+                        r -> listener.onResponse(r),
+                        listener::onFailure
+                    ));
+            }
+        );
+        TransportActionProxy.registerProxyAction(
+            transportService,
+            QUERY_STAR_TREE,
+            SearchStarTreeResponse::new
         );
 
         transportService.registerRequestHandler(
