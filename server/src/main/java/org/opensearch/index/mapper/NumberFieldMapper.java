@@ -103,6 +103,7 @@ public class NumberFieldMapper extends ParametrizedFieldMapper {
 
         private final Parameter<Boolean> indexed = Parameter.indexParam(m -> toType(m).indexed, true);
         private final Parameter<Boolean> hasDocValues = Parameter.docValuesParam(m -> toType(m).hasDocValues, true);
+
         private final Parameter<Boolean> stored = Parameter.storeParam(m -> toType(m).stored, false);
 
         private final Parameter<Explicit<Boolean>> ignoreMalformed;
