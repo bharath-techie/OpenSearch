@@ -96,10 +96,13 @@ public class StarTreeFilter {
     // 1706268600 / (60*60*1000) * (60*60*1000)
     public DocIdSetIterator getStarTreeResult() throws IOException {
         StarTreeResult starTreeResult = traverseStarTree();
-        logger.info("Matched docs in star tree : {}" , starTreeResult.numOfMatchedDocs);
+        //logger.info("Matched docs in star tree : {}" , starTreeResult.numOfMatchedDocs);
         List<DocIdSetIterator> andIterators = new ArrayList<>();
         andIterators.add(starTreeResult._matchedDocIds.build().iterator());
         DocIdSetIterator docIdSetIterator = andIterators.get(0);
+        if(starTreeResult.maxMatchedDoc == -1) {
+            return docIdSetIterator;
+        }
         int docCount = 0;
         for (String remainingPredicateColumn : starTreeResult._remainingPredicateColumns) {
             // TODO : set to max value of doc values
