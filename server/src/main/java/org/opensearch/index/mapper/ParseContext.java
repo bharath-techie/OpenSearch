@@ -32,6 +32,7 @@
 
 package org.opensearch.index.mapper;
 
+import java.util.LinkedHashMap;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.util.BytesRef;
@@ -70,11 +71,14 @@ public abstract class ParseContext implements Iterable<ParseContext.Document> {
         private final List<IndexableField> fields;
         private Map<Object, IndexableField> keyedFields;
 
+        private Map<String, Long> map;
+
         private Document(String path, Document parent) {
             fields = new ArrayList<>();
             this.path = path;
             this.prefix = path.isEmpty() ? "" : path + ".";
             this.parent = parent;
+            map = new LinkedHashMap<>();
         }
 
         public Document() {
@@ -115,6 +119,13 @@ public abstract class ParseContext implements Iterable<ParseContext.Document> {
             this.fields.addAll(fields);
         }
 
+        public void addVal(String key, Long value) {
+            this.map.put(key, value);
+        }
+
+        public Map<String,Long> getVal() {
+            return this.map;
+        }
         public void add(IndexableField field) {
             // either a meta fields or starts with the prefix
             assert field.name().startsWith("_") || field.name().startsWith(prefix) : field.name() + " " + prefix;

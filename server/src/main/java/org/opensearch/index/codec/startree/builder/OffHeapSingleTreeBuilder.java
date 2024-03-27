@@ -16,17 +16,28 @@
  */
 package org.opensearch.index.codec.startree.builder;
 
+import java.util.HashMap;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
+import org.apache.lucene.index.FilteredTermsEnum;
 import org.apache.lucene.index.IndexFileNames;
+import org.apache.lucene.index.MergeState;
+import org.apache.lucene.index.OrdinalMap;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.RandomAccessInput;
+import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
+import org.apache.lucene.util.LongBitSet;
+import org.apache.lucene.util.LongValues;
+import org.apache.lucene.util.packed.PackedInts;
 import org.opensearch.index.codec.startree.codec.StarTreeAggregatedValues;
 import org.opensearch.index.codec.startree.util.QuickSorter;
 
@@ -39,6 +50,9 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
+
 
 /**
  * Off heap implementation of star tree builder
@@ -86,11 +100,12 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
         IndexOutput output,
         List<String> dimensionsSplitOrder,
         Map<String, SortedNumericDocValues> docValuesMap,
+        Map<String, SortedSetDocValues> keywordDocValuesMap,
         int maxDoc,
         DocValuesConsumer consumer,
         SegmentWriteState state
     ) throws IOException {
-        super(output, dimensionsSplitOrder, docValuesMap, maxDoc, consumer, state);
+        super(output, dimensionsSplitOrder, docValuesMap, keywordDocValuesMap, maxDoc, consumer, state);
         this.state = state;
         fileToByteSizeMap = new LinkedHashMap<>(); // maintain order
 
@@ -114,35 +129,123 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
     }
 
     @Override
-    public void build(List<StarTreeAggregatedValues> aggrList) throws IOException {
-        build(mergeRecords(aggrList), true);
+    public void build(List<StarTreeAggregatedValues> aggrList, MergeState mergeState) throws IOException {
+        build(mergeRecords(aggrList, mergeState), true);
+    }
+    static class BitsFilteredTermsEnum extends FilteredTermsEnum {
+        final LongBitSet liveTerms;
+
+        BitsFilteredTermsEnum(TermsEnum in, LongBitSet liveTerms) {
+            super(in, false); // <-- not passing false here wasted about 3 hours of my time!!!!!!!!!!!!!
+            assert liveTerms != null;
+            this.liveTerms = liveTerms;
+        }
+
+        @Override
+        protected AcceptStatus accept(BytesRef term) throws IOException {
+            if (liveTerms.get(ord())) {
+                return AcceptStatus.YES;
+            } else {
+                return AcceptStatus.NO;
+            }
+        }
     }
 
-    private Iterator<Record> mergeRecords(List<StarTreeAggregatedValues> aggrList) throws IOException {
+    private Iterator<Record> mergeRecords(List<StarTreeAggregatedValues> aggrList, MergeState mergeState) throws IOException {
         int recordBytesLength = 0;
         int numDocs = 0;
         Integer[] sortedDocIds;
-        try {
-            for (StarTreeAggregatedValues starTree : aggrList) {
-                boolean endOfDoc = false;
-                while (!endOfDoc) {
-                    long[] dims = new long[starTree.dimensionValues.size()];
-                    int i = 0;
-                    for (Map.Entry<String, SortedNumericDocValues> dimValue : starTree.dimensionValues.entrySet()) {
-                        int doc = dimValue.getValue().nextDoc();
-                        long val = dimValue.getValue().nextValue();
-
-                        endOfDoc = doc == DocIdSetIterator.NO_MORE_DOCS || val == -1;
-                        if (endOfDoc) {
-                            break;
+        long curr = System.currentTimeMillis();
+        List<SortedSetDocValues> toMerge = new ArrayList<>();
+        for (StarTreeAggregatedValues starTree : aggrList) {
+            for(Map.Entry<String, SortedSetDocValues> entry : starTree.keywordDimValues.entrySet()) {
+                // TODO : Make this specific to multiple fields
+                toMerge.add(entry.getValue());
+            }
+        }
+        //step 1: iterate thru each sub and mark terms still in use
+        TermsEnum[] liveTerms = new TermsEnum[toMerge.size()];
+        long[] weights = new long[liveTerms.length];
+        for (int sub = 0; sub < liveTerms.length; sub++) {
+            SortedSetDocValues dv = toMerge.get(sub);
+            Bits liveDocs = mergeState.liveDocs[sub];
+            if (liveDocs == null) {
+                liveTerms[sub] = dv.termsEnum();
+                weights[sub] = dv.getValueCount();
+            } else {
+                LongBitSet bitset = new LongBitSet(dv.getValueCount());
+                int docID;
+                while ((docID = dv.nextDoc()) != NO_MORE_DOCS) {
+                    if (liveDocs.get(docID)) {
+                        for (int i = 0; i < dv.docValueCount(); i++) {
+                            bitset.set(dv.nextOrd());
                         }
-                        dims[i] = val;
-                        i++;
+                    }
+                }
+                liveTerms[sub] = new BitsFilteredTermsEnum(dv.termsEnum(), bitset);
+                weights[sub] = bitset.cardinality();
+            }
+        }
+
+        // step 2: create ordinal map (this conceptually does the "merging")
+        final OrdinalMap map = OrdinalMap.build(null, liveTerms, weights, PackedInts.COMPACT);
+        logger.info("Map size in bytes : {}",map.ramBytesUsed());
+
+        logger.info("Ordinal map takes : {} " , System.currentTimeMillis() - curr);
+        try {
+            int seg = 0;
+            for (StarTreeAggregatedValues starTree : aggrList) {
+                Map<Long, Long> segToGlobalOrdMap = new HashMap<>();
+                boolean endOfDoc = false;
+                LongValues longValues = map.getGlobalOrds(seg);
+                while (!endOfDoc) {
+                    long[] dims = new long[starTree._starTree.getDimensionNames().size()];
+
+                    for(int i=0; i< starTree._starTree.getDimensionNames().size(); i++) {
+                        if(starTree.dimensionValues.containsKey(starTree._starTree.getDimensionNames().get(i))) {
+                            //logger.info("merge i = {}", i);
+                            SortedNumericDocValues dimValue = starTree.dimensionValues.get(starTree._starTree.getDimensionNames().get(i));
+                            int doc = dimValue.nextDoc();
+                            long val = dimValue.nextValue();
+                            //logger.info("merge doc = {}, val = {}", doc, val);
+                            endOfDoc = doc == DocIdSetIterator.NO_MORE_DOCS || val == -1;
+                            if (endOfDoc) {
+                                break;
+                            }
+                            dims[i] = val;
+                            //i++;
+                        }
+                        if(starTree.keywordDimValues.containsKey(starTree._starTree.getDimensionNames().get(i))) {
+                            SortedSetDocValues dimValue = starTree.keywordDimValues.get(starTree._starTree.getDimensionNames().get(i));
+                            // is this expensive ?
+                            int doc = dimValue.nextDoc();
+                            long localSegmentOrd = dimValue.nextOrd();
+//
+//
+                            endOfDoc = doc == DocIdSetIterator.NO_MORE_DOCS || localSegmentOrd == -1;
+                            if (endOfDoc) {
+                                break;
+                            }
+//                            if(!segToGlobalOrdMap.containsKey(localSegmentOrd)) {
+//                                BytesRef bytesRef = dimValue.lookupOrd(localSegmentOrd);
+//                                long finalOrd = this._keywordDimensionReaders[i].lookupTerm(bytesRef);
+//
+//                                dims[i] = finalOrd;
+//                                segToGlobalOrdMap.put(localSegmentOrd, finalOrd);
+//                            } else {
+//                                dims[i] = segToGlobalOrdMap.get(localSegmentOrd);
+//                            }
+
+                            // TODO : uncomment this
+                           dims[i] = longValues.get(localSegmentOrd);
+                            //logger.info("global ord = {}, local ord = {}", dims[i], localSegmentOrd);
+                           // i++;
+                        }
                     }
                     if (endOfDoc) {
                         break;
                     }
-                    i = 0;
+                    int i = 0;
                     Object[] metrics = new Object[starTree.metricValues.size()];
                     for (Map.Entry<String, SortedNumericDocValues> metricValue : starTree.metricValues.entrySet()) {
                         metricValue.getValue().nextDoc();
@@ -155,6 +258,8 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
                     recordBytesLength = bytes.length;
                     segmentRecordFileOutput.writeBytes(bytes, bytes.length);
                 }
+                logger.info("Segment to global ord map size : {} ", segToGlobalOrdMap.size());
+                seg++;
             }
             sortedDocIds = new Integer[numDocs];
             for (int i = 0; i < numDocs; i++) {
@@ -485,7 +590,6 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
         if (in != null) return;
 
         starTreeRecordFileOutput.close();
-        logger.info("Created a file : {} of size : {}", segmentRecordFileOutput.getName(), segmentRecordFileOutput.getFilePointer());
         fileToByteSizeMap.put(starTreeRecordFileOutput.getName(), _numDocs);
 
         String starTreeRecordFileName = IndexFileNames.segmentFileName(
@@ -534,6 +638,18 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
         // Delete all temporary segment record files
         IOUtils.deleteFilesIgnoringExceptions(state.directory, segmentRecordFileOutput.getName());
         // Delete all temporary star tree record files
+        logger.info("Number of temp files : {}", fileToByteSizeMap.size());
+        long length = 0;
+        for (String name : fileToByteSizeMap.keySet()) {
+            try {
+                length += state.directory.fileLength(name);
+            } catch (
+                @SuppressWarnings("unused")
+                Throwable ignored) {
+                // ignore
+            }
+        }
+        logger.info("Temp file size : {} - {} MB", length, length/1024/2024);
         IOUtils.deleteFilesIgnoringExceptions(state.directory, fileToByteSizeMap.keySet());
         super.close();
     }
