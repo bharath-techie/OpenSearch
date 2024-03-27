@@ -1381,7 +1381,15 @@ public class NumberFieldMapper extends ParametrizedFieldMapper {
             value = null;
         } else {
             try {
+
                 numericValue = fieldType().type.parse(parser, coerce.value());
+//                if(this.simpleName().equals("status")) {
+//                    context.doc().addVal("status", numericValue.longValue());
+//                    if(context.doc().getVal().containsKey("timestamp")) {
+//                        long timestamp = context.doc().getVal().get("timestamp");
+//                        context.doc().add(new LongPoint("timestamp-status", timestamp, numericValue.longValue()));
+//                    }
+//                }
             } catch (InputCoercionException | IllegalArgumentException | JsonParseException e) {
                 if (ignoreMalformed.value() && parser.currentToken().isValue()) {
                     context.addIgnoredField(mappedFieldType.name());

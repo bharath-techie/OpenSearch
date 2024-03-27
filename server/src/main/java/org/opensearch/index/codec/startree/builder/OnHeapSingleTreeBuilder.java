@@ -17,8 +17,10 @@
 package org.opensearch.index.codec.startree.builder;
 
 import org.apache.lucene.codecs.DocValuesConsumer;
+import org.apache.lucene.index.MergeState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.index.codec.startree.codec.StarTreeAggregatedValues;
@@ -40,15 +42,16 @@ public class OnHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
         IndexOutput output,
         List<String> dimensionsSplitOrder,
         Map<String, SortedNumericDocValues> docValuesMap,
+        Map<String, SortedSetDocValues> keywordDocValuesMap,
         int maxDoc,
         DocValuesConsumer consumer,
         SegmentWriteState state
     ) throws IOException {
-        super(output, dimensionsSplitOrder, docValuesMap, maxDoc, consumer, state);
+        super(output, dimensionsSplitOrder, docValuesMap, keywordDocValuesMap, maxDoc, consumer, state);
     }
 
     @Override
-    public void build(List<StarTreeAggregatedValues> aggrList) throws IOException {
+    public void build(List<StarTreeAggregatedValues> aggrList, MergeState mergeState) throws IOException {
         build(mergeRecords(aggrList), true);
     }
 
