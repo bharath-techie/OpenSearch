@@ -40,6 +40,8 @@ public class StarTreeQueryBuilder extends AbstractQueryBuilder<StarTreeQueryBuil
 
     private final Set<String> groupBy = new HashSet<>();
     Map<String, List<Predicate<Long>>> predicateMap = new HashMap<>();
+
+    Map<String, List<String>> filterMap = new HashMap<>();
     private static final Logger logger = LogManager.getLogger(StarTreeQueryBuilder.class);
 
     public StarTreeQueryBuilder() {}
@@ -114,13 +116,25 @@ public class StarTreeQueryBuilder extends AbstractQueryBuilder<StarTreeQueryBuil
                 List<QueryBuilder> shouldQbs = bq.should();
                 for (QueryBuilder sqb : shouldQbs) {
                     if (sqb instanceof TermQueryBuilder) {
+
+
                         TermQueryBuilder tq = (TermQueryBuilder) sqb;
                         String field = tq.fieldName();
-                        long inputQueryVal = Long.valueOf((String) tq.value());
-                        List<Predicate<Long>> predicates = predicateMap.getOrDefault(field, new ArrayList<>());
-                        Predicate<Long> predicate = dimVal -> dimVal == inputQueryVal;
-                        predicates.add(predicate);
-                        predicateMap.put(field, predicates);
+                        // TODO : handle this better
+                        if(tq.value() instanceof String) {
+                            if(((String) tq.value()).contains(".") ) {
+                                String val = (String) tq.value();
+                                List<String> keywordList = filterMap.getOrDefault(field, new ArrayList<String>());
+                                keywordList.add(val);
+                                filterMap.put(field, keywordList);
+                            } else {
+                                long inputQueryVal = Long.valueOf((String) tq.value());
+                                List<Predicate<Long>> predicates = predicateMap.getOrDefault(field, new ArrayList<>());
+                                Predicate<Long> predicate = dimVal -> dimVal == inputQueryVal;
+                                predicates.add(predicate);
+                                predicateMap.put(field, predicates);
+                            }
+                        }
                     }
                 }
             }
@@ -140,11 +154,11 @@ public class StarTreeQueryBuilder extends AbstractQueryBuilder<StarTreeQueryBuil
     @Override
     protected Query doToQuery(QueryShardContext context) {
         // TODO : star tree supports either group by or filter
-        if (predicateMap.size() > 0) {
-            return new StarTreeQuery(predicateMap, new HashSet<>());
+        if (predicateMap.size() > 0 ||  filterMap.size() > 0) {
+            return new StarTreeQuery(predicateMap, filterMap, new HashSet<>());
         }
         logger.info("Group by : {} ", this.groupBy.toString() );
-        return new StarTreeQuery(new HashMap<>(), this.groupBy);
+        return new StarTreeQuery(new HashMap<>(), new HashMap<>(), this.groupBy);
     }
 
     @Override

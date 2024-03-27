@@ -48,6 +48,7 @@ public class StarTreeDocValuesReader extends DocValuesProducer {
     StarTree starTree;
 
     Map<String, SortedNumericDocValues> dimensionValues;
+    Map<String, SortedSetDocValues> keywordDimValues;
 
     Map<String, SortedNumericDocValues> metricValues;
     public static final String DATA_CODEC = "Lucene90DocValuesData";
@@ -62,6 +63,7 @@ public class StarTreeDocValuesReader extends DocValuesProducer {
         starTree = new OffHeapStarTree(data);
         valuesProducer = new Lucene90DocValuesProducerCopy(state, DATA_CODEC, "sttd", META_CODEC, "sttm", starTree.getDimensionNames());
         dimensionValues = new LinkedHashMap<>();
+        keywordDimValues = new LinkedHashMap<>();
     }
 
     @Override
@@ -73,12 +75,16 @@ public class StarTreeDocValuesReader extends DocValuesProducer {
     public StarTreeAggregatedValues getAggregatedDocValues() throws IOException {
         List<String> dimensionsSplitOrder = starTree.getDimensionNames();
         for (int i = 0; i < dimensionsSplitOrder.size(); i++) {
-            dimensionValues.put(dimensionsSplitOrder.get(i), valuesProducer.getSortedNumeric(dimensionsSplitOrder.get(i) + "_dim"));
+            try {
+                dimensionValues.put(dimensionsSplitOrder.get(i), valuesProducer.getSortedNumeric(dimensionsSplitOrder.get(i) + "_dim"));
+            } catch (NullPointerException e) {
+                keywordDimValues.put(dimensionsSplitOrder.get(i), valuesProducer.getSortedSet(dimensionsSplitOrder.get(i) + "_dim"));
+            }
         }
         metricValues = new HashMap<>();
-        metricValues.put("status_sum", valuesProducer.getSortedNumeric("elb_status_sum_metric"));
+        metricValues.put("status_sum", valuesProducer.getSortedNumeric("status_sum_metric"));
         //metricValues.put("status_count", valuesProducer.getNumeric("status_count_metric"));
-        return new StarTreeAggregatedValues(starTree, dimensionValues, metricValues);
+        return new StarTreeAggregatedValues(starTree, dimensionValues, keywordDimValues, metricValues);
     }
 
     @Override

@@ -3758,6 +3758,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
 
     private EngineConfig newEngineConfig(LongSupplier globalCheckpointSupplier) throws IOException {
         final Sort indexSort = indexSortSupplier.get();
+        // initialize here
         final Engine.Warmer warmer = reader -> {
             assert Thread.holdsLock(mutex) == false : "warming engine under mutex";
             assert reader != null;

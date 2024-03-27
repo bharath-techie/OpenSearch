@@ -16,11 +16,18 @@
  */
 package org.opensearch.index.codec.startree.query;
 
+import java.net.InetAddress;
+import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.document.InetAddressPoint;
 import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.DocIdSetBuilder;
+import org.opensearch.common.network.InetAddresses;
 import org.opensearch.index.codec.startree.codec.StarTreeAggregatedValues;
 import org.opensearch.index.codec.startree.node.StarTree;
 import org.opensearch.index.codec.startree.node.StarTreeNode;
@@ -62,24 +69,31 @@ public class StarTreeFilter {
 
     private final StarTree _starTree;
 
-    Map<String, List<Predicate<Long>>> _predicateEvaluators;
+    private final Map<String, List<Predicate<Long>>> _predicateEvaluators;
     private final Set<String> _groupByColumns;
 
     DocIdSetBuilder docsWithField;
 
     DocIdSetBuilder.BulkAdder adder;
     Map<String, SortedNumericDocValues> dimValueMap;
+
+    Map<String, SortedSetDocValues> keywordValueMap;
+    StarTreeResult _result;
+
+    Map<String, List<Long>> longEval;
     public StarTreeFilter(
-        StarTreeAggregatedValues starTreeAggrStructure,
-        Map<String, List<Predicate<Long>>> predicateEvaluators,
-        Set<String> groupByColumns
+        final StarTreeAggregatedValues starTreeAggrStructure,
+        final Map<String, List<Predicate<Long>>> predicateEvaluators,
+        final Map<String, List<Long>> longEval,
+        final Set<String> groupByColumns
     ) throws IOException {
         // This filter operator does not support AND/OR/NOT operations.
         _starTree = starTreeAggrStructure._starTree;
-        dimValueMap = starTreeAggrStructure.dimensionValues;
-        _predicateEvaluators = predicateEvaluators != null ? predicateEvaluators : Collections.emptyMap();
+        dimValueMap = Collections.unmodifiableMap(starTreeAggrStructure.dimensionValues);
+        keywordValueMap = Collections.unmodifiableMap(starTreeAggrStructure.keywordDimValues);
+        this.longEval = longEval != null ? longEval : Collections.emptyMap();
+        _predicateEvaluators = new ConcurrentHashMap<>(predicateEvaluators != null ? predicateEvaluators : Collections.emptyMap());
         _groupByColumns = groupByColumns != null ? groupByColumns : Collections.emptySet();
-
         // TODO : this should be the maximum number of doc values
         docsWithField = new DocIdSetBuilder(Integer.MAX_VALUE);
     }
@@ -90,40 +104,77 @@ public class StarTreeFilter {
      *   <li>For the remaining columns, use doc values indexes to match them
      * </ul>
      */
-    public DocIdSetIterator getStarTreeResult() throws IOException {
-        StarTreeResult starTreeResult = traverseStarTree();
+    public DocIdSetIterator getStarTreeResult(Map<String, List<Predicate<Long>>> concurrentHashMap) throws IOException {
+        StarTreeResult starTreeResult = traverseStarTree(concurrentHashMap);
         //logger.info("Matched docs in star tree : {}" , starTreeResult.numOfMatchedDocs);
         List<DocIdSetIterator> andIterators = new ArrayList<>();
         andIterators.add(starTreeResult._matchedDocIds.build().iterator());
         DocIdSetIterator docIdSetIterator = andIterators.get(0);
+        this._result = starTreeResult;
         // No matches, return
         if(starTreeResult.maxMatchedDoc == -1) {
             return docIdSetIterator;
+        }
+        if(starTreeResult._remainingPredicateColumns.size() > 0) {
+            logger.info("Remaining predicate cols : {} ", starTreeResult._remainingPredicateColumns);
         }
         int docCount = 0;
         for (String remainingPredicateColumn : starTreeResult._remainingPredicateColumns) {
             // TODO : set to max value of doc values
             logger.info("remainingPredicateColumn : {}, maxMatchedDoc : {} ", remainingPredicateColumn, starTreeResult.maxMatchedDoc);
             DocIdSetBuilder builder = new DocIdSetBuilder(starTreeResult.maxMatchedDoc + 1);
-            List<Predicate<Long>> compositePredicateEvaluators = _predicateEvaluators.get(remainingPredicateColumn);
+            final List<Predicate<Long>> compositePredicateEvaluators = concurrentHashMap.get(remainingPredicateColumn);
+            final List<Long> compositeLong = longEval.get(remainingPredicateColumn);
+
             SortedNumericDocValues ndv = this.dimValueMap.get(remainingPredicateColumn);
+            SortedSetDocValues nSdv = this.keywordValueMap.get(remainingPredicateColumn);
             List<Integer> docIds = new ArrayList<>();
             while (docIdSetIterator.nextDoc() != NO_MORE_DOCS) {
                 docCount++;
                 int docID = docIdSetIterator.docID();
-                if(ndv.advanceExact(docID)) {
-                    final int valuesCount = ndv.docValueCount();
-                    long value = ndv.nextValue();
-                    for (Predicate<Long> compositePredicateEvaluator : compositePredicateEvaluators) {
-                        // TODO : this might be expensive as its done against all doc values docs
-                        if (compositePredicateEvaluator.test(value)) {
-                            docIds.add(docID);
-                            for (int i = 0; i < valuesCount - 1; i++) {
-                                while(docIdSetIterator.nextDoc() != NO_MORE_DOCS) {
-                                    docIds.add(docIdSetIterator.docID());
+                if(ndv != null) {
+                    if (ndv.advanceExact(docID)) {
+                        final int valuesCount = ndv.docValueCount();
+                        long value = ndv.nextValue();
+                        for (Predicate<Long> compositePredicateEvaluator : compositePredicateEvaluators) {
+                            // TODO : this might be expensive as its done against all doc values docs
+                            if (compositePredicateEvaluator.test(value)) {
+                                docIds.add(docID);
+                                for (int i = 0; i < valuesCount - 1; i++) {
+                                    while (docIdSetIterator.nextDoc() != NO_MORE_DOCS) {
+                                        docIds.add(docIdSetIterator.docID());
+                                    }
                                 }
+                                break;
                             }
-                            break;
+                        }
+                    }
+                } else if (nSdv != null) {
+                    if(nSdv.advanceExact(docID)) {
+                        // TODO : IP dependant
+                        long ord = nSdv.nextOrd();
+                        BytesRef bytes = nSdv.lookupOrd(ord);
+                        InetAddress address = InetAddressPoint.decode(
+                            Arrays.copyOfRange(bytes.bytes, bytes.offset, bytes.offset + bytes.length)
+                        );
+                        String ip = InetAddresses.toAddrString(address);
+                        if(ip.equalsIgnoreCase("129.0.0.0")) {
+                            logger.info("Term : {}, ord :{}, docId : {}", ip, ord, docID);
+                        }
+                        int i = 0;
+                        for (Predicate<Long> compositePredicateEvaluator : compositePredicateEvaluators) {
+                            if(compositeLong != null && !compositePredicateEvaluator.test(compositeLong.get(i))) {
+                                logger.info("Query ::: Evaluating long : {} , Result : {}", compositeLong.get(i),
+                                    compositeLong != null ? compositePredicateEvaluator.test(compositeLong.get(i)) : true);
+                            }
+
+                            // TODO : this might be expensive as its done against all doc values docs
+                            if (compositePredicateEvaluator.test(ord)) {
+                                logger.info("Adding doc id : {} for ord : {} ip :{}", docID, ord, ip);
+                                docIds.add(docID);
+                                break;
+                            }
+                            i++;
                         }
                     }
                 }
@@ -141,10 +192,21 @@ public class StarTreeFilter {
      * Helper method to traverse the star tree, get matching documents and keep track of all the
      * predicate dimensions that are not matched.
      */
-    private StarTreeResult traverseStarTree() throws IOException {
+    private synchronized StarTreeResult traverseStarTree(Map<String, List<Predicate<Long>>> concurrentHashMap) throws IOException {
         Set<String> globalRemainingPredicateColumns = null;
-
+//        logger.info("Query ::: Predicate eval size : {}, Thread : {} ", this._predicateEvaluators.size(),
+//            Thread.currentThread().getName());
         StarTree starTree = _starTree;
+
+        if(concurrentHashMap.size() == 0 && _groupByColumns.size() == 0) {
+            return new StarTreeResult(
+                docsWithField,
+                globalRemainingPredicateColumns != null ? globalRemainingPredicateColumns : Collections.emptySet(),
+                0,
+                -1
+            );
+        }
+
         List<String> dimensionNames = starTree.getDimensionNames();
         StarTreeNode starTreeRootNode = starTree.getRoot();
 
@@ -159,7 +221,7 @@ public class StarTreeFilter {
         Queue<StarTreeNode> queue = new ArrayDeque<>();
         queue.add(starTreeRootNode);
         int currentDimensionId = -1;
-        Set<String> remainingPredicateColumns = new HashSet<>(_predicateEvaluators.keySet());
+        Set<String> remainingPredicateColumns = new HashSet<>(concurrentHashMap.keySet());
         Set<String> remainingGroupByColumns = new HashSet<>(_groupByColumns);
         if (foundLeafNode) {
             globalRemainingPredicateColumns = new HashSet<>(remainingPredicateColumns);
@@ -237,14 +299,20 @@ public class StarTreeFilter {
                     boolean findLeafChildNode = false;
                     while (childrenIterator.hasNext()) {
                         StarTreeNode childNode = childrenIterator.next();
-                        List<Predicate<Long>> predicates = _predicateEvaluators.get(childDimension);
+                        List<Predicate<Long>> predicates = concurrentHashMap.get(childDimension);
+                        List<Long> longVal = longEval.get(childDimension);
+                        int i = 0;
                         for (Predicate<Long> predicate : predicates) {
                             long val = childNode.getDimensionValue();
+                            if(longVal != null && !predicate.test(longVal.get(i))) {
+                                logger.info("Error evaluating the predicate");
+                            }
                             if (predicate.test(val)) {
                                 matchingChildNodes.add(childNode);
                                 findLeafChildNode |= childNode.isLeaf();
                                 break;
                             }
+                            i++;
                         }
                     }
                     if (matchingChildNodes.size() == numChildren - 1) {
@@ -260,8 +328,13 @@ public class StarTreeFilter {
                     // Cannot use the star-node, use the matching child nodes
                     while (childrenIterator.hasNext()) {
                         StarTreeNode childNode = childrenIterator.next();
-                        List<Predicate<Long>> predicates = _predicateEvaluators.get(childDimension);
+                        List<Predicate<Long>> predicates = concurrentHashMap.get(childDimension);
+                        List<Long> longVal = longEval.get(childDimension);
+                        int i = 0;
                         for (Predicate<Long> predicate : predicates) {
+                            if(longVal != null && !predicate.test(longVal.get(i))) {
+                                logger.info("Error evaluating the predicate");
+                            }
                             if (predicate.test(childNode.getDimensionValue())) {
                                 queue.add(childNode);
                                 foundLeafNode |= childNode.isLeaf();
@@ -293,6 +366,7 @@ public class StarTreeFilter {
 
         adder = docsWithField.grow(docIds.size());
         for(int id : docIds) {
+            //logger.info("DocId :{}", id);
             adder.add(id);
         }
         return new StarTreeResult(
