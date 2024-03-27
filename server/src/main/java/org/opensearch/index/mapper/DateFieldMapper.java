@@ -32,6 +32,7 @@
 
 package org.opensearch.index.mapper;
 
+import java.time.temporal.ChronoField;
 import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.SortedNumericDocValuesField;
 import org.apache.lucene.document.StoredField;
@@ -718,6 +719,7 @@ public final class DateFieldMapper extends ParametrizedFieldMapper {
             dateAsString = context.parser().textOrNull();
         }
 
+
         long timestamp;
         if (dateAsString == null) {
             if (nullValue == null) {
@@ -736,12 +738,24 @@ public final class DateFieldMapper extends ParametrizedFieldMapper {
                 }
             }
         }
-
+//        long status  = -1;
+//
+//        long roundedDate = 0;
+//        long ratio = 0;
+//        ratio = ChronoField.MINUTE_OF_HOUR.getBaseUnit().getDuration().toMillis();
+//        roundedDate = DateUtils.roundFloor(timestamp, ratio);
+//        context.doc().addVal("timestamp", roundedDate);
+//        if(context.doc().getVal().containsKey("status")) {
+//            status = context.doc().getVal().get("status");
+//        }
         if (indexed) {
             context.doc().add(new LongPoint(fieldType().name(), timestamp));
         }
         if (hasDocValues) {
             context.doc().add(new SortedNumericDocValuesField(fieldType().name(), timestamp));
+//            if(status != -1) {
+//                context.doc().add(new LongPoint("timestamp-status", roundedDate, status));
+//            }
         } else if (store || indexed) {
             createFieldNamesField(context);
         }

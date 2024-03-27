@@ -8,11 +8,20 @@
 
 package org.opensearch.search.aggregations.bucket.startree;
 
+import java.net.InetAddress;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.document.InetAddressPoint;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.SegmentCommitInfo;
+import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.util.BytesRef;
+import org.opensearch.common.lucene.Lucene;
+import org.opensearch.common.network.InetAddresses;
 import org.opensearch.core.ParseField;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
@@ -139,7 +148,8 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
 
     @Override
     public InternalAggregation[] buildAggregations(long[] owningBucketOrds) throws IOException {
-
+        logger.info("BUILD AGGREGATIONS SIZE : {}", owningBucketOrds.length);
+        logger.info("owningBucketOrds : {}, indexmap size :{}", owningBucketOrds.length, indexMap.size());
         return buildAggregationsForFixedBucketCount(
             owningBucketOrds,
             indexMap.size(),
@@ -147,6 +157,7 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
                 // TODO : make this better
                 String key = "";
                 for (Map.Entry<String, Integer> entry : indexMap.entrySet()) {
+                    logger.info("Key: {}, value :{}", entry.getKey(), entry.getValue());
                     if (offsetInOwningOrd == entry.getValue()) {
                         key = entry.getKey();
                         break;
@@ -176,15 +187,25 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long bucket) throws IOException {
+                String segord = "";
                 if(aggrVal.get() == null) {
                     aggrVal.set((StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues());
+                    final SegmentReader segmentReader = Lucene.segmentReader(ctx.reader());
+                    SegmentCommitInfo info = segmentReader.getSegmentInfo();
+                    segord = info.info.name;
                 }
                 StarTreeAggregatedValues aggrVals = aggrVal.get();
                 List<SortedNumericDocValues> fieldColToDocValuesMap = new ArrayList<>();
+                List<SortedSetDocValues> keywordFieldColToDocValuesMap = new ArrayList<>();
 
                 // TODO : validations
                 for (String field : fieldCols) {
-                    fieldColToDocValuesMap.add(aggrVals.dimensionValues.get(field));
+                    if(aggrVals.dimensionValues.containsKey(field)) {
+                        fieldColToDocValuesMap.add(aggrVals.dimensionValues.get(field));
+                    }
+                    if(aggrVals.keywordDimValues.containsKey(field)) {
+                        keywordFieldColToDocValuesMap.add(aggrVals.keywordDimValues.get(field));
+                    }
                 }
                 // Another hardcoding
                 SortedNumericDocValues dv = aggrVals.metricValues.get(metrics.get(0));
@@ -198,7 +219,7 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
 //                    }
                     // }
 
-                    String key = getKey(fieldColToDocValuesMap, doc);
+                    String key = getKey(fieldColToDocValuesMap, keywordFieldColToDocValuesMap, doc, segord);
                     if(key.equals("") ) {
                         return;
                     }
@@ -215,12 +236,24 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
 
     }
 
-    private String getKey(List<SortedNumericDocValues> dimensionsKeyList, int doc) throws IOException {
+    private String getKey(List<SortedNumericDocValues> dimensionsKeyList, List<SortedSetDocValues> keywordList, int doc, String segord) throws IOException {
         StringJoiner sj = new StringJoiner("-");
         for (SortedNumericDocValues dim : dimensionsKeyList) {
             dim.advanceExact(doc);
             long val = dim.nextValue();
             sj.add("" + val);
+        }
+        for(SortedSetDocValues keyword : keywordList) {
+            keyword.advanceExact(doc);
+            long val = keyword.nextOrd();
+            BytesRef  encoded = keyword.lookupOrd(val);
+            // TODO : toString() might not work here - how to handle it generically
+            //sj.add("" + keyword.lookupOrd(val).toString());
+            InetAddress address = InetAddressPoint.decode(
+                Arrays.copyOfRange(encoded.bytes, encoded.offset, encoded.offset + encoded.length)
+            );
+            //logger.info("Aggregator ::: Doc:{}, ord : {}, address : {}, segName : {}", doc, val, InetAddresses.toAddrString(address), segord);
+            sj.add("" + InetAddresses.toAddrString(address));
         }
         return sj.toString();
     }

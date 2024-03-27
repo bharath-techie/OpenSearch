@@ -25,6 +25,7 @@ import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.MergeState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.index.codec.startree.builder.BaseSingleTreeBuilder;
 import org.opensearch.index.codec.startree.builder.OffHeapSingleTreeBuilder;
@@ -48,6 +49,7 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
 
     Map<String, SortedNumericDocValues> dimensionReaders;
 
+    Map<String, SortedSetDocValues> textDimensionReaders;
     BaseSingleTreeBuilder builder;
     IndexOutput data;
 
@@ -60,6 +62,7 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
         this.delegate = delegate;
         this.state = segmentWriteState;
         dimensionReaders = new HashMap<>();
+        textDimensionReaders = new HashMap<>();
         dimensionsSplitOrder = new ArrayList<>();
         docValuesConsumer = new Lucene90DocValuesConsumerCopy(state, DATA_CODEC, "sttd", META_CODEC, "sttm");
     }
@@ -106,6 +109,7 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
     @Override
     public void addSortedSetField(FieldInfo field, DocValuesProducer valuesProducer) throws IOException {
         delegate.addSortedSetField(field, valuesProducer);
+        textDimensionReaders.put(field.name + "_dim", valuesProducer.getSortedSet(field));
     }
 
     @Override
@@ -129,11 +133,12 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
             data,
             dimNames,
             dimensionReaders,
+            textDimensionReaders,
             state.segmentInfo.maxDoc(),
             docValuesConsumer,
             state
         );
-        builder.build(aggrList);
+        builder.build(aggrList, mergeState);
         logger.info("Finished merging star-tree in ms : {}", (System.currentTimeMillis() - startTime));
     }
 
@@ -144,6 +149,7 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
             data,
             dimensionsSplitOrder,
             dimensionReaders,
+            textDimensionReaders,
             state.segmentInfo.maxDoc(),
             docValuesConsumer,
             state

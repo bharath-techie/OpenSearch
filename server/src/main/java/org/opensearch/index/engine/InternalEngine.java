@@ -2485,6 +2485,7 @@ public class InternalEngine extends Engine {
         if (config().getLeafSorter() != null) {
             iwc.setLeafSorter(config().getLeafSorter()); // The default segment search order
         }
+        // add here
         return iwc;
     }
 
