@@ -8,10 +8,11 @@
 
 package org.opensearch.search.aggregations.bucket.startree;
 
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.SortedNumericDocValues;
 import org.opensearch.core.ParseField;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
@@ -20,7 +21,7 @@ import org.opensearch.core.xcontent.ConstructingObjectParser;
 import org.opensearch.core.xcontent.ObjectParser;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
-import org.opensearch.index.codec.freshstartree.codec.StarTreeAggregatedValues;
+import org.opensearch.index.codec.startree.codec.StarTreeAggregatedValues;
 import org.opensearch.search.aggregations.Aggregator;
 import org.opensearch.search.aggregations.AggregatorFactories;
 import org.opensearch.search.aggregations.CardinalityUpperBound;
@@ -50,6 +51,8 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
 
     private List<String> fieldCols;
 
+    private List<String> metrics;
+
     final InternalStarTree.Factory starTreeFactory;
 
     private static final Logger logger = LogManager.getLogger(StarTreeAggregator.class);
@@ -62,12 +65,14 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
         SearchContext context,
         Aggregator parent,
         Map<String, Object> metadata,
-        List<String> fieldCols
+        List<String> fieldCols,
+        List<String> metrics
     ) throws IOException {
         super(name, factories, context, parent, CardinalityUpperBound.MANY, metadata);
         this._starTrees = starTrees;
         this.starTreeFactory = starTreeFactory;
         this.fieldCols = fieldCols;
+        this.metrics = metrics;
     }
 
     public static class StarTree implements Writeable, ToXContentObject {
@@ -167,29 +172,34 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
     @Override
     protected LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         StarTreeAggregatedValues values = (StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues();
+        final AtomicReference<StarTreeAggregatedValues> aggrVal = new AtomicReference<>(null);
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long bucket) throws IOException {
-                StarTreeAggregatedValues aggrVals = (StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues();
-
-                Map<String, NumericDocValues> fieldColToDocValuesMap = new HashMap<>();
+                if(aggrVal.get() == null) {
+                    aggrVal.set((StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues());
+                }
+                StarTreeAggregatedValues aggrVals = aggrVal.get();
+                List<SortedNumericDocValues> fieldColToDocValuesMap = new ArrayList<>();
 
                 // TODO : validations
                 for (String field : fieldCols) {
-                    fieldColToDocValuesMap.put(field, aggrVals.dimensionValues.get(field));
+                    fieldColToDocValuesMap.add(aggrVals.dimensionValues.get(field));
                 }
-                NumericDocValues dv = aggrVals.metricValues.get("status_sum");
+                // Another hardcoding
+                SortedNumericDocValues dv = aggrVals.metricValues.get(metrics.get(0));
                 if (dv.advanceExact(doc)) {
-
+                    long val1 = dv.nextValue();
                     String key = getKey(fieldColToDocValuesMap, doc);
-
+                    if(key.equals("") ) {
+                        return;
+                    }
                     if (indexMap.containsKey(key)) {
-                        sumMap.put(key, sumMap.getOrDefault(key, 0l) + dv.longValue());
+                        sumMap.put(key, sumMap.getOrDefault(key, 0l) + val1);
                     } else {
                         indexMap.put(key, indexMap.size());
-                        sumMap.put(key, dv.longValue());
+                        sumMap.put(key, dv.nextValue());
                     }
-
                     collectBucket(sub, doc, subBucketOrdinal(bucket, indexMap.get(key)));
                 }
             }
@@ -197,11 +207,11 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
 
     }
 
-    private String getKey(Map<String, NumericDocValues> fieldColsMap, int doc) throws IOException {
+    private String getKey(List<SortedNumericDocValues> colsList, int doc) throws IOException {
         StringJoiner sj = new StringJoiner("-");
-        for (Map.Entry<String, NumericDocValues> fieldEntry : fieldColsMap.entrySet()) {
-            fieldEntry.getValue().advanceExact(doc);
-            long val = fieldEntry.getValue().longValue();
+        for (SortedNumericDocValues col : colsList) {
+            col.advanceExact(doc);
+            long val = col.nextValue();
             //System.out.println("Key field : " + fieldEntry.getKey()  + " Value : " + val);
             sj.add("" + val);
         }

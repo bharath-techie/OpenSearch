@@ -6,4 +6,4 @@
 # compatible open source license.
 #
 
-org.opensearch.index.codec.freshstartree.codec.StarTreeCodec
+org.opensearch.index.codec.startree.codec.StarTreeCodec
