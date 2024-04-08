@@ -111,12 +111,15 @@ public abstract class BaseSingleTreeBuilder {
         dimensionsSplitOrder = new ArrayList<>();
 
         // TODO : remove hardcoding, get input from index config
-        dimensionsSplitOrder.add("status");
-        dimensionsSplitOrder.add("clientip");
+        //dimensionsSplitOrder.add("client_ip");
         dimensionsSplitOrder.add("minute");
         dimensionsSplitOrder.add("hour");
         dimensionsSplitOrder.add("day");
         dimensionsSplitOrder.add("month");
+        dimensionsSplitOrder.add("elb_status");
+        dimensionsSplitOrder.add("target_status");
+        dimensionsSplitOrder.add("target_ip");
+        dimensionsSplitOrder.add("client_ip");
         // dimensionsSplitOrder.add("year");
         _numDimensions = dimensionsSplitOrder.size();
         _dimensionsSplitOrder = new String[_numDimensions];
@@ -126,7 +129,8 @@ public abstract class BaseSingleTreeBuilder {
 
         // TODO : pass function column pair - Remove hardcoding
         List<AggregationFunctionColumnPair> aggregationSpecs = new ArrayList<>();
-        aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("SUM__status"));
+        aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("SUM__elb_status"));
+        aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("SUM__target_status"));
         //aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("COUNT__elb_status"));
 
         int numericFields = 0;
@@ -272,7 +276,7 @@ public abstract class BaseSingleTreeBuilder {
         }
         constructStarTree(_rootNode, 0, _numDocs);
         int numRecordsUnderStarNode = _numDocs - numStarTreeRecords;
-        logger.info(
+        logger.debug(
             "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] records under star-node",
             _numNodes,
             numRecordsUnderStarNode
@@ -280,7 +284,9 @@ public abstract class BaseSingleTreeBuilder {
 
         createAggregatedDocs(_rootNode);
         int numAggregatedRecords = _numDocs - numStarTreeRecords - numRecordsUnderStarNode;
-        logger.info("Finished creating aggregated documents : {}", numAggregatedRecords);
+        logger.debug("Finished creating aggregated documents : {}", numAggregatedRecords);
+
+        logger.info("Total star tree records : {} , segment docs : {}", _numDocs, numSegmentRecords);
 
         // Create doc values indices in disk
         createSortedDocValuesIndices(_docValuesConsumer);
@@ -381,7 +387,7 @@ public abstract class BaseSingleTreeBuilder {
                     );
                     String ip = InetAddresses.toAddrString(address);
 
-                    logger.info("Key : {}, DocId : {}, IP: {}, Ord : {}", key, docId, ip, val);
+                    //logger.info("Key : {}, DocId : {}, IP: {}, Ord : {}", key, docId, ip, val);
                     // todo change index
                     keywordWriterList.get(key).addValue(docId, bytes);
                     key++;

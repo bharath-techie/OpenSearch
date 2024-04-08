@@ -20,6 +20,7 @@ import java.util.HashMap;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
+import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.FilteredTermsEnum;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.MergeState;
@@ -155,49 +156,64 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
         int recordBytesLength = 0;
         int numDocs = 0;
         Integer[] sortedDocIds;
-        long curr = System.currentTimeMillis();
-        List<SortedSetDocValues> toMerge = new ArrayList<>();
+        Map<String, List<SortedSetDocValues>> toMergeMap = new HashMap<>();
         for (StarTreeAggregatedValues starTree : aggrList) {
+            // TODO : Handle sorted sets empty in some segments
+            //boolean isSortedSetPresent = false;
             for(Map.Entry<String, SortedSetDocValues> entry : starTree.keywordDimValues.entrySet()) {
                 // TODO : Make this specific to multiple fields
+                List<SortedSetDocValues> toMerge = toMergeMap.getOrDefault(entry.getKey(), new ArrayList<>());
                 toMerge.add(entry.getValue());
+                toMergeMap.put(entry.getKey(), toMerge);
             }
+//            if(isSortedSetPresent) {
+//                toMerge.add(DocValues.emptySortedSet());
+//            }
         }
-        //step 1: iterate thru each sub and mark terms still in use
-        TermsEnum[] liveTerms = new TermsEnum[toMerge.size()];
-        long[] weights = new long[liveTerms.length];
-        for (int sub = 0; sub < liveTerms.length; sub++) {
-            SortedSetDocValues dv = toMerge.get(sub);
-            Bits liveDocs = mergeState.liveDocs[sub];
-            if (liveDocs == null) {
-                liveTerms[sub] = dv.termsEnum();
-                weights[sub] = dv.getValueCount();
-            } else {
-                LongBitSet bitset = new LongBitSet(dv.getValueCount());
-                int docID;
-                while ((docID = dv.nextDoc()) != NO_MORE_DOCS) {
-                    if (liveDocs.get(docID)) {
-                        for (int i = 0; i < dv.docValueCount(); i++) {
-                            bitset.set(dv.nextOrd());
+        Map<String, OrdinalMap> ordinalMaps = new HashMap<>();
+        for(Map.Entry<String, List<SortedSetDocValues>> entry : toMergeMap.entrySet()) {
+            //step 1: iterate thru each sub and mark terms still in use
+            TermsEnum[] liveTerms = new TermsEnum[entry.getValue().size()];
+            long[] weights = new long[liveTerms.length];
+            for (int sub = 0; sub < liveTerms.length; sub++) {
+                SortedSetDocValues dv = entry.getValue().get(sub);
+                Bits liveDocs = mergeState.liveDocs[sub];
+                if (liveDocs == null) {
+                    liveTerms[sub] = dv.termsEnum();
+                    weights[sub] = dv.getValueCount();
+                } else {
+                    LongBitSet bitset = new LongBitSet(dv.getValueCount());
+                    int docID;
+                    while ((docID = dv.nextDoc()) != NO_MORE_DOCS) {
+                        if (liveDocs.get(docID)) {
+                            for (int i = 0; i < dv.docValueCount(); i++) {
+                                bitset.set(dv.nextOrd());
+                            }
                         }
                     }
+                    liveTerms[sub] = new BitsFilteredTermsEnum(dv.termsEnum(), bitset);
+                    weights[sub] = bitset.cardinality();
                 }
-                liveTerms[sub] = new BitsFilteredTermsEnum(dv.termsEnum(), bitset);
-                weights[sub] = bitset.cardinality();
             }
+
+            // step 2: create ordinal map (this conceptually does the "merging")
+            final OrdinalMap map = OrdinalMap.build(null, liveTerms, weights, PackedInts.COMPACT);
+            ordinalMaps.put(entry.getKey(), map);
         }
 
-        // step 2: create ordinal map (this conceptually does the "merging")
-        final OrdinalMap map = OrdinalMap.build(null, liveTerms, weights, PackedInts.COMPACT);
-        logger.info("Map size in bytes : {}",map.ramBytesUsed());
+        //logger.info("Map size in bytes : {}",map.ramBytesUsed());
 
-        logger.info("Ordinal map takes : {} " , System.currentTimeMillis() - curr);
+        //logger.info("Ordinal map takes : {} " , System.currentTimeMillis() - curr);
         try {
             int seg = 0;
             for (StarTreeAggregatedValues starTree : aggrList) {
                 Map<Long, Long> segToGlobalOrdMap = new HashMap<>();
                 boolean endOfDoc = false;
-                LongValues longValues = map.getGlobalOrds(seg);
+                Map<String, LongValues> longValuesMap = new HashMap<>();
+                for(Map.Entry<String, OrdinalMap> entry : ordinalMaps.entrySet()) {
+                    LongValues longValues = entry.getValue().getGlobalOrds(seg);
+                    longValuesMap.put(entry.getKey(), longValues);
+                }
                 while (!endOfDoc) {
                     long[] dims = new long[starTree._starTree.getDimensionNames().size()];
 
@@ -237,7 +253,7 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
 //                            }
 
                             // TODO : uncomment this
-                           dims[i] = longValues.get(localSegmentOrd);
+                           dims[i] = longValuesMap.get(starTree._starTree.getDimensionNames().get(i)).get(localSegmentOrd);
                             //logger.info("global ord = {}, local ord = {}", dims[i], localSegmentOrd);
                            // i++;
                         }
@@ -258,7 +274,7 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
                     recordBytesLength = bytes.length;
                     segmentRecordFileOutput.writeBytes(bytes, bytes.length);
                 }
-                logger.info("Segment to global ord map size : {} ", segToGlobalOrdMap.size());
+                //logger.info("Segment to global ord map size : {} ", segToGlobalOrdMap.size());
                 seg++;
             }
             sortedDocIds = new Integer[numDocs];
@@ -376,7 +392,6 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
         for (int i = 0; i < numDocs; i++) {
             sortedDocIds[i] = i;
         }
-
         try {
             for (int i = 0; i < numDocs; i++) {
                 Record record = getNextSegmentRecord();
