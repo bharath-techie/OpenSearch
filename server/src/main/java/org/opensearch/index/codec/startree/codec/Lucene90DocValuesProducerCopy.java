@@ -199,7 +199,9 @@ public class Lucene90DocValuesProducerCopy extends DocValuesProducer {
     public FieldInfo[] getFieldInfoArr() {
         List<String> metrics = new ArrayList<>();
         // TODO : remove this
-        metrics.add("status_sum");
+        //metrics.add("status_sum");
+        metrics.add("elb_status_sum");
+        metrics.add("target_status_sum");
         //metrics.add("status_count");
 
         FieldInfo[] fArr = new FieldInfo[dimensionSplitOrder.size() + metrics.size()];

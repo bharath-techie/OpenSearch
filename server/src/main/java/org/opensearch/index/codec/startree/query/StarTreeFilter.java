@@ -116,12 +116,12 @@ public class StarTreeFilter {
             return docIdSetIterator;
         }
         if(starTreeResult._remainingPredicateColumns.size() > 0) {
-            logger.info("Remaining predicate cols : {} ", starTreeResult._remainingPredicateColumns);
+            logger.debug("Remaining predicate cols : {} ", starTreeResult._remainingPredicateColumns);
         }
         int docCount = 0;
         for (String remainingPredicateColumn : starTreeResult._remainingPredicateColumns) {
             // TODO : set to max value of doc values
-            logger.info("remainingPredicateColumn : {}, maxMatchedDoc : {} ", remainingPredicateColumn, starTreeResult.maxMatchedDoc);
+            logger.debug("remainingPredicateColumn : {}, maxMatchedDoc : {} ", remainingPredicateColumn, starTreeResult.maxMatchedDoc);
             DocIdSetBuilder builder = new DocIdSetBuilder(starTreeResult.maxMatchedDoc + 1);
             final List<Predicate<Long>> compositePredicateEvaluators = concurrentHashMap.get(remainingPredicateColumn);
             final List<Long> compositeLong = longEval.get(remainingPredicateColumn);
@@ -162,7 +162,7 @@ public class StarTreeFilter {
                         int i = 0;
                         for (Predicate<Long> compositePredicateEvaluator : compositePredicateEvaluators) {
                             if(compositeLong != null && !compositePredicateEvaluator.test(compositeLong.get(i))) {
-                                logger.info("Query ::: Evaluating long : {} , Result : {}", compositeLong.get(i),
+                                logger.debug("Query ::: Evaluating long : {} , Result : {}", compositeLong.get(i),
                                     compositeLong != null ? compositePredicateEvaluator.test(compositeLong.get(i)) : true);
                             }
 

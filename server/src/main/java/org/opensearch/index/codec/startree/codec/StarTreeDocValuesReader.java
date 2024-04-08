@@ -82,8 +82,10 @@ public class StarTreeDocValuesReader extends DocValuesProducer {
             }
         }
         metricValues = new HashMap<>();
-        metricValues.put("status_sum", valuesProducer.getSortedNumeric("status_sum_metric"));
+        //metricValues.put("status_sum", valuesProducer.getSortedNumeric("status_sum_metric"));
         //metricValues.put("status_count", valuesProducer.getNumeric("status_count_metric"));
+        metricValues.put("elb_status_sum", valuesProducer.getSortedNumeric("elb_status_sum_metric"));
+        metricValues.put("target_status_sum", valuesProducer.getSortedNumeric("target_status_sum_metric"));
         return new StarTreeAggregatedValues(starTree, dimensionValues, keywordDimValues, metricValues);
     }
 

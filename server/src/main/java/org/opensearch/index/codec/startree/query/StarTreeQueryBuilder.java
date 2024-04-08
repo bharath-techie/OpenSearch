@@ -157,7 +157,7 @@ public class StarTreeQueryBuilder extends AbstractQueryBuilder<StarTreeQueryBuil
         if (predicateMap.size() > 0 ||  filterMap.size() > 0) {
             return new StarTreeQuery(predicateMap, filterMap, new HashSet<>());
         }
-        logger.info("Group by : {} ", this.groupBy.toString() );
+        logger.debug("Group by : {} ", this.groupBy.toString() );
         return new StarTreeQuery(new HashMap<>(), new HashMap<>(), this.groupBy);
     }
 
