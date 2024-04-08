@@ -39,7 +39,7 @@ import org.apache.lucene.codecs.lucene95.Lucene95Codec.Mode;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.collect.MapBuilder;
 import org.opensearch.index.IndexSettings;
-import org.opensearch.index.codec.freshstartree.codec.StarTreeCodec;
+import org.opensearch.index.codec.startree.codec.StarTreeCodec;
 import org.opensearch.index.mapper.MapperService;
 
 import java.util.Map;
