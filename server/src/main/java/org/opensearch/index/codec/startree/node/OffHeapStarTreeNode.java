@@ -16,10 +16,14 @@
  */
 package org.opensearch.index.codec.startree.node;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.RandomAccessInput;
 
 import java.io.IOException;
 import java.util.Iterator;
+import org.opensearch.index.codec.startree.query.StarTreeQuery;
+
 
 /** Off heap implementation of {@link StarTreeNode} */
 public class OffHeapStarTreeNode implements StarTreeNode {
@@ -39,6 +43,8 @@ public class OffHeapStarTreeNode implements StarTreeNode {
 
     private final int _nodeId;
     private final int _firstChildId;
+    private static final Logger logger = LogManager.getLogger(OffHeapStarTreeNode.class);
+
 
     RandomAccessInput in;
 
@@ -166,4 +172,152 @@ public class OffHeapStarTreeNode implements StarTreeNode {
             }
         };
     }
+
+    @Override
+    public Iterator<OffHeapStarTreeNode> getChildrenIteratorForRange(long min, long max) throws IOException {
+        return new Iterator<OffHeapStarTreeNode>() {
+            private int _currentChildId = findFirstChildInRange(min);
+            private final int _lastChildId = getInt(LAST_CHILD_ID_OFFSET);
+
+            @Override
+            public boolean hasNext() {
+                return _currentChildId <= _lastChildId;
+            }
+
+            @Override
+            public OffHeapStarTreeNode next() {
+                try {
+                    return new OffHeapStarTreeNode(in, _currentChildId++);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+
+            @Override
+            public void remove() {
+                throw new UnsupportedOperationException();
+            }
+
+            private int findFirstChildInRange(long min) throws IOException {
+
+                int left = _firstChildId;
+                int right = getInt(LAST_CHILD_ID_OFFSET);
+
+                while (left <= right) {
+                    int mid = left + (right - left) / 2;
+                    OffHeapStarTreeNode midNode = new OffHeapStarTreeNode(in, mid);
+                    long midValue = midNode.getDimensionValue();
+                    if (midValue >= min && midValue <= max) {
+                        // Found an element within the range
+                        // Check if it's the first one
+                        if (mid == _firstChildId) {
+                            return mid;
+                        } else if(new OffHeapStarTreeNode(in, mid-1).getDimensionValue() < min || new OffHeapStarTreeNode(in, mid-1).getDimensionValue() > max) {
+                            return mid;
+                        }else {
+                            right = mid - 1;
+                        }
+                    } else if (midValue < min) {
+                        left = mid + 1;
+                    } else {
+                        right = mid - 1;
+                    }
+                }
+                logger.info("No element found within the range");
+                // No element found within the range
+                return -1;
+            }
+        };
+    }
+
+//    @Override
+//    public Iterator<OffHeapStarTreeNode> getChildrenIteratorForRange(long min, long max) throws IOException {
+//        return new Iterator<OffHeapStarTreeNode>() {
+//            private int _currentChildId = findFirstChildInRange(min);
+//            private final int _lastChildIdInRange = findLastChildInRange(max);
+//
+//            @Override
+//            public boolean hasNext() {
+//                return _currentChildId <= _lastChildIdInRange;
+//            }
+//
+//            @Override
+//            public OffHeapStarTreeNode next() {
+//                try {
+//                    OffHeapStarTreeNode nextChild = new OffHeapStarTreeNode(in, _currentChildId++);
+//                    return nextChild;
+//                } catch (IOException e) {
+//                    throw new RuntimeException(e);
+//                }
+//            }
+//
+//            @Override
+//            public void remove() {
+//                throw new UnsupportedOperationException();
+//            }
+//
+//            private int findFirstChildInRange(long min) throws IOException {
+//                int low = _firstChildId;
+//                int high = getInt(LAST_CHILD_ID_OFFSET);
+//
+//                while (low <= high) {
+//                    int mid = (low + high) / 2;
+//                    OffHeapStarTreeNode midNode = new OffHeapStarTreeNode(in, mid);
+//                    long midValue = midNode.getDimensionValue();
+//
+//                    if (midValue >= min) {
+//                        if (midValue == min || midNode.isLeaf()) {
+//                            return mid;
+//                        }
+//                        high = mid - 1;
+//                    } else {
+//                        low = mid + 1;
+//                    }
+//                }
+//                return INVALID_ID;
+//            }
+//
+//            private int findLastChildInRange(long max) throws IOException {
+//
+////                int low = _firstChildId, high = getInt(LAST_CHILD_ID_OFFSET), res = -1;
+////                while (low <= high) {
+////                    // Normal Binary Search Logic
+////                    int mid = (low + high) / 2;
+////                    if (arr[mid] > x)
+////                        high = mid - 1;
+////                    else if (arr[mid] < x)
+////                        low = mid + 1;
+////
+////                        // If arr[mid] is same as x,
+////                        // we update res and move to
+////                        // the right half.
+////                    else {
+////                        res = mid;
+////                        low = mid + 1;
+////                    }
+////                }
+////                return res;
+//
+//
+//                int low = _firstChildId;
+//                int high = getInt(LAST_CHILD_ID_OFFSET);
+//
+//                while (low <= high) {
+//                    int mid = (low + high) / 2;
+//                    OffHeapStarTreeNode midNode = new OffHeapStarTreeNode(in, mid);
+//                    long midValue = midNode.getDimensionValue();
+//
+//                    if (midValue <= max) {
+//                        if (midValue == max || midNode.isLeaf()) {
+//                            return mid;
+//                        }
+//                        low = mid + 1;
+//                    } else {
+//                        high = mid - 1;
+//                    }
+//                }
+//                return low - 1;
+//            }
+//        };
+//    }
 }

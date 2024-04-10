@@ -197,7 +197,7 @@ public class OffHeapSingleTreeBuilder extends BaseSingleTreeBuilder {
             for (StarTreeAggregatedValues starTree : aggrList) {
                 Map<Long, Long> segToGlobalOrdMap = new HashMap<>();
                 boolean endOfDoc = false;
-                LongValues longValues = map.getGlobalOrds(seg);
+                LongValues longValues = null;//map.getGlobalOrds(seg);
                 while (!endOfDoc) {
                     long[] dims = new long[starTree._starTree.getDimensionNames().size()];
 

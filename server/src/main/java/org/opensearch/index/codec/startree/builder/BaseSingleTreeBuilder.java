@@ -112,14 +112,10 @@ public abstract class BaseSingleTreeBuilder {
 
         // TODO : remove hardcoding, get input from index config
         //dimensionsSplitOrder.add("client_ip");
-        dimensionsSplitOrder.add("minute");
-        dimensionsSplitOrder.add("hour");
-        dimensionsSplitOrder.add("day");
-        dimensionsSplitOrder.add("month");
-        dimensionsSplitOrder.add("elb_status");
-        dimensionsSplitOrder.add("target_status");
-        dimensionsSplitOrder.add("target_ip");
-        dimensionsSplitOrder.add("client_ip");
+        //dimensionsSplitOrder.add("minute");
+        dimensionsSplitOrder.add("hour1");
+        dimensionsSplitOrder.add("day1");
+        dimensionsSplitOrder.add("status");
         // dimensionsSplitOrder.add("year");
         _numDimensions = dimensionsSplitOrder.size();
         _dimensionsSplitOrder = new String[_numDimensions];
@@ -129,8 +125,8 @@ public abstract class BaseSingleTreeBuilder {
 
         // TODO : pass function column pair - Remove hardcoding
         List<AggregationFunctionColumnPair> aggregationSpecs = new ArrayList<>();
-        aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("SUM__elb_status"));
-        aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("SUM__target_status"));
+        aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("SUM__status"));
+        //aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("SUM__target_status"));
         //aggregationSpecs.add(AggregationFunctionColumnPair.fromColumnName("COUNT__elb_status"));
 
         int numericFields = 0;
@@ -181,7 +177,7 @@ public abstract class BaseSingleTreeBuilder {
         }
 
         // TODO : Remove hardcoding
-        _maxLeafRecords = 10000;
+        _maxLeafRecords = 1;
     }
 
     private void constructStarTree(StarTreeBuilderUtils.TreeNode node, int startDocId, int endDocId) throws IOException {

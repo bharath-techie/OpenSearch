@@ -22,7 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.document.InetAddressPoint;
+import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortedSetDocValues;
@@ -111,28 +113,31 @@ public class StarTreeQuery extends Query implements Accountable {
                 Map<String, List<Predicate<Long>>> concurrentHashMap =
                     new ConcurrentHashMap<String, List<Predicate<Long>>>();
                 //context.reader().getFieldInfos().fieldInfo("clientip");
-
-                for (String fieldKey : keywordList.keySet()) {
-                    SortedSetDocValues field = context.reader().getSortedSetDocValues(fieldKey);
+                if(keywordList.size() == 0) {
                     concurrentHashMap.putAll(compositePredicateMap != null ? compositePredicateMap : new HashMap<>());
+                } else {
+                    for (String fieldKey : keywordList.keySet()) {
+                        SortedSetDocValues field = context.reader().getSortedSetDocValues(fieldKey);
 
-                    final Map<String, List<Predicate<Long>>> keywordOrdMap =
-                        getKeywordOrdMap(context, keywordList, val.keywordDimValues, field);
-                    final Map<String, List<Long>> keywordOrdMap1 =
-                        getKeywordOrdLongMap(context, keywordList, val.keywordDimValues, field);
-                    if (keywordOrdMap != null) {
-                        concurrentHashMap.putAll(keywordOrdMap);
-                    }
-                    if (keywordOrdMap1 != null) {
-                        compositeMap = new ConcurrentHashMap<>();
-                        compositeMap.putAll(keywordOrdMap1);
-                    } else {
-                        compositeMap = new ConcurrentHashMap<>();
-                    }
+                        final Map<String, List<Predicate<Long>>> keywordOrdMap = getKeywordOrdMap(context, keywordList, val.keywordDimValues, field);
+                        final Map<String, List<Long>> keywordOrdMap1 = getKeywordOrdLongMap(context, keywordList, val.keywordDimValues, field);
+                        if (keywordOrdMap != null) {
+                            concurrentHashMap.putAll(keywordOrdMap);
+                        }
+                        if (keywordOrdMap1 != null) {
+                            compositeMap = new ConcurrentHashMap<>();
+                            compositeMap.putAll(keywordOrdMap1);
+                        } else {
+                            compositeMap = new ConcurrentHashMap<>();
+                        }
 
 //                    System.out.println(String.format("Query ::: keywordOrdMap size : %d , thread : %s" ,
 //                    keywordOrdMap != null ? keywordOrdMap.size() : 0,
 //                        Thread.currentThread().getName()));
+                    }
+                    if(concurrentHashMap.size() > 0) {
+                        concurrentHashMap.putAll(compositePredicateMap != null ? compositePredicateMap : new HashMap<>());
+                    }
                 }
                 final StarTreeFilter filter =
                     new StarTreeFilter(val, concurrentHashMap, compositeMap, groupByColumns);
@@ -144,6 +149,49 @@ public class StarTreeQuery extends Query implements Accountable {
                     logger.debug("No matches");
                 }
                 return new ConstantScoreScorer(this, score(), scoreMode, result);
+            }
+
+            @Override
+            public int count(LeafReaderContext context) throws IOException {
+                Object obj = context.reader().getAggregatedDocValues();
+                StarTreeAggregatedValues val = null;
+                if (obj != null) {
+                    val = (StarTreeAggregatedValues) obj;
+                }
+                DocIdSetIterator result = null;
+                Map<String, List<Predicate<Long>>> concurrentHashMap =
+                    new ConcurrentHashMap<String, List<Predicate<Long>>>();
+                //context.reader().getFieldInfos().fieldInfo("clientip");
+                if(keywordList.size() == 0) {
+                    concurrentHashMap.putAll(compositePredicateMap != null ? compositePredicateMap : new HashMap<>());
+                } else {
+                    for (String fieldKey : keywordList.keySet()) {
+                        SortedSetDocValues field = context.reader().getSortedSetDocValues(fieldKey);
+
+                        final Map<String, List<Predicate<Long>>> keywordOrdMap = getKeywordOrdMap(context, keywordList, val.keywordDimValues, field);
+                        final Map<String, List<Long>> keywordOrdMap1 = getKeywordOrdLongMap(context, keywordList, val.keywordDimValues, field);
+                        if (keywordOrdMap != null) {
+                            concurrentHashMap.putAll(keywordOrdMap);
+                        }
+                        if (keywordOrdMap1 != null) {
+                            compositeMap = new ConcurrentHashMap<>();
+                            compositeMap.putAll(keywordOrdMap1);
+                        } else {
+                            compositeMap = new ConcurrentHashMap<>();
+                        }
+
+//                    System.out.println(String.format("Query ::: keywordOrdMap size : %d , thread : %s" ,
+//                    keywordOrdMap != null ? keywordOrdMap.size() : 0,
+//                        Thread.currentThread().getName()));
+                    }
+                    if(concurrentHashMap.size() > 0) {
+                        concurrentHashMap.putAll(compositePredicateMap != null ? compositePredicateMap : new HashMap<>());
+                    }
+                }
+                final StarTreeFilter filter =
+                    new StarTreeFilter(val, concurrentHashMap, compositeMap, groupByColumns);
+                long result1 = filter.getStarTreeSum(concurrentHashMap);
+                return (int) result1;
             }
 
             Map<String, List<Predicate<Long>>> getKeywordOrdMap(final LeafReaderContext context,

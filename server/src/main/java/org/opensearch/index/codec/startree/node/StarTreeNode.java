@@ -55,4 +55,6 @@ public interface StarTreeNode {
 
     /** Get the iterator over all children nodes. */
     Iterator<? extends StarTreeNode> getChildrenIterator() throws IOException;
+
+    Iterator<? extends StarTreeNode> getChildrenIteratorForRange(long min, long max) throws IOException;
 }
