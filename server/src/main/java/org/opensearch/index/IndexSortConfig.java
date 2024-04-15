@@ -70,6 +70,7 @@ import java.util.function.Supplier;
  *     </li>
  * </ul>
  *
+ * Index sort
  *
  * @opensearch.api
  */

@@ -782,6 +782,7 @@ public class IndicesService extends AbstractLifecycleComponent
         };
         finalListeners.add(onStoreClose);
         finalListeners.add(oldShardsStats);
+        // Here create index service gets called
         final IndexService indexService = createIndexService(
             CREATE_INDEX,
             indexMetadata,
