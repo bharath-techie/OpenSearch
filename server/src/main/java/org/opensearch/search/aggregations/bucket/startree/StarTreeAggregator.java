@@ -10,10 +10,12 @@ package org.opensearch.search.aggregations.bucket.startree;
 
 import java.net.InetAddress;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.document.InetAddressPoint;
+import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentReader;
@@ -30,7 +32,9 @@ import org.opensearch.core.xcontent.ConstructingObjectParser;
 import org.opensearch.core.xcontent.ObjectParser;
 import org.opensearch.core.xcontent.ToXContentObject;
 import org.opensearch.core.xcontent.XContentBuilder;
+import org.opensearch.index.codec.StarTreeReader;
 import org.opensearch.index.codec.startree.codec.StarTreeAggregatedValues;
+import org.opensearch.index.codec.startree.codec.StarTreeDocValuesReader;
 import org.opensearch.search.aggregations.Aggregator;
 import org.opensearch.search.aggregations.AggregatorFactories;
 import org.opensearch.search.aggregations.CardinalityUpperBound;
@@ -182,7 +186,13 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
 
     @Override
     protected LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
-        StarTreeAggregatedValues values = (StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues();
+        //StarTreeAggregatedValues values = (StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues();
+        SegmentReader reader = Lucene.segmentReader(ctx.reader());
+
+        if(!(reader.getDocValuesReader() instanceof StarTreeReader)) return null;
+        StarTreeReader starTreeDocValuesReader = (StarTreeReader) reader.getDocValuesReader();
+        StarTreeAggregatedValues values = starTreeDocValuesReader.getStarTreeValues();
+        // TODO : reader.getSegmentInfo().info.getAttributes();
         final AtomicReference<StarTreeAggregatedValues> aggrVal = new AtomicReference<>(null);
         return new LeafBucketCollectorBase(sub, values) {
             @Override
