@@ -40,6 +40,7 @@ import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.lucene.BytesRefs;
 import org.opensearch.common.lucene.Lucene;
 import org.opensearch.common.network.InetAddresses;
+import org.opensearch.index.codec.StarTreeReader;
 import org.opensearch.index.codec.startree.codec.StarTreeAggregatedValues;
 
 import java.io.IOException;
@@ -47,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+
 
 /** Query class for querying star tree data structure */
 public class StarTreeQuery extends Query implements Accountable {
@@ -97,7 +99,13 @@ public class StarTreeQuery extends Query implements Accountable {
             @Override
             public Scorer scorer(LeafReaderContext context) throws IOException {
                 //logger.info("Query ::: scorer ::: size: {}", compositePredicateMap.size());
-                Object obj = context.reader().getAggregatedDocValues();
+
+                //Object obj = context.reader().getAggregatedDocValues();
+                SegmentReader reader = Lucene.segmentReader(context.reader());
+                if(!(reader.getDocValuesReader() instanceof StarTreeReader)) return null;
+                StarTreeReader starTreeDocValuesReader = (StarTreeReader) reader.getDocValuesReader();
+                StarTreeAggregatedValues obj = starTreeDocValuesReader.getStarTreeValues();
+
                 //context.reader().getFieldInfos().fieldInfo("clientip");
                 SortedSetDocValues field = context.reader().getSortedSetDocValues("clientip");
                 Map<String, List<Predicate<Long>>> concurrentHashMap = new ConcurrentHashMap<String, List<Predicate<Long>>>();

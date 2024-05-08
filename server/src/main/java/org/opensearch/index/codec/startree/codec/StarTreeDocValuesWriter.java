@@ -16,6 +16,8 @@
  */
 package org.opensearch.index.codec.startree.codec;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -27,6 +29,7 @@ import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.store.IndexOutput;
+import org.opensearch.index.codec.StarTreeReader;
 import org.opensearch.index.codec.startree.builder.BaseSingleTreeBuilder;
 import org.opensearch.index.codec.startree.builder.OffHeapSingleTreeBuilder;
 
@@ -58,6 +61,12 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
     public static final String META_CODEC = "Lucene90DocValuesMetadata";
     private static final Logger logger = LogManager.getLogger(StarTreeDocValuesWriter.class);
 
+    Map<String, Set<String>> starTreeFieldMap = new HashMap<>();
+    private Set<String> starTreeFields = new HashSet<>();
+
+    private boolean isMerge = false;
+
+
     public StarTreeDocValuesWriter(DocValuesConsumer delegate, SegmentWriteState segmentWriteState) throws IOException {
         this.delegate = delegate;
         this.state = segmentWriteState;
@@ -65,6 +74,15 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
         textDimensionReaders = new HashMap<>();
         dimensionsSplitOrder = new ArrayList<>();
         docValuesConsumer = new Lucene90DocValuesConsumerCopy(state, DATA_CODEC, "sttd", META_CODEC, "sttm");
+
+        // Assume we can get data cube fields [ dims + metrics ] from these attributes
+        //segmentWriteState.segmentInfo.getAttributes();
+
+
+        starTreeFields.add("timestamp");
+        starTreeFields.add("status");
+        starTreeFields.add("clientip");
+        starTreeFieldMap.put("field1", starTreeFields);
     }
 
     @Override
@@ -98,11 +116,24 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
             dimensionReaders.put("day_dim", valuesProducer.getSortedNumeric(field));
             dimensionReaders.put("month_dim", valuesProducer.getSortedNumeric(field));
             // dimensionReaders.put("year_dim", valuesProducer.getSortedNumeric(field));
+
+            for(Map.Entry<String, Set<String>> fieldEntry : starTreeFieldMap.entrySet()) {
+                fieldEntry.getValue().remove("timestamp");
+            }
         }
         if (field.name.contains("status")) {
             // TODO : change this metric type
             dimensionReaders.put(field.name + "_dim", valuesProducer.getSortedNumeric(field));
             dimensionReaders.put(field.name + "_sum_metric", valuesProducer.getSortedNumeric(field));
+            for(Map.Entry<String, Set<String>> fieldEntry : starTreeFieldMap.entrySet()) {
+                fieldEntry.getValue().remove("status");
+            }
+        }
+        for(Map.Entry<String, Set<String>> fieldEntry : starTreeFieldMap.entrySet()) {
+            // If we have indexed all the doc values fields to build star tree, then we can index star tree
+            if(fieldEntry.getValue().isEmpty()) {
+                aggregateWithoutLucene(fieldEntry.getKey());
+            }
         }
     }
 
@@ -110,11 +141,23 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
     public void addSortedSetField(FieldInfo field, DocValuesProducer valuesProducer) throws IOException {
         delegate.addSortedSetField(field, valuesProducer);
         textDimensionReaders.put(field.name + "_dim", valuesProducer.getSortedSet(field));
+        for(Map.Entry<String, Set<String>> fieldEntry : starTreeFieldMap.entrySet()) {
+            fieldEntry.getValue().remove(field.name);
+        }
+        for(Map.Entry<String, Set<String>> fieldEntry : starTreeFieldMap.entrySet()) {
+            if(fieldEntry.getValue().isEmpty()) {
+                aggregateWithoutLucene(fieldEntry.getKey());
+            }
+        }
+
     }
 
     @Override
     public void merge(MergeState mergeState) throws IOException {
+        // TODO : check if class variable will cause concurrency issues
+        isMerge = true;
         super.merge(mergeState);
+        isMerge = false;
         mergeAggregatedValues(mergeState);
     }
 
@@ -122,9 +165,13 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
         List<StarTreeAggregatedValues> aggrList = new ArrayList<>();
         List<String> dimNames = new ArrayList<>();
         for (int i = 0; i < mergeState.docValuesProducers.length; i++) {
-            DocValuesProducer producer = mergeState.docValuesProducers[i];
-            Object obj = producer.getAggregatedDocValues();
-            StarTreeAggregatedValues starTree = (StarTreeAggregatedValues) obj;
+//            DocValuesProducer producer = mergeState.docValuesProducers[i];
+//            Object obj = producer.getAggregatedDocValues();
+//            StarTreeAggregatedValues starTree = (StarTreeAggregatedValues) obj;
+
+            StarTreeReader producer = (StarTreeReader) mergeState.docValuesProducers[i];
+            StarTreeAggregatedValues starTree = producer.getStarTreeValues();
+
             dimNames = starTree.dimensionValues.keySet().stream().collect(Collectors.toList());
             aggrList.add(starTree);
         }
@@ -142,8 +189,9 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
         logger.info("Finished merging star-tree in ms : {}", (System.currentTimeMillis() - startTime));
     }
 
-    @Override
-    public void aggregate() throws IOException {
+    //@Override
+    public void createStarTree() throws IOException {
+        if(isMerge) return;
         long startTime = System.currentTimeMillis();
         builder = new OffHeapSingleTreeBuilder(
             data,
@@ -156,6 +204,13 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
         );
         builder.build();
         logger.info("Finished building star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+    }
+
+    public void aggregateWithoutLucene(String field) throws IOException {
+        // TODO : Assume with field we can build different star tree fields
+        if(starTreeFieldMap.containsKey(field))
+            createStarTree();
+        starTreeFieldMap.remove(field);
     }
 
     @Override

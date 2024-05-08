@@ -28,6 +28,7 @@ import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.store.IndexInput;
+import org.opensearch.index.codec.StarTreeReader;
 import org.opensearch.index.codec.startree.node.OffHeapStarTree;
 import org.opensearch.index.codec.startree.node.StarTree;
 
@@ -38,7 +39,8 @@ import java.util.Map;
 
 
 /** Custom star tree doc values reader */
-public class StarTreeDocValuesReader extends DocValuesProducer {
+public class StarTreeDocValuesReader extends DocValuesProducer
+    implements StarTreeReader {
     private DocValuesProducer delegate;
 
     private IndexInput data;
@@ -112,4 +114,10 @@ public class StarTreeDocValuesReader extends DocValuesProducer {
 
     @Override
     public void close() throws IOException {}
+
+    @Override
+    public StarTreeAggregatedValues getStarTreeValues()
+        throws IOException {
+        return getAggregatedDocValues();
+    }
 }

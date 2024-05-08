@@ -106,6 +106,7 @@ public abstract class BaseSingleTreeBuilder {
     ) throws IOException {
 
         String docFileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, "stttree");
+        logger.info("Star tree file name : {}", docFileName);
         indexOutput = state.directory.createOutput(docFileName, state.context);
         CodecUtil.writeIndexHeader(indexOutput, "STARTreeCodec", 0, state.segmentInfo.getId(), state.segmentSuffix);
         dimensionsSplitOrder = new ArrayList<>();
