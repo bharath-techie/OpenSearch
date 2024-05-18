@@ -114,6 +114,7 @@ import java.util.Map;
  */
 public class Lucene {
     public static final String LATEST_CODEC = "Lucene99";
+    //public static final String LATEST_CODEC = "StarTreeCodec"; // TODO : this is a hack
 
     public static final String SOFT_DELETES_FIELD = "__soft_deletes";
 

@@ -62,6 +62,7 @@ public class SumAggregator extends NumericMetricsAggregator.SingleValue {
     private DoubleArray sums;
     private DoubleArray compensations;
 
+
     SumAggregator(
         String name,
         ValuesSourceConfig valuesSourceConfig,
