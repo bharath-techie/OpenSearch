@@ -115,7 +115,7 @@ public class StarTreeDocValuesWriter extends DocValuesConsumer {
             dimensionReaders.put("hour_dim", valuesProducer.getSortedNumeric(field));
             dimensionReaders.put("day_dim", valuesProducer.getSortedNumeric(field));
             dimensionReaders.put("month_dim", valuesProducer.getSortedNumeric(field));
-            // dimensionReaders.put("year_dim", valuesProducer.getSortedNumeric(field));
+            dimensionReaders.put("year_dim", valuesProducer.getSortedNumeric(field));
 
             for(Map.Entry<String, Set<String>> fieldEntry : starTreeFieldMap.entrySet()) {
                 fieldEntry.getValue().remove("timestamp");

@@ -161,7 +161,7 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
                 // TODO : make this better
                 String key = "";
                 for (Map.Entry<String, Integer> entry : indexMap.entrySet()) {
-                    logger.info("Key: {}, value :{}", entry.getKey(), entry.getValue());
+                    //logger.info("Key: {}, value :{}", entry.getKey(), entry.getValue());
                     if (offsetInOwningOrd == entry.getValue()) {
                         key = entry.getKey();
                         break;
@@ -199,7 +199,9 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
             public void collect(int doc, long bucket) throws IOException {
                 String segord = "";
                 if(aggrVal.get() == null) {
-                    aggrVal.set((StarTreeAggregatedValues) ctx.reader().getAggregatedDocValues());
+                    StarTreeReader starTreeDocValuesReader = (StarTreeReader) reader.getDocValuesReader();
+                    StarTreeAggregatedValues values = starTreeDocValuesReader.getStarTreeValues();
+                    aggrVal.set(values);
                     final SegmentReader segmentReader = Lucene.segmentReader(ctx.reader());
                     SegmentCommitInfo info = segmentReader.getSegmentInfo();
                     segord = info.info.name;

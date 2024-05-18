@@ -35,8 +35,8 @@ import org.apache.lucene.codecs.lucene90.Lucene90StoredFieldsFormat;
  * Doc values format is extended to accommodate star tree index creation
  * */
 public class StarTreeCodec extends Codec {
-    private Codec lucene95Codec;
-    public static final String LUCENE_95 = "Lucene95"; // Lucene Codec to be used
+    private Codec lucene99Codec;
+    public static final String LUCENE_99 = "Lucene99"; // Lucene Codec to be used
 
     public static final String STAR_TREE_CODEC_NAME = "StarTreeCodec";
 
@@ -50,10 +50,10 @@ public class StarTreeCodec extends Codec {
     }
 
     public Codec getDelegate() {
-        if (lucene95Codec == null) {
-            lucene95Codec = Codec.forName(LUCENE_95);
+        if (lucene99Codec == null) {
+            lucene99Codec = Codec.forName(LUCENE_99);
         }
-        return lucene95Codec;
+        return lucene99Codec;
     }
 
     @Override

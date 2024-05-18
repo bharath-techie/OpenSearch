@@ -163,11 +163,6 @@ public final class TranslogLeafReader extends LeafReader {
     }
 
     @Override
-    public Object getAggregatedDocValues() throws IOException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
     public SortedNumericDocValues getSortedNumericDocValues(String field) {
         throw new UnsupportedOperationException();
     }

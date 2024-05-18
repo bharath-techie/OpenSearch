@@ -39,6 +39,7 @@ import org.apache.lucene.codecs.lucene99.Lucene99Codec.Mode;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.collect.MapBuilder;
 import org.opensearch.index.IndexSettings;
+import org.opensearch.index.codec.startree.codec.Lucene99StarTreeCodec;
 import org.opensearch.index.codec.startree.codec.StarTreeCodec;
 import org.opensearch.index.mapper.MapperService;
 
@@ -81,20 +82,21 @@ public class CodecService {
              * as restarting the process and reloading the indices results in errors
              * as Lucene95Codec is read when reloading the indices ( Solved now by using StarTreeCodec as the latest codec )
              */
-            codecs.put(DEFAULT_CODEC, new Lucene99Codec());
-            //codecs.put(DEFAULT_CODEC, new StarTreeCodec());
+            //codecs.put(DEFAULT_CODEC, new Lucene99Codec());
+            codecs.put(DEFAULT_CODEC, new Lucene99StarTreeCodec());
             codecs.put(LZ4, new Lucene99Codec());
             //codecs.put(LZ4, new StarTreeCodec());
             codecs.put(BEST_COMPRESSION_CODEC, new Lucene99Codec(Mode.BEST_COMPRESSION));
             codecs.put(ZLIB, new Lucene99Codec(Mode.BEST_COMPRESSION));
         } else {
-            codecs.put(DEFAULT_CODEC, new PerFieldMappingPostingFormatCodec(Mode.BEST_SPEED, mapperService, logger));
+            codecs.put(DEFAULT_CODEC, new Lucene99StarTreeCodec());
+            //codecs.put(DEFAULT_CODEC, new PerFieldMappingPostingFormatCodec(Mode.BEST_SPEED, mapperService, logger));
             codecs.put(LZ4, new PerFieldMappingPostingFormatCodec(Mode.BEST_SPEED, mapperService, logger));
             codecs.put(BEST_COMPRESSION_CODEC, new PerFieldMappingPostingFormatCodec(Mode.BEST_COMPRESSION, mapperService, logger));
             codecs.put(ZLIB, new PerFieldMappingPostingFormatCodec(Mode.BEST_COMPRESSION, mapperService, logger));
         }
-        codecs.put(LUCENE_DEFAULT_CODEC, Codec.getDefault());
-        //codecs.put(LUCENE_DEFAULT_CODEC, new StarTreeCodec());
+        //codecs.put(LUCENE_DEFAULT_CODEC, Codec.getDefault());
+        codecs.put(LUCENE_DEFAULT_CODEC, new Lucene99StarTreeCodec());
         for (String codec : Codec.availableCodecs()) {
             codecs.put(codec, Codec.forName(codec));
         }

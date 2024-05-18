@@ -73,7 +73,7 @@ public class PerFieldMappingPostingFormatCodec extends Lucene99Codec {
             : "PerFieldMappingPostingFormatCodec must subclass the latest " + "lucene codec: " + Lucene.LATEST_CODEC;
     }
 
-    public PerFieldMappingPostingFormatCodec(Mode compressionMode, MapperService mapperService, Logger logger) {
+    public PerFieldMappingPostingFormatCodec(Lucene99Codec.Mode compressionMode, MapperService mapperService, Logger logger) {
         super(compressionMode);
         this.mapperService = mapperService;
         this.logger = logger;

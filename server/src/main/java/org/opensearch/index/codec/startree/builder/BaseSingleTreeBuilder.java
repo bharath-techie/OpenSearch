@@ -118,7 +118,7 @@ public abstract class BaseSingleTreeBuilder {
         dimensionsSplitOrder.add("hour");
         dimensionsSplitOrder.add("day");
         dimensionsSplitOrder.add("month");
-        // dimensionsSplitOrder.add("year");
+        dimensionsSplitOrder.add("year");
         _numDimensions = dimensionsSplitOrder.size();
         _dimensionsSplitOrder = new String[_numDimensions];
         _skipStarNodeCreationForDimensions = new HashSet<>();
@@ -301,7 +301,7 @@ public abstract class BaseSingleTreeBuilder {
             if(_dimensionReaders[i] != null) {
                 final FieldInfo fi = new FieldInfo(_dimensionsSplitOrder[i] + "_dim", fieldNum, false, false, true,
                     IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, DocValuesType.SORTED_NUMERIC, -1, Collections.emptyMap(),
-                    0, 0, 0, 0, VectorEncoding.FLOAT32, VectorSimilarityFunction.EUCLIDEAN, false);
+                    0, 0, 0, 0, VectorEncoding.FLOAT32, VectorSimilarityFunction.EUCLIDEAN, false, false);
                 dimFieldInfoArr[i] = fi;
                 final SortedNumericDocValuesWriter w = new SortedNumericDocValuesWriter(fi, Counter.newCounter());
                 dimWriterList.add(w);
@@ -309,7 +309,7 @@ public abstract class BaseSingleTreeBuilder {
             } else if (_keywordDimensionReaders[i] != null) {
                 final FieldInfo fi = new FieldInfo(_dimensionsSplitOrder[i] + "_dim", fieldNum, false, false, true,
                     IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, DocValuesType.SORTED_SET, -1, Collections.emptyMap(),
-                    0, 0, 0, 0, VectorEncoding.FLOAT32, VectorSimilarityFunction.EUCLIDEAN, false);
+                    0, 0, 0, 0, VectorEncoding.FLOAT32, VectorSimilarityFunction.EUCLIDEAN, false, false);
                 dimFieldInfoArr[i] = fi;
                 ByteBlockPool.DirectTrackingAllocator byteBlockAllocator = new ByteBlockPool.DirectTrackingAllocator(Counter.newCounter());
                 ByteBlockPool docValuesBytePool = new ByteBlockPool(byteBlockAllocator);
@@ -335,6 +335,7 @@ public abstract class BaseSingleTreeBuilder {
                 0,
                 VectorEncoding.FLOAT32,
                 VectorSimilarityFunction.EUCLIDEAN,
+                false,
                 false
             );
             final SortedNumericDocValuesWriter w = new SortedNumericDocValuesWriter(fi, Counter.newCounter());
@@ -480,6 +481,7 @@ public abstract class BaseSingleTreeBuilder {
                 0,
                 VectorEncoding.FLOAT32,
                 VectorSimilarityFunction.EUCLIDEAN,
+                false,
                 false
             );
             fieldNum++;
@@ -503,6 +505,7 @@ public abstract class BaseSingleTreeBuilder {
                 0,
                 VectorEncoding.FLOAT32,
                 VectorSimilarityFunction.EUCLIDEAN,
+                false,
                 false
             );
             fieldNum++;

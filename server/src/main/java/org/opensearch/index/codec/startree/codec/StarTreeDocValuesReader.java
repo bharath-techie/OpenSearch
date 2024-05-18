@@ -17,6 +17,8 @@
 package org.opensearch.index.codec.startree.codec;
 
 import java.util.LinkedHashMap;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.BinaryDocValues;
@@ -55,14 +57,19 @@ public class StarTreeDocValuesReader extends DocValuesProducer
     Map<String, SortedNumericDocValues> metricValues;
     public static final String DATA_CODEC = "Lucene90DocValuesData";
     public static final String META_CODEC = "Lucene90DocValuesMetadata";
+    private static final Logger logger = LogManager.getLogger(StarTreeDocValuesReader.class);
+
 
     public StarTreeDocValuesReader(DocValuesProducer producer, SegmentReadState state) throws IOException {
         this.delegate = producer;
-
-        String dataName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, "stttree");
-        this.data = state.directory.openInput(dataName, state.context);
-        CodecUtil.checkIndexHeader(data, "STARTreeCodec", 0, 0, state.segmentInfo.getId(), state.segmentSuffix);
-        starTree = new OffHeapStarTree(data);
+        try {
+            String dataName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, "stttree");
+            this.data = state.directory.openInput(dataName, state.context);
+            CodecUtil.checkIndexHeader(data, "STARTreeCodec", 0, 0, state.segmentInfo.getId(), state.segmentSuffix);
+            starTree = new OffHeapStarTree(data);
+        } catch (Exception ex){
+            logger.error("====== Error reading star tree data / NO star tree =========", ex);
+        }
         valuesProducer = new Lucene90DocValuesProducerCopy(state, DATA_CODEC, "sttd", META_CODEC, "sttm", starTree.getDimensionNames());
         dimensionValues = new LinkedHashMap<>();
         keywordDimValues = new LinkedHashMap<>();
@@ -72,8 +79,6 @@ public class StarTreeDocValuesReader extends DocValuesProducer
     public NumericDocValues getNumeric(FieldInfo field) throws IOException {
         return delegate.getNumeric(field);
     }
-
-    @Override
     public StarTreeAggregatedValues getAggregatedDocValues() throws IOException {
         List<String> dimensionsSplitOrder = starTree.getDimensionNames();
         for (int i = 0; i < dimensionsSplitOrder.size(); i++) {

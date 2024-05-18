@@ -7,3 +7,5 @@
 #
 
 org.opensearch.index.codec.startree.codec.StarTreeCodec
+org.opensearch.index.codec.startree.codec.Lucene99StarTreeCodec
+

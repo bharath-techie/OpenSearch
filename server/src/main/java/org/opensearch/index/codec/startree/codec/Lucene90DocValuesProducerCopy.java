@@ -221,6 +221,7 @@ public class Lucene90DocValuesProducerCopy extends DocValuesProducer {
                 0,
                 VectorEncoding.FLOAT32,
                 VectorSimilarityFunction.EUCLIDEAN,
+                false,
                 false
             );
             fieldNum++;
@@ -242,6 +243,7 @@ public class Lucene90DocValuesProducerCopy extends DocValuesProducer {
                 0,
                 VectorEncoding.FLOAT32,
                 VectorSimilarityFunction.EUCLIDEAN,
+                false,
                 false
             );
             fieldNum++;
