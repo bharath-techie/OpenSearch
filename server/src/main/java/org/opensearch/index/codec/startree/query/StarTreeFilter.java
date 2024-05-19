@@ -116,12 +116,12 @@ public class StarTreeFilter {
             return docIdSetIterator;
         }
         if(starTreeResult._remainingPredicateColumns.size() > 0) {
-            logger.info("Remaining predicate cols : {} ", starTreeResult._remainingPredicateColumns);
+            //logger.info("Remaining predicate cols : {} ", starTreeResult._remainingPredicateColumns);
         }
         int docCount = 0;
         for (String remainingPredicateColumn : starTreeResult._remainingPredicateColumns) {
             // TODO : set to max value of doc values
-            logger.info("remainingPredicateColumn : {}, maxMatchedDoc : {} ", remainingPredicateColumn, starTreeResult.maxMatchedDoc);
+            //logger.info("remainingPredicateColumn : {}, maxMatchedDoc : {} ", remainingPredicateColumn, starTreeResult.maxMatchedDoc);
             DocIdSetBuilder builder = new DocIdSetBuilder(starTreeResult.maxMatchedDoc + 1);
             final List<Predicate<Long>> compositePredicateEvaluators = concurrentHashMap.get(remainingPredicateColumn);
             final List<Long> compositeLong = longEval.get(remainingPredicateColumn);
@@ -159,18 +159,18 @@ public class StarTreeFilter {
                         );
                         String ip = InetAddresses.toAddrString(address);
                         if(ip.equalsIgnoreCase("129.0.0.0")) {
-                            logger.info("Term : {}, ord :{}, docId : {}", ip, ord, docID);
+                            //logger.info("Term : {}, ord :{}, docId : {}", ip, ord, docID);
                         }
                         int i = 0;
                         for (Predicate<Long> compositePredicateEvaluator : compositePredicateEvaluators) {
                             if(compositeLong != null && !compositePredicateEvaluator.test(compositeLong.get(i))) {
-                                logger.info("Query ::: Evaluating long : {} , Result : {}", compositeLong.get(i),
-                                    compositeLong != null ? compositePredicateEvaluator.test(compositeLong.get(i)) : true);
+                                //logger.info("Query ::: Evaluating long : {} , Result : {}", compositeLong.get(i),
+                                 //   compositeLong != null ? compositePredicateEvaluator.test(compositeLong.get(i)) : true);
                             }
 
                             // TODO : this might be expensive as its done against all doc values docs
                             if (compositePredicateEvaluator.test(ord)) {
-                                logger.info("Adding doc id : {} for ord : {} ip :{}", docID, ord, ip);
+                                //logger.info("Adding doc id : {} for ord : {} ip :{}", docID, ord, ip);
                                 docIds.add(docID);
                                 break;
                             }

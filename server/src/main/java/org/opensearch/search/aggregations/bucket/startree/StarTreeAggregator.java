@@ -152,8 +152,8 @@ public class StarTreeAggregator extends BucketsAggregator implements SingleBucke
 
     @Override
     public InternalAggregation[] buildAggregations(long[] owningBucketOrds) throws IOException {
-        logger.info("BUILD AGGREGATIONS SIZE : {}", owningBucketOrds.length);
-        logger.info("owningBucketOrds : {}, indexmap size :{}", owningBucketOrds.length, indexMap.size());
+        //logger.info("BUILD AGGREGATIONS SIZE : {}", owningBucketOrds.length);
+        //logger.info("owningBucketOrds : {}, indexmap size :{}", owningBucketOrds.length, indexMap.size());
         return buildAggregationsForFixedBucketCount(
             owningBucketOrds,
             indexMap.size(),

@@ -132,7 +132,7 @@ public class StarTreeQuery extends Query implements Accountable {
                     final StarTreeFilter filter = new StarTreeFilter(val, concurrentHashMap, compositeMap, groupByColumns);
                     result = filter.getStarTreeResult(concurrentHashMap);
                     if (filter._result.maxMatchedDoc != -1) {
-                        logger.info("Query ::: keywordOrdMap size : {}" , keywordOrdMap != null ? keywordOrdMap.size() : 0);
+                        //logger.info("Query ::: keywordOrdMap size : {}" , keywordOrdMap != null ? keywordOrdMap.size() : 0);
                     } else {
                         logger.info("No matches");
                     }
@@ -155,7 +155,7 @@ public class StarTreeQuery extends Query implements Accountable {
                         SegmentCommitInfo info = segmentReader.getSegmentInfo();
 //                        logger.info("Query ::: ORD : {} , fieldOrd :{}" , ord, fieldOrd);
                         if(ord > 0) {
-                            logger.info("Query ::: ORD : {} , fieldOrd :{} , IP : {} " , ord, fieldOrd, val);
+                            //logger.info("Query ::: ORD : {} , fieldOrd :{} , IP : {} " , ord, fieldOrd, val);
                             Predicate<Long> predicate = dimVal -> dimVal == ord;
                             predicates.add(predicate);
                         }
