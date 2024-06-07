@@ -16,8 +16,10 @@ import org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
 
+import static org.opensearch.index.codec.compositeindex.startree.StarTree99Codec.STAR_TREE_CODEC_NAME;
 
-public class StarTreeDocValuesFormat extends DocValuesFormat {
+
+public class StarTree90DocValuesFormat extends DocValuesFormat {
     /**
      * Creates a new docvalues format.
      *
@@ -28,22 +30,22 @@ public class StarTreeDocValuesFormat extends DocValuesFormat {
      */
     private final DocValuesFormat delegate;
 
-    public StarTreeDocValuesFormat() {
+    public StarTree90DocValuesFormat() {
         this(new Lucene90DocValuesFormat());
     }
 
-    public StarTreeDocValuesFormat(DocValuesFormat delegate) {
-        super(delegate.getName());
+    public StarTree90DocValuesFormat(DocValuesFormat delegate) {
+        super(STAR_TREE_CODEC_NAME);
         this.delegate = delegate;
     }
 
     @Override
     public DocValuesConsumer fieldsConsumer(SegmentWriteState state) throws IOException {
-        return new StarTreeDocValuesWriter(delegate.fieldsConsumer(state), state);
+        return new StarTree90DocValuesWriter(delegate.fieldsConsumer(state), state);
     }
 
     @Override
     public DocValuesProducer fieldsProducer(SegmentReadState state) throws IOException {
-        return new StarTreeDocValuesReader(delegate.fieldsProducer(state), state);
+        return new StarTree90DocValuesReader(delegate.fieldsProducer(state), state);
     }
 }

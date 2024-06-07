@@ -10,10 +10,7 @@ package org.opensearch.index.codec.compositeindex.startree;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.CodecUtil;
@@ -31,24 +28,17 @@ import org.opensearch.index.compositeindex.startree.StarTreeReader;
 import org.opensearch.index.compositeindex.startree.StarTreeValues;
 
 
-public class StarTreeDocValuesReader extends DocValuesProducer
+public class StarTree90DocValuesReader extends DocValuesProducer
     implements StarTreeReader {
     private DocValuesProducer delegate;
 
     private IndexInput data;
-    private static final Logger logger = LogManager.getLogger(StarTreeDocValuesReader.class);
+    private static final Logger logger = LogManager.getLogger(StarTree90DocValuesReader.class);
 
 
-    public StarTreeDocValuesReader(DocValuesProducer producer, SegmentReadState state) throws IOException {
+    public StarTree90DocValuesReader(DocValuesProducer producer, SegmentReadState state) throws IOException {
         this.delegate = producer;
-        try {
-            String dataName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, "sti");
-
-            this.data = state.directory.openInput(dataName, state.context);
-            CodecUtil.checkIndexHeader(data, StarTreeCodec.STAR_TREE_CODEC_NAME, 0, 0, state.segmentInfo.getId(), state.segmentSuffix);
-        } catch (Exception ex){
-            logger.error("====== Error reading star tree data / No star tree =========", ex);
-        }
+        // TODO : read star tree structures
     }
 
     @Override

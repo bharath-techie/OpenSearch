@@ -13,5 +13,6 @@ import org.opensearch.common.annotation.ExperimentalApi;
 
 @ExperimentalApi
 public class StarTreeValues {
-    // TODO : this will be decieded in upcoming PRs
+    // TODO : this will be decided in upcoming PRs
+    // Startree root and the doc values readers will be present
 }
