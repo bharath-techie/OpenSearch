@@ -8,7 +8,11 @@
 
 package org.opensearch.index.compositeindex;
 
+import java.io.IOException;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.core.xcontent.ToXContent;
+import org.opensearch.core.xcontent.XContentBuilder;
+
 
 /**
  * Composite index dimension base class
@@ -16,7 +20,7 @@ import org.opensearch.common.annotation.ExperimentalApi;
  * @opensearch.experimental
  */
 @ExperimentalApi
-public class Dimension {
+public class Dimension implements ToXContent {
     private final String field;
 
     public Dimension(String field) {
@@ -25,5 +29,14 @@ public class Dimension {
 
     public String getField() {
         return field;
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params)
+        throws IOException {
+        builder.startObject(field);
+        builder.field("type", "numeric");
+        builder.endObject();
+        return builder;
     }
 }

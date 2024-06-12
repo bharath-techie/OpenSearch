@@ -63,6 +63,7 @@ import org.opensearch.index.analysis.NamedAnalyzer;
 import org.opensearch.index.analysis.ReloadableCustomAnalyzer;
 import org.opensearch.index.analysis.TokenFilterFactory;
 import org.opensearch.index.analysis.TokenizerFactory;
+import org.opensearch.index.compositeindex.CompositeIndexConfig;
 import org.opensearch.index.mapper.Mapper.BuilderContext;
 import org.opensearch.index.query.QueryShardContext;
 import org.opensearch.index.similarity.SimilarityService;
@@ -225,6 +226,7 @@ public class MapperService extends AbstractIndexComponent implements Closeable {
     final MapperRegistry mapperRegistry;
 
     private final BooleanSupplier idFieldDataEnabled;
+    private final BooleanSupplier compositeIndexEnabled;
 
     public MapperService(
         IndexSettings indexSettings,
@@ -234,7 +236,8 @@ public class MapperService extends AbstractIndexComponent implements Closeable {
         MapperRegistry mapperRegistry,
         Supplier<QueryShardContext> queryShardContextSupplier,
         BooleanSupplier idFieldDataEnabled,
-        ScriptService scriptService
+        ScriptService scriptService,
+        BooleanSupplier compositeIndexEnabled
     ) {
         super(indexSettings);
 
@@ -260,6 +263,7 @@ public class MapperService extends AbstractIndexComponent implements Closeable {
         );
         this.mapperRegistry = mapperRegistry;
         this.idFieldDataEnabled = idFieldDataEnabled;
+        this.compositeIndexEnabled = compositeIndexEnabled;
 
         if (INDEX_MAPPER_DYNAMIC_SETTING.exists(indexSettings.getSettings())) {
             deprecationLogger.deprecate(
@@ -285,6 +289,10 @@ public class MapperService extends AbstractIndexComponent implements Closeable {
 
     public DocumentMapperParser documentMapperParser() {
         return this.documentParser;
+    }
+
+    public CompositeIndexConfig getCompositeIndexConfig() {
+        return this.indexSettings.getCompositeIndexConfig().validateAndGetCompositeIndexConfig(this::fieldType);
     }
 
     /**

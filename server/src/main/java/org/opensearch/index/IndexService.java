@@ -237,6 +237,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         this.circuitBreakerService = circuitBreakerService;
         this.expressionResolver = expressionResolver;
         this.valuesSourceRegistry = valuesSourceRegistry;
+
         if (needsMapperService(indexSettings, indexCreationContext)) {
             assert indexAnalyzers != null;
             this.mapperService = new MapperService(
@@ -248,7 +249,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                 // we parse all percolator queries as they would be parsed on shard 0
                 () -> newQueryShardContext(0, null, System::currentTimeMillis, null),
                 idFieldDataEnabled,
-                scriptService
+                scriptService,
+                isCompositeIndexCreationEnabled
             );
             this.indexFieldData = new IndexFieldDataService(indexSettings, indicesFieldDataCache, circuitBreakerService, mapperService);
             if (indexSettings.getIndexSortConfig().hasIndexSort()) {

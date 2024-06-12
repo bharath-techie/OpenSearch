@@ -8,11 +8,14 @@
 
 package org.opensearch.index.compositeindex;
 
+import java.io.IOException;
 import org.opensearch.common.annotation.ExperimentalApi;
 
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.opensearch.core.xcontent.XContentBuilder;
+
 
 /**
  * Star tree index specific settings for a composite field.
@@ -28,6 +31,19 @@ public class StarTreeFieldSpec implements CompositeFieldSpec {
         this.maxLeafDocs.set(maxLeafDocs);
         this.skipStarNodeCreationInDims = skipStarNodeCreationInDims;
         this.buildMode = buildMode;
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params)
+        throws IOException {
+        builder.field("max_leaf_docs", maxLeafDocs.get());
+        builder.field("build_mode", buildMode.getTypeName());
+        builder.startArray("skip_star_node_creation_for_dimensions");
+        for(String dim : skipStarNodeCreationInDims) {
+            builder.value(dim);
+        }
+        builder.endArray();
+        return builder;
     }
 
     /**
@@ -58,6 +74,11 @@ public class StarTreeFieldSpec implements CompositeFieldSpec {
             }
             throw new IllegalArgumentException(String.format(Locale.ROOT, "Invalid star tree build mode: [%s] ", typeName));
         }
+    }
+
+    @Override
+    public String toString() {
+        return buildMode.getTypeName();
     }
 
     public int maxLeafDocs() {

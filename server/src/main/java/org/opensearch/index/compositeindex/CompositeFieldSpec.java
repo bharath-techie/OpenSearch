@@ -9,6 +9,8 @@
 package org.opensearch.index.compositeindex;
 
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.core.xcontent.ToXContent;
+
 
 /**
  * CompositeFieldSpec interface.
@@ -17,4 +19,4 @@ import org.opensearch.common.annotation.ExperimentalApi;
  */
 
 @ExperimentalApi
-public interface CompositeFieldSpec {}
+public interface CompositeFieldSpec extends ToXContent {}

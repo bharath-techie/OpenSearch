@@ -476,9 +476,19 @@ public class CompositeIndexConfig {
                 )
             );
         }
+        return validateAndGetCompositeIndexConfig(fieldTypeLookup);
+    }
+
+    public CompositeIndexConfig validateAndGetCompositeIndexConfig(Function<String, MappedFieldType> fieldTypeLookup) {
+        if (hasCompositeFields() == false) {
+            return null;
+        }
         for (CompositeField compositeField : compositeFields) {
             for (Dimension dimension : compositeField.getDimensionsOrder()) {
                 validateDimensionField(dimension, fieldTypeLookup, compositeField.getName());
+                if (dimension instanceof DateDimension) {
+                    ((DateDimension) dimension).setCalendarIntervals();
+                }
             }
             for (Metric metric : compositeField.getMetrics()) {
                 validateMetricField(metric.getField(), fieldTypeLookup, compositeField.getName());

@@ -39,6 +39,7 @@ import org.apache.lucene.codecs.lucene99.Lucene99Codec.Mode;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.collect.MapBuilder;
 import org.opensearch.index.IndexSettings;
+import org.opensearch.index.compositeindex.CompositeIndexConfig;
 import org.opensearch.index.mapper.MapperService;
 
 import java.util.Map;
@@ -73,6 +74,8 @@ public class CodecService {
             codecs.put(BEST_COMPRESSION_CODEC, new Lucene99Codec(Mode.BEST_COMPRESSION));
             codecs.put(ZLIB, new Lucene99Codec(Mode.BEST_COMPRESSION));
         } else {
+            CompositeIndexConfig config = mapperService.getCompositeIndexConfig();
+            mapperService.fieldType("a");
             codecs.put(DEFAULT_CODEC, new PerFieldMappingPostingFormatCodec(Mode.BEST_SPEED, mapperService, logger));
             codecs.put(LZ4, new PerFieldMappingPostingFormatCodec(Mode.BEST_SPEED, mapperService, logger));
             codecs.put(BEST_COMPRESSION_CODEC, new PerFieldMappingPostingFormatCodec(Mode.BEST_COMPRESSION, mapperService, logger));

@@ -91,6 +91,7 @@ public class PerFieldMappingPostingFormatCodec extends Lucene99Codec {
         } else if (fieldType instanceof CompletionFieldMapper.CompletionFieldType) {
             return CompletionFieldMapper.CompletionFieldType.postingsFormat();
         } else if (IdFieldMapper.NAME.equals(field) && mapperService.getIndexSettings().isEnableFuzzySetForDocId()) {
+
             if (docIdPostingsFormat == null) {
                 docIdPostingsFormat = new FuzzyFilterPostingsFormat(super.getPostingsFormatForField(field), fuzzySetFactory);
             }

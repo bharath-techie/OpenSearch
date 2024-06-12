@@ -8,9 +8,13 @@
 
 package org.opensearch.index.compositeindex;
 
+import java.io.IOException;
 import org.opensearch.common.annotation.ExperimentalApi;
 
 import java.util.List;
+import org.opensearch.core.xcontent.ToXContent;
+import org.opensearch.core.xcontent.XContentBuilder;
+
 
 /**
  * Composite field which contains dimensions, metrics and index mode specific specs
@@ -18,7 +22,7 @@ import java.util.List;
  * @opensearch.experimental
  */
 @ExperimentalApi
-public class CompositeField {
+public class CompositeField implements ToXContent {
     private final String name;
     private final List<Dimension> dimensionsOrder;
     private final List<Metric> metrics;
@@ -45,5 +49,29 @@ public class CompositeField {
 
     public CompositeFieldSpec getSpec() {
         return compositeFieldSpec;
+    }
+
+    @Override
+    public XContentBuilder toXContent(XContentBuilder builder, Params params)
+        throws IOException {
+        builder.startObject();
+        builder.field("name", name);
+        if (dimensionsOrder != null && !dimensionsOrder.isEmpty()) {
+            builder.startObject("ordered_dimensions");
+            for (Dimension dimension : dimensionsOrder) {
+                dimension.toXContent(builder, params);
+            }
+            builder.endObject();
+        }
+        if(metrics != null && !metrics.isEmpty()) {
+            builder.startObject("metrics");
+            for (Metric metric : metrics) {
+                metric.toXContent(builder, params);
+            }
+            builder.endObject();
+        }
+        compositeFieldSpec.toXContent(builder, params);
+        builder.endObject();
+        return builder;
     }
 }

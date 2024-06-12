@@ -227,7 +227,8 @@ public class MetadataIndexUpgradeService {
                     mapperRegistry,
                     () -> null,
                     () -> false,
-                    scriptService
+                    scriptService,
+                    () -> false
                 );
                 mapperService.merge(indexMetadata, MapperService.MergeReason.MAPPING_RECOVERY);
             }
