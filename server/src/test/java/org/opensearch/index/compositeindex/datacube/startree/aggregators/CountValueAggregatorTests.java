@@ -13,32 +13,23 @@ import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.numerictype.StarTreeNumericType;
 import org.opensearch.test.OpenSearchTestCase;
 
-public class SumValueAggregatorTests extends OpenSearchTestCase {
-
-    private final SumValueAggregator aggregator = new SumValueAggregator();
+public class CountValueAggregatorTests extends OpenSearchTestCase {
+    private final CountValueAggregator aggregator = new CountValueAggregator();
 
     public void testGetAggregationType() {
-        assertEquals(MetricStat.SUM.getTypeName(), aggregator.getAggregationType().getTypeName());
+        assertEquals(MetricStat.COUNT.getTypeName(), aggregator.getAggregationType().getTypeName());
     }
 
     public void testGetAggregatedValueType() {
-        assertEquals(SumValueAggregator.VALUE_AGGREGATOR_TYPE, aggregator.getAggregatedValueType());
+        assertEquals(CountValueAggregator.VALUE_AGGREGATOR_TYPE, aggregator.getAggregatedValueType());
     }
 
     public void testGetInitialAggregatedValueForSegmentDocValue() {
-        assertEquals(1.0, aggregator.getInitialAggregatedValueForSegmentDocValue(1L, StarTreeNumericType.LONG), 0.0);
-        assertThrows(
-            NullPointerException.class,
-            () -> aggregator.getInitialAggregatedValueForSegmentDocValue(null, StarTreeNumericType.DOUBLE)
-        );
+        assertEquals(1.0, aggregator.getInitialAggregatedValueForSegmentDocValue(randomLong(), StarTreeNumericType.LONG), 0.0);
     }
 
     public void testMergeAggregatedValueAndSegmentValue() {
-        assertEquals(5.0, aggregator.mergeAggregatedValueAndSegmentValue(2.0, 3L, StarTreeNumericType.LONG), 0.0);
-        assertThrows(
-            NullPointerException.class,
-            () -> aggregator.mergeAggregatedValueAndSegmentValue(3.14, null, StarTreeNumericType.DOUBLE)
-        );
+        assertEquals(3.0, aggregator.mergeAggregatedValueAndSegmentValue(2.0, 3L, StarTreeNumericType.LONG), 0.0);
     }
 
     public void testMergeAggregatedValues() {
@@ -46,7 +37,7 @@ public class SumValueAggregatorTests extends OpenSearchTestCase {
     }
 
     public void testGetInitialAggregatedValue() {
-        assertEquals(3.14, aggregator.getInitialAggregatedValue(3.14), 0.0);
+        assertEquals(3.0, aggregator.getInitialAggregatedValue(3.0), 0.0);
     }
 
     public void testGetMaxAggregatedValueByteSize() {
@@ -55,7 +46,7 @@ public class SumValueAggregatorTests extends OpenSearchTestCase {
 
     public void testToLongValue() {
         SumValueAggregator aggregator = new SumValueAggregator();
-        assertEquals(NumericUtils.doubleToSortableLong(3.14), aggregator.toLongValue(3.14), 0.0);
+        assertEquals(NumericUtils.doubleToSortableLong(3.0), aggregator.toLongValue(3.0), 0.0);
     }
 
     public void testToStarTreeNumericTypeValue() {
