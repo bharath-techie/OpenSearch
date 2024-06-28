@@ -74,7 +74,7 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
     public Iterator<StarTreeDocument> sortMergeAndAggregateStarTreeDocument(int numDocs) throws IOException {
         StarTreeDocument[] starTreeDocuments = new StarTreeDocument[numDocs];
         for (int i = 0; i < numDocs; i++) {
-            starTreeDocuments[i] = getSegmentStarTreeDocument();
+            starTreeDocuments[i] = getSegmentStarTreeDocument(i);
         }
         return sortMergeAndAggregateStarTreeDocument(starTreeDocuments);
     }

@@ -48,7 +48,6 @@ public abstract class CompositeMappedFieldType extends MappedFieldType {
      *
      * @opensearch.experimental
      */
-     */
     @ExperimentalApi
     public enum CompositeFieldType {
         STAR_TREE("star_tree");

@@ -221,9 +221,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
      *
      * @throws IOException when we are unable to build a star tree document from the segment
      */
-    protected StarTreeDocument getSegmentStarTreeDocument() throws IOException {
-        long[] dimensions = getStarTreeDimensionsFromSegment();
-        Object[] metrics = getStarTreeMetricsFromSegment();
+    protected StarTreeDocument getSegmentStarTreeDocument(int doc) throws IOException {
+        long[] dimensions = getStarTreeDimensionsFromSegment(doc);
+        Object[] metrics = getStarTreeMetricsFromSegment(doc);
         return new StarTreeDocument(dimensions, metrics);
     }
 
@@ -233,12 +233,13 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
      * @return dimension values for each of the star-tree dimension
      * @throws IOException when we are unable to iterate to the next doc for the given dimension readers
      */
-    long[] getStarTreeDimensionsFromSegment() throws IOException {
+    long[] getStarTreeDimensionsFromSegment(int doc) throws IOException {
         long[] dimensions = new long[numDimensions];
+        boolean canAdvance = false;
         for (int i = 0; i < numDimensions; i++) {
             if (dimensionReaders[i] != null) {
                 try {
-                    dimensionReaders[i].nextDoc();
+                    canAdvance = ((SortedNumericDocValues)dimensionReaders[i]).advanceExact(doc);
                 } catch (IOException e) {
                     logger.error("unable to iterate to next doc", e);
                     throw e;
@@ -246,8 +247,11 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     logger.error("unable to read the dimension values from the segment", e);
                     throw new IllegalStateException("unable to read the dimension values from the segment", e);
                 }
-
-                dimensions[i] = starTreeDocValuesIteratorFactory.getNextValue(dimensionReaders[i]);
+                if(canAdvance) {
+                    dimensions[i] = starTreeDocValuesIteratorFactory.getNextValue(dimensionReaders[i]);
+                } else {
+                    dimensions[i] = 0;
+                }
             }
         }
         return dimensions;
@@ -259,13 +263,14 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
      * @return metric values for each of the star-tree metric
      * @throws IOException when we are unable to iterate to the next doc for the given metric readers
      */
-    private Object[] getStarTreeMetricsFromSegment() throws IOException {
+    private Object[] getStarTreeMetricsFromSegment(int doc) throws IOException {
+        boolean canAdvance = false;
         Object[] metrics = new Object[numMetrics];
         for (int i = 0; i < numMetrics; i++) {
             DocIdSetIterator metricStatReader = metricAggregatorInfos.get(i).getMetricStatReader();
             if (metricStatReader != null) {
                 try {
-                    metricStatReader.nextDoc();
+                    canAdvance = ((SortedNumericDocValues) metricStatReader).advanceExact(doc);
                 } catch (IOException e) {
                     logger.error("unable to iterate to next doc", e);
                     throw e;
@@ -273,7 +278,11 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     logger.error("unable to read the metric values from the segment", e);
                     throw new IllegalStateException("unable to read the metric values from the segment", e);
                 }
-                metrics[i] = starTreeDocValuesIteratorFactory.getNextValue(metricStatReader);
+                if(canAdvance) {
+                    metrics[i] = starTreeDocValuesIteratorFactory.getNextValue(metricStatReader);
+                } else {
+                    metrics[i] = null;
+                }
             }
         }
         return metrics;

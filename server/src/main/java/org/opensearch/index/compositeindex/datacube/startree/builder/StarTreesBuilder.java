@@ -8,6 +8,7 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import java.util.ArrayList;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesProducer;
@@ -15,6 +16,7 @@ import org.apache.lucene.index.SegmentWriteState;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
+import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.index.mapper.MapperService;
 
 import java.io.Closeable;
@@ -22,6 +24,8 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.opensearch.index.mapper.StarTreeMapper;
+
 
 /**
  * Builder to construct star-trees based on multiple star-tree fields.
@@ -32,28 +36,25 @@ import java.util.Map;
 public class StarTreesBuilder implements Closeable {
 
     private static final Logger logger = LogManager.getLogger(StarTreesBuilder.class);
-
-    private final List<StarTreeField> starTreeFields;
-    private final StarTreeFieldConfiguration.StarTreeBuildMode buildMode;
     private final SegmentWriteState state;
     private final Map<String, DocValuesProducer> fieldProducerMap;
     private final MapperService mapperService;
+    private final List<StarTreeMapper.StarTreeFieldType> starTreeFields;
 
     public StarTreesBuilder(
-        List<StarTreeField> starTreeFields,
-        StarTreeFieldConfiguration.StarTreeBuildMode buildMode,
         Map<String, DocValuesProducer> fieldProducerMap,
         SegmentWriteState segmentWriteState,
         MapperService mapperService
     ) {
-        this.starTreeFields = starTreeFields;
-        if (starTreeFields == null || starTreeFields.isEmpty()) {
-            throw new IllegalArgumentException("Must provide star-tree field to build star trees");
-        }
-        this.buildMode = buildMode;
         this.fieldProducerMap = fieldProducerMap;
         this.state = segmentWriteState;
         this.mapperService = mapperService;
+        starTreeFields = new ArrayList<>();
+        for(CompositeMappedFieldType type : mapperService.getCompositeFieldTypes()) {
+            if(type instanceof StarTreeMapper.StarTreeFieldType) {
+                starTreeFields.add((StarTreeMapper.StarTreeFieldType) type);
+            }
+        }
     }
 
     /**
@@ -62,21 +63,14 @@ public class StarTreesBuilder implements Closeable {
     public void build() throws IOException {
         long startTime = System.currentTimeMillis();
         int numStarTrees = starTreeFields.size();
-        logger.debug("Starting building {} star-trees with star-tree fields using {} builder", numStarTrees, buildMode);
-
         // Build all star-trees
         for (int i = 0; i < numStarTrees; i++) {
-            StarTreeField starTreeField = starTreeFields.get(i);
-            try (StarTreeBuilder starTreeBuilder = getSingleTreeBuilder(starTreeField, buildMode, fieldProducerMap, state, mapperService)) {
+            StarTreeMapper.StarTreeFieldType starTreeField = starTreeFields.get(i);
+            try (StarTreeBuilder starTreeBuilder = getSingleTreeBuilder(starTreeField, starTreeField.getStarTreeConfig()
+                .getBuildMode(), fieldProducerMap, state, mapperService)) {
                 starTreeBuilder.build();
             }
         }
-        logger.debug(
-            "Took {} ms to building {} star-trees with star-tree fields using {} builder",
-            System.currentTimeMillis() - startTime,
-            numStarTrees,
-            buildMode
-        );
     }
 
     @Override
@@ -85,7 +79,7 @@ public class StarTreesBuilder implements Closeable {
     }
 
     private static StarTreeBuilder getSingleTreeBuilder(
-        StarTreeField starTreeField,
+        StarTreeMapper.StarTreeFieldType starTreeField,
         StarTreeFieldConfiguration.StarTreeBuildMode buildMode,
         Map<String, DocValuesProducer> fieldProducerMap,
         SegmentWriteState state,
@@ -93,7 +87,9 @@ public class StarTreesBuilder implements Closeable {
     ) throws IOException {
         switch (buildMode) {
             case ON_HEAP:
-                return new OnHeapStarTreeBuilder(starTreeField, fieldProducerMap, state, mapperService);
+                StarTreeField field = new StarTreeField(starTreeField.name(), starTreeField.getDimensions(), starTreeField.getMetrics(),
+                    starTreeField.getStarTreeConfig());
+                return new OnHeapStarTreeBuilder(field, fieldProducerMap, state, mapperService);
             default:
                 throw new IllegalArgumentException(
                     String.format(Locale.ROOT, "No star tree implementation is available for [%s] build mode", buildMode)
