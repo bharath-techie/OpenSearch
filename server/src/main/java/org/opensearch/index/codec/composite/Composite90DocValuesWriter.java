@@ -40,7 +40,6 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
     private final Set<String> compositeFieldSet;
 
     private final Map<String, DocValuesProducer> fieldProducerMap = new HashMap<>();
-    private final Map<String, FieldInfo> fieldToFieldInfoMap = new HashMap<>();
 
     public Composite90DocValuesWriter(DocValuesConsumer delegate, SegmentWriteState segmentWriteState, MapperService mapperService)
         throws IOException {
@@ -93,7 +92,6 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
         if (compositeFieldSet.isEmpty()) return;
         if (compositeFieldSet.contains(field.name)) {
             fieldProducerMap.put(field.name, valuesProducer);
-            fieldToFieldInfoMap.put(field.name, field);
             compositeFieldSet.remove(field.name);
         }
         // we have all the required fields to build composite fields
