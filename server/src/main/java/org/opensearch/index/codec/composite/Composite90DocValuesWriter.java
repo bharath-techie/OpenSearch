@@ -8,12 +8,16 @@
 
 package org.opensearch.index.codec.composite;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.MergeState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.index.compositeindex.datacube.startree.builder.StarTreesBuilder;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.StarTreeMapper;
@@ -101,6 +105,8 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
                     // TODO : Call StarTree builder
                 }
             }
+            StarTreesBuilder starTreesBuilder = new StarTreesBuilder(state, mapperService);
+            starTreesBuilder.build(fieldProducerMap);
         }
     }
 
@@ -110,6 +116,51 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
         this.mergeState = mergeState;
         super.merge(mergeState);
         // TODO : handle merge star tree
+        mergeStarTreeFields(mergeState);
         // mergeStarTreeFields(mergeState);
     }
+
+    private void mergeStarTreeFields(MergeState mergeState) throws IOException {
+        Map<String, List<CompositeIndexValues>> compositeIndexValuesPerField = new HashMap<>();
+        Map<String, CompositeIndexFieldInfo> compositeIndexFieldInfoMap = new HashMap<>();
+        for(int i=0; i < mergeState.docValuesProducers.length; i++) {
+            CompositeIndexReader reader = (CompositeIndexReader) mergeState.docValuesProducers[i];
+            List<CompositeIndexFieldInfo> compositeFieldInfo = reader.getCompositeIndexFields();
+            for(CompositeIndexFieldInfo fieldInfo : compositeFieldInfo) {
+                CompositeIndexValues compositeIndexValues = reader.getCompositeIndexValues(fieldInfo);
+                if(compositeIndexValues != null) {
+                    List<CompositeIndexValues> fieldsList =
+                        compositeIndexValuesPerField.getOrDefault(fieldInfo.getField(), Collections.emptyList());
+                    fieldsList.add(compositeIndexValues);
+                    compositeIndexValuesPerField.put(fieldInfo.getField(), fieldsList);
+                    compositeIndexFieldInfoMap.put(fieldInfo.getField(), fieldInfo);
+                }
+            }
+        }
+        StarTreesBuilder starTreesBuilder = new StarTreesBuilder(state, mapperService);
+        starTreesBuilder.build(compositeIndexValuesPerField, compositeIndexFieldInfoMap);
+    }
+
+//    public void mergeAggregatedValues(MergeState mergeState) throws IOException {
+//        List<StarTreeAggregatedValues> aggrList = new ArrayList<>();
+//        List<String> dimNames = new ArrayList<>();
+//        for (int i = 0; i < mergeState.docValuesProducers.length; i++) {
+//            DocValuesProducer producer = mergeState.docValuesProducers[i];
+//            Object obj = producer.getAggregatedDocValues();
+//            StarTreeAggregatedValues starTree = (StarTreeAggregatedValues) obj;
+//            dimNames = starTree.dimensionValues.keySet().stream().collect(Collectors.toList());
+//            aggrList.add(starTree);
+//        }
+//        long startTime = System.currentTimeMillis();
+//        builder = new OffHeapSingleTreeBuilder(
+//            data,
+//            dimNames,
+//            dimensionReaders,
+//            state.segmentInfo.maxDoc(),
+//            docValuesConsumer,
+//            state
+//        );
+//        builder.build(aggrList);
+//        logger.info("Finished merging star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+//    }
 }

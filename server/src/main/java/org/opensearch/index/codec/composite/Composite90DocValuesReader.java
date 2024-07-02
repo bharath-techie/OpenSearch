@@ -74,14 +74,14 @@ public class Composite90DocValuesReader extends DocValuesProducer implements Com
     }
 
     @Override
-    public List<String> getCompositeIndexFields() {
+    public List<CompositeIndexFieldInfo> getCompositeIndexFields() {
         // todo : read from file formats and get the field names.
         throw new UnsupportedOperationException();
 
     }
 
     @Override
-    public CompositeIndexValues getCompositeIndexValues(String field, CompositeMappedFieldType.CompositeFieldType fieldType)
+    public CompositeIndexValues getCompositeIndexValues(CompositeIndexFieldInfo compositeIndexFieldInfo)
         throws IOException {
         // TODO : read compositeIndexValues [starTreeValues] from star tree files
         throw new UnsupportedOperationException();
