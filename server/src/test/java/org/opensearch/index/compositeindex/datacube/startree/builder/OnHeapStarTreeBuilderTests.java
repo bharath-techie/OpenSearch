@@ -16,14 +16,17 @@ import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.SegmentInfo;
 import org.apache.lucene.index.SegmentWriteState;
+import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.sandbox.document.HalfFloatPoint;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.util.Version;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
@@ -44,6 +47,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -160,7 +164,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
             null
         );
         when(documentMapper.mappers()).thenReturn(fieldMappers);
-        builder = new OnHeapStarTreeBuilder(compositeField, fieldProducerMap, writeState, mapperService);
+        builder = new OnHeapStarTreeBuilder(compositeField, writeState, mapperService);
     }
 
     public void test_sortAndAggregateStarTreeDocuments() throws IOException {
@@ -361,7 +365,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
             null
         );
         when(documentMapper.mappers()).thenReturn(fieldMappers);
-        builder = new OnHeapStarTreeBuilder(compositeField, fieldProducerMap, writeState, mapperService);
+        builder = new OnHeapStarTreeBuilder(compositeField, writeState, mapperService);
 
         int noOfStarTreeDocuments = 5;
         StarTreeDocument[] starTreeDocuments = new StarTreeDocument[noOfStarTreeDocuments];
@@ -403,7 +407,6 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
 
         Iterator<StarTreeDocument> segmentStarTreeDocumentIterator = builder.sortAndAggregateStarTreeDocuments(segmentStarTreeDocuments);
         builder.build(segmentStarTreeDocumentIterator);
-
         List<StarTreeDocument> resultStarTreeDocuments = builder.getStarTreeDocuments();
         assertEquals(8, resultStarTreeDocuments.size());
 
@@ -431,7 +434,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
             null
         );
         when(documentMapper.mappers()).thenReturn(fieldMappers);
-        builder = new OnHeapStarTreeBuilder(compositeField, fieldProducerMap, writeState, mapperService);
+        builder = new OnHeapStarTreeBuilder(compositeField, writeState, mapperService);
 
         int noOfStarTreeDocuments = 5;
         StarTreeDocument[] starTreeDocuments = new StarTreeDocument[noOfStarTreeDocuments];
@@ -480,7 +483,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
             null
         );
         when(documentMapper.mappers()).thenReturn(fieldMappers);
-        builder = new OnHeapStarTreeBuilder(compositeField, fieldProducerMap, writeState, mapperService);
+        builder = new OnHeapStarTreeBuilder(compositeField, writeState, mapperService);
 
         int noOfStarTreeDocuments = 5;
         StarTreeDocument[] starTreeDocuments = new StarTreeDocument[noOfStarTreeDocuments];
@@ -513,12 +516,12 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
         List<StarTreeDocument> expectedStarTreeDocuments = List.of(
             new StarTreeDocument(new Long[] { 2L, 4L, 3L, 4L }, new Object[] { 21.0, 14.0, 2L }),
             new StarTreeDocument(new Long[] { 3L, 4L, 2L, 1L }, new Object[] { 35.0, 34.0, 3L }),
-            new StarTreeDocument(new Long[] { -1L, 4L, 2L, 1L }, new Object[] { 35.0, 34.0, 3L }),
-            new StarTreeDocument(new Long[] { -1L, 4L, 3L, 4L }, new Object[] { 21.0, 14.0, 2L }),
-            new StarTreeDocument(new Long[] { -1L, 4L, -1L, 1L }, new Object[] { 35.0, 34.0, 3L }),
-            new StarTreeDocument(new Long[] { -1L, 4L, -1L, 4L }, new Object[] { 21.0, 14.0, 2L }),
-            new StarTreeDocument(new Long[] { -1L, 4L, -1L, -1L }, new Object[] { 56.0, 48.0, 5L }),
-            new StarTreeDocument(new Long[] { -1L, -1L, -1L, -1L }, new Object[] { 56.0, 48.0, 5L })
+            new StarTreeDocument(new Long[] { null, 4L, 2L, 1L }, new Object[] { 35.0, 34.0, 3L }),
+            new StarTreeDocument(new Long[] { null, 4L, 3L, 4L }, new Object[] { 21.0, 14.0, 2L }),
+            new StarTreeDocument(new Long[] { null, 4L, null, 1L }, new Object[] { 35.0, 34.0, 3L }),
+            new StarTreeDocument(new Long[] { null, 4L, null, 4L }, new Object[] { 21.0, 14.0, 2L }),
+            new StarTreeDocument(new Long[] { null, 4L, null, null }, new Object[] { 56.0, 48.0, 5L }),
+            new StarTreeDocument(new Long[] { null, null, null, null }, new Object[] { 56.0, 48.0, 5L })
         );
         return expectedStarTreeDocuments.iterator();
     }
@@ -569,6 +572,118 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
             assertEquals(expectedStarTreeDocument.metrics[1], resultStarTreeDocument.metrics[1]);
             assertEquals(expectedStarTreeDocument.metrics[2], resultStarTreeDocument.metrics[2]);
         }
+    }
+
+    public void testMergeFlow() throws IOException {
+        List<Long> dimList = List.of(0L, 1L, 3L, 4L, 5L);
+        List<Integer> docsWithField = List.of(0, 1, 3, 4, 5);
+        List<Long> dimList2 = List.of(0L, 1L, 2L, 3L, 4L, 5L);
+        List<Integer> docsWithField2 = List.of(0, 1, 2, 3, 4, 5);
+
+        List<Long> metricsList = List.of(
+            getLongFromDouble(0.0),
+            getLongFromDouble(10.0),
+            getLongFromDouble(20.0),
+            getLongFromDouble(30.0),
+            getLongFromDouble(40.0),
+            getLongFromDouble(50.0)
+        );
+        List<Integer> metricsWithField = List.of(0, 1, 2, 3, 4, 5);
+
+        Dimension d1 = new NumericDimension("field1");
+        Dimension d2 = new NumericDimension("field3");
+        Metric m1 = new Metric("field2", List.of(MetricStat.SUM));
+        List<Dimension> dims = List.of(d1, d2);
+        List<Metric> metrics = List.of(m1);
+        StarTreeFieldConfiguration c = new StarTreeFieldConfiguration(
+            1000,
+            new HashSet<>(),
+            StarTreeFieldConfiguration.StarTreeBuildMode.ON_HEAP
+        );
+        StarTreeField sf = new StarTreeField("sf", dims, metrics, c);
+        SortedNumericDocValues d1sndv = getSortedNumericMock(dimList, docsWithField);
+        SortedNumericDocValues d2sndv = getSortedNumericMock(dimList2, docsWithField2);
+        SortedNumericDocValues m1sndv = getSortedNumericMock(metricsList, metricsWithField);
+        Map<String, DocIdSetIterator> dimDocIdSetIterators = Map.of("field1", d1sndv, "field3", d2sndv);
+        Map<String, DocIdSetIterator> metricDocIdSetIterators = Map.of("field2", m1sndv);
+        StarTreeValues starTreeValues = new StarTreeValues(sf, null, dimDocIdSetIterators, metricDocIdSetIterators);
+
+        SortedNumericDocValues f2d1sndv = getSortedNumericMock(dimList, docsWithField);
+        SortedNumericDocValues f2d2sndv = getSortedNumericMock(dimList2, docsWithField2);
+        SortedNumericDocValues f2m1sndv = getSortedNumericMock(metricsList, metricsWithField);
+        Map<String, DocIdSetIterator> f2dimDocIdSetIterators = Map.of("field1", f2d1sndv, "field3", f2d2sndv);
+        Map<String, DocIdSetIterator> f2metricDocIdSetIterators = Map.of("field2", f2m1sndv);
+        StarTreeValues starTreeValues2 = new StarTreeValues(sf, null, f2dimDocIdSetIterators, f2metricDocIdSetIterators);
+        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(sf, writeState, mapperService);
+        Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
+        /**
+         * Asserting following dim / metrics [ dim1, dim2 / Sum [ metric] ]
+         * [0, 0] | [0.0]
+         * [1, 1] | [20.0]
+         * [3, 3] | [60.0]
+         * [4, 4] | [80.0]
+         * [5, 5] | [100.0]
+         * [null, 2] | [40.0]
+         */
+        while (starTreeDocumentIterator.hasNext()) {
+            StarTreeDocument starTreeDocument = starTreeDocumentIterator.next();
+            assertEquals(
+                starTreeDocument.dimensions[0] != null ? starTreeDocument.dimensions[0] * 2 * 10.0 : 40.0,
+                starTreeDocument.metrics[0]
+            );
+        }
+    }
+
+    private Long getLongFromDouble(Double num) {
+        if (num == null) {
+            return null;
+        }
+        return NumericUtils.doubleToSortableLong(num);
+    }
+
+    private SortedNumericDocValues getSortedNumericMock(List<Long> dimList, List<Integer> docsWithField) {
+        return new SortedNumericDocValues() {
+            int index = -1;
+
+            @Override
+            public long nextValue() throws IOException {
+                return dimList.get(index);
+            }
+
+            @Override
+            public int docValueCount() {
+                return 0;
+            }
+
+            @Override
+            public boolean advanceExact(int target) throws IOException {
+                return false;
+            }
+
+            @Override
+            public int docID() {
+                return index;
+            }
+
+            @Override
+            public int nextDoc() throws IOException {
+                if (index == docsWithField.size() - 1) {
+                    return NO_MORE_DOCS;
+                }
+                index++;
+                return docsWithField.get(index);
+            }
+
+            @Override
+            public int advance(int target) throws IOException {
+                return 0;
+            }
+
+            @Override
+            public long cost() {
+                return 0;
+            }
+        };
     }
 
     @Override

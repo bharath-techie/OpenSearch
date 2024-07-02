@@ -8,8 +8,11 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.utils;
 
+import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.opensearch.common.annotation.ExperimentalApi;
+
+import java.io.IOException;
 
 /**
  * Coordinates the reading of documents across multiple DocIdSetIterators.
@@ -32,7 +35,7 @@ public class SequentialDocValuesIterator {
     /**
      * The id of the latest document.
      */
-    private int docId;
+    private int docId = -1;
 
     /**
      * Constructs a new SequentialDocValuesIterator instance with the given DocIdSetIterator.
@@ -86,5 +89,43 @@ public class SequentialDocValuesIterator {
      */
     public DocIdSetIterator getDocIdSetIterator() {
         return docIdSetIterator;
+    }
+
+    public int nextDoc(int currentDocId) throws IOException {
+        // if doc id stored is less than or equal to the requested doc id , return the stored doc id
+        if (docId >= currentDocId) {
+            return docId;
+        }
+        setDocId(this.docIdSetIterator.nextDoc());
+        return docId;
+    }
+
+    public Long value(int currentDocId) throws IOException {
+        if (this.getDocIdSetIterator() instanceof SortedNumericDocValues) {
+            SortedNumericDocValues sortedNumericDocValues = (SortedNumericDocValues) this.getDocIdSetIterator();
+            if (currentDocId < 0) {
+                throw new IllegalStateException("invalid doc id to fetch the next value");
+            }
+            if (currentDocId == DocIdSetIterator.NO_MORE_DOCS) {
+                throw new IllegalStateException("DocValuesIterator is already exhausted");
+            }
+
+            if (docId == DocIdSetIterator.NO_MORE_DOCS) {
+                return null;
+            }
+
+            if (docValue == null) {
+                setDocValue(sortedNumericDocValues.nextValue());
+            }
+            if (docId == currentDocId) {
+                Long nextValue = docValue;
+                docValue = null;
+                return nextValue;
+            } else {
+                return null;
+            }
+        } else {
+            throw new IllegalStateException("Unsupported Iterator requested for SequentialDocValuesIterator");
+        }
     }
 }
