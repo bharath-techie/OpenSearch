@@ -18,16 +18,17 @@ import java.util.Iterator;
  * @opensearch.experimental
  */
 public class OffHeapStarTreeNode implements StarTreeNode {
-    public static final int NUM_INT_SERIALIZABLE_FIELDS = 7;
+    public static final int NUM_INT_SERIALIZABLE_FIELDS = 6;
     public static final int NUM_LONG_SERIALIZABLE_FIELDS = 1;
+    public static final int NUM_BYTES_SERIALIZABLE_FIELDS = 1;
     public static final long SERIALIZABLE_DATA_SIZE_IN_BYTES = (Integer.BYTES * NUM_INT_SERIALIZABLE_FIELDS) + (Long.BYTES
-        * NUM_LONG_SERIALIZABLE_FIELDS);
+        * NUM_LONG_SERIALIZABLE_FIELDS) + (Byte.BYTES * NUM_BYTES_SERIALIZABLE_FIELDS);
     private static final int DIMENSION_ID_OFFSET = 0;
     private static final int DIMENSION_VALUE_OFFSET = DIMENSION_ID_OFFSET + Integer.BYTES;
     private static final int START_DOC_ID_OFFSET = DIMENSION_VALUE_OFFSET + Long.BYTES;
     private static final int END_DOC_ID_OFFSET = START_DOC_ID_OFFSET + Integer.BYTES;
     private static final int AGGREGATE_DOC_ID_OFFSET = END_DOC_ID_OFFSET + Integer.BYTES;
-    private static final int IS_STAR_NODE_OFFSET = AGGREGATE_DOC_ID_OFFSET + Integer.BYTES;
+    private static final int IS_STAR_NODE_OFFSET = AGGREGATE_DOC_ID_OFFSET + Byte.BYTES;
     private static final int FIRST_CHILD_ID_OFFSET = IS_STAR_NODE_OFFSET + Integer.BYTES;
     private static final int LAST_CHILD_ID_OFFSET = FIRST_CHILD_ID_OFFSET + Integer.BYTES;
 

@@ -7,6 +7,7 @@
  */
 package org.apache.lucene.index;
 
+import java.time.temporal.ChronoField;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
@@ -14,6 +15,8 @@ import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
+import org.apache.lucene.util.Accountable;
+import org.opensearch.common.time.DateUtils;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
@@ -53,17 +56,13 @@ import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTr
  *
  * @opensearch.experimental
  */
-public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
-
+public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountable {
     private static final Logger logger = LogManager.getLogger(BaseStarTreeBuilder.class);
-
     /**
      * Default value for star node
      */
     public static final Long STAR_IN_DOC_VALUES_INDEX = null;
-
     protected final Set<Integer> skipStarNodeCreationForDimensions;
-
     protected final List<MetricAggregatorInfo> metricAggregatorInfos;
     protected final int numMetrics;
     protected final int numDimensions;
@@ -71,10 +70,8 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
     protected int totalSegmentDocs;
     protected int numStarTreeNodes;
     protected final int maxLeafDocuments;
-
     protected final StarTreeBuilderUtils.TreeNode rootNode = getNewNode();
-    private final StarTreeField starTreeField;
-
+    protected final StarTreeField starTreeField;
     private final MapperService mapperService;
     private final SegmentWriteState writeState;
 
@@ -96,7 +93,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         MapperService mapperService
     ) throws IOException {
 
-        logger.debug("Building star tree : {}", starTreeField);
+        logger.info("Building star tree : {} maxLeaf docs : {}", starTreeField, starTreeField.getStarTreeConfig().maxLeafDocs());
 
         this.metaOut = metaOut;
         this.dataOut = dataOut;
@@ -168,14 +165,14 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             for (MetricStat metricType : metric.getMetrics()) {
                 SequentialDocValuesIterator metricReader;
                 FieldInfo metricFieldInfo = state.fieldInfos.fieldInfo(metric.getField());
-                if (metricType != MetricStat.COUNT) {
+               // if (metricType != MetricStat.COUNT) {
                     // Need not initialize the metric reader with relevant doc id set iterator for COUNT metric type
                     metricReader = new SequentialDocValuesIterator(
                         fieldProducerMap.get(metricFieldInfo.name).getSortedNumeric(metricFieldInfo)
                     );
-                } else {
-                    metricReader = new SequentialDocValuesIterator();
-                }
+                //} else {
+                //    metricReader = new SequentialDocValuesIterator();
+                //}
 
                 metricReaders.add(metricReader);
             }
@@ -197,7 +194,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         DocValuesConsumer starTreeDocValuesConsumer
     ) throws IOException {
         long startTime = System.currentTimeMillis();
-        logger.debug("Star-tree build is a go with star tree field {}", starTreeField.getName());
+        //logger.info("Star-tree build is a go with star tree field {}", starTreeField.getName());
 
         List<SequentialDocValuesIterator> metricReaders = getMetricReaders(writeState, fieldProducerMap);
         List<Dimension> dimensionsSplitOrder = starTreeField.getDimensionsOrder();
@@ -214,9 +211,10 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             dimensionReaders,
             metricReaders
         );
-        logger.debug("Sorting and aggregating star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        logger.info("Sorting and aggregating star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        //logger.info("RAM USED : {}", this.ramBytesUsed());
         build(starTreeDocumentIterator, fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
-        logger.debug("Finished Building star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        logger.info("Finished Building star-tree in ms : {}", (System.currentTimeMillis() - startTime));
     }
 
     /**
@@ -238,7 +236,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             appendToStarTree(starTreeDocumentIterator.next());
         }
         int numStarTreeDocument = numStarTreeDocs;
-        logger.debug("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
+        //logger.info("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
 
         if (numStarTreeDocs == 0) {
             // serialize the star tree data
@@ -248,15 +246,16 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         constructStarTree(rootNode, 0, numStarTreeDocs);
         int numStarTreeDocumentUnderStarNode = numStarTreeDocs - numStarTreeDocument;
-        logger.debug(
-            "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
-            numStarTreeNodes,
-            numStarTreeDocumentUnderStarNode
-        );
+//        logger.info(
+//            "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
+//            numStarTreeNodes,
+//            numStarTreeDocumentUnderStarNode
+//        );
 
         createAggregatedDocs(rootNode);
         int numAggregatedStarTreeDocument = numStarTreeDocs - numStarTreeDocument - numStarTreeDocumentUnderStarNode;
-        logger.debug("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
+        //logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
+        //logger.info("RAM USED : {}", this.ramBytesUsed());
 
         // Create doc values indices in disk
         createSortedDocValuesIndices(starTreeDocValuesConsumer, fieldNumberAcrossStarTrees);
@@ -292,7 +291,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         for (int i = 0; i < dimensionFieldInfoList.length; i++) {
             final FieldInfo fi = new FieldInfo(
                 fullFieldNameForStarTreeDimensionsDocValues(starTreeField.getName(), starTreeField.getDimensionsOrder().get(i).getField()),
-                fieldNumberAcrossStarTrees.incrementAndGet(),
+                fieldNumberAcrossStarTrees.getAndIncrement(),
                 false,
                 false,
                 true,
@@ -319,7 +318,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     metricAggregatorInfos.get(i).getField(),
                     metricAggregatorInfos.get(i).getMetricStat().getTypeName()
                 ),
-                fieldNumberAcrossStarTrees.incrementAndGet(),
+                fieldNumberAcrossStarTrees.getAndIncrement(),
                 false,
                 false,
                 true,
@@ -341,7 +340,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         }
 
         for (int docId = 0; docId < numStarTreeDocs; docId++) {
-            StarTreeDocument starTreeDocument = getStarTreeDocument(docId);
+            StarTreeDocument starTreeDocument = getStarTreeDocumentForCreatingDocValues(docId);
             for (int i = 0; i < starTreeDocument.dimensions.length; i++) {
                 Long val = starTreeDocument.dimensions[i];
                 if (val != null) {
@@ -389,6 +388,35 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         }
     }
 
+    private long getTimeStampVal(final String fieldName, final long val) {
+        long roundedDate = 0;
+        long ratio = 0;
+
+        switch (fieldName) {
+
+            case "@timestamp":
+                ratio = ChronoField.MINUTE_OF_HOUR.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "hour":
+                ratio = ChronoField.HOUR_OF_DAY.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "day":
+                ratio = ChronoField.DAY_OF_MONTH.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "month":
+                roundedDate = DateUtils.roundMonthOfYear(val);
+                return roundedDate;
+            case "year":
+                roundedDate = DateUtils.roundYear(val);
+                return roundedDate;
+            default:
+                return val;
+        }
+    }
+
     /**
      * Adds a document to the star-tree.
      *
@@ -405,6 +433,8 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
      * @throws IOException if an I/O error occurs while fetching the star-tree document
      */
     public abstract StarTreeDocument getStarTreeDocument(int docId) throws IOException;
+
+    public abstract StarTreeDocument getStarTreeDocumentForCreatingDocValues(int docId) throws IOException;
 
     /**
      * Retrieves the list of star-tree documents in the star-tree.
@@ -478,6 +508,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     throw new IllegalStateException("unable to read the dimension values from the segment", e);
                 }
                 dimensions[i] = dimensionReaders[i].value(currentDocId);
+                dimensions[i] = getTimeStampVal(starTreeField.getDimensionsOrder().get(i).getField(), dimensions[i]);
             } else {
                 throw new IllegalStateException("dimension readers are empty");
             }
