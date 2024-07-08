@@ -8,6 +8,7 @@
 
 package org.opensearch.index.codec.composite;
 
+import java.util.ArrayList;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.CodecUtil;
@@ -61,7 +62,15 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
         throws IOException {
 
         boolean success = false;
+        this.delegate = delegate;
+        this.state = segmentWriteState;
+        this.mapperService = mapperService;
+        this.compositeMappedFieldTypes = mapperService.getCompositeFieldTypes();
         try {
+            this.composite99DocValuesConsumer = new Composite99DocValuesConsumer(segmentWriteState, Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
+                Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION, Composite99DocValuesFormat.META_DOC_VALUES_CODEC,
+                Composite99DocValuesFormat.META_DOC_VALUES_EXTENSION);
+
             String dataFileName = IndexFileNames.segmentFileName(
                 segmentWriteState.segmentInfo.name,
                 segmentWriteState.segmentSuffix,
@@ -89,6 +98,10 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
                 segmentWriteState.segmentInfo.getId(),
                 segmentWriteState.segmentSuffix
             );
+            compositeFieldSet = new HashSet<>();
+            for (CompositeMappedFieldType type : compositeMappedFieldTypes) {
+                compositeFieldSet.addAll(type.fields());
+            }
 
             success = true;
         } finally {
@@ -96,22 +109,6 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
                 IOUtils.closeWhileHandlingException(this);
             }
         }
-
-        this.delegate = delegate;
-        this.state = segmentWriteState;
-        this.mapperService = mapperService;
-        this.compositeMappedFieldTypes = mapperService.getCompositeFieldTypes();
-        compositeFieldSet = new HashSet<>();
-        for (CompositeMappedFieldType type : compositeMappedFieldTypes) {
-            compositeFieldSet.addAll(type.fields());
-        }
-        this.composite99DocValuesConsumer = new Composite99DocValuesConsumer(
-            segmentWriteState,
-            Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
-            Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
-            Composite99DocValuesFormat.META_DOC_VALUES_CODEC,
-            Composite99DocValuesFormat.META_DOC_VALUES_EXTENSION
-        );
     }
 
     @Override
@@ -145,7 +142,9 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
 
     @Override
     public void close() throws IOException {
-        delegate.close();
+        if(delegate != null) {
+            IOUtils.closeWhileHandlingException(delegate);
+        }
         boolean success = false;
         try {
             if (metaOut != null) {
@@ -160,9 +159,12 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
             if (success) {
                 IOUtils.close(dataOut, metaOut);
             } else {
-                IOUtils.closeWhileHandlingException(dataOut, metaOut);
+                IOUtils.closeWhileHandlingException(dataOut, metaOut, composite99DocValuesConsumer);
             }
             metaOut = dataOut = null;
+        }
+        if(composite99DocValuesConsumer != null) {
+            composite99DocValuesConsumer.close();
         }
     }
 
@@ -224,7 +226,7 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
                 if (fieldInfo.getType().equals(CompositeMappedFieldType.CompositeFieldType.STAR_TREE)) {
                     CompositeIndexValues compositeIndexValues = reader.getCompositeIndexValues(fieldInfo);
                     if (compositeIndexValues instanceof StarTreeValues) {
-                        List<StarTreeValues> fieldsList = starTreeSubsPerField.getOrDefault(fieldInfo.getField(), Collections.emptyList());
+                        List<StarTreeValues> fieldsList = starTreeSubsPerField.getOrDefault(fieldInfo.getField(), new ArrayList<>());
                         if (!starTreeFieldMap.containsKey(fieldInfo.getField())) {
                             starTreeFieldMap.put(fieldInfo.getField(), ((StarTreeValues) compositeIndexValues).getStarTreeField());
                         }

@@ -202,7 +202,7 @@ public class StarTreeMetaSerializer {
         metaOut.writeInt(starTreeField.getStarTreeConfig().maxLeafDocs());
 
         // number of skip star node creation dimensions
-        metaOut.writeInt(starTreeField.getStarTreeConfig().maxLeafDocs());
+        metaOut.writeInt(starTreeField.getStarTreeConfig().getSkipStarNodeCreationInDims().size());
 
         // skip star node creations
         for (String dimension : starTreeField.getStarTreeConfig().getSkipStarNodeCreationInDims()) {

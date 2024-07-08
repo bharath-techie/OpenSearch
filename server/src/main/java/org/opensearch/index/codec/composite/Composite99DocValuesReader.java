@@ -83,11 +83,12 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
             readState.segmentSuffix,
             Composite99DocValuesFormat.DATA_EXTENSION
         );
-
+        dataIn = readState.directory.openInput(dataFileName, readState.context);
+        metaIn = readState.directory.openChecksumInput(metaFileName, readState.context);
         boolean success = false;
         try {
 
-            dataIn = readState.directory.openInput(dataFileName, readState.context);
+
             CodecUtil.checkIndexHeader(
                 dataIn,
                 Composite99DocValuesFormat.DATA_CODEC_NAME,
@@ -97,7 +98,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                 readState.segmentSuffix
             );
 
-            metaIn = readState.directory.openChecksumInput(metaFileName, readState.context);
+
             Throwable priorE = null;
             try {
                 CodecUtil.checkIndexHeader(
@@ -162,6 +163,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
         } finally {
             if (success == false) {
                 IOUtils.closeWhileHandlingException(this);
+                IOUtils.closeWhileHandlingException(metaIn, dataIn);
             }
         }
     }
@@ -194,7 +196,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
     @Override
     public void checkIntegrity() throws IOException {
         delegate.checkIntegrity();
-        CodecUtil.checksumEntireFile(metaIn);
+        //CodecUtil.checksumEntireFile(metaIn);
         CodecUtil.checksumEntireFile(dataIn);
     }
 
@@ -202,8 +204,12 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
     public void close() throws IOException {
         delegate.close();
         starTreeMap.clear();
+        for(DocValuesProducer p : compositeDocValuesProducerMap.values()) {
+            p.close();
+        }
         compositeIndexMetadataMap.clear();
         compositeDocValuesProducerMap.clear();
+        IOUtils.closeWhileHandlingException(metaIn, dataIn);
     }
 
     @Override

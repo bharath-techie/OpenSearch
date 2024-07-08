@@ -61,10 +61,10 @@ public class Composite99DocValuesFormat extends DocValuesFormat {
     /** Filename extension for the composite index meta doc values */
     public static final String META_DOC_VALUES_EXTENSION = "sttmdvm";
 
-    /** Initial version for the Composite90DocValuesFormat */
+    /** Initial version for the Composite99DocValuesFormat */
     public static final int VERSION_START = 0;
 
-    /** Current version for the Composite90DocValuesFormat */
+    /** Current version for the Composite99DocValuesFormat */
     public static final int VERSION_CURRENT = VERSION_START;
 
     // needed for SPI

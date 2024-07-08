@@ -50,7 +50,7 @@ public class StarTreeDataSerializer {
 
         writeStarTreeHeader(indexOutput, numNodes);
         writeStarTreeNodes(indexOutput, rootNode);
-        return totalSizeInBytes;
+        return indexOutput.getFilePointer();
     }
 
     /**

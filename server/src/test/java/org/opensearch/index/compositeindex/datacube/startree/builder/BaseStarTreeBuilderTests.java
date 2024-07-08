@@ -182,6 +182,10 @@ public class BaseStarTreeBuilderTests extends OpenSearchTestCase {
 
         builder = new BaseStarTreeBuilder(metaOut, dataOut, starTreeField, writeState, mapperService) {
             @Override
+            public long ramBytesUsed() {
+                return 0;
+            }
+            @Override
             public void build(
                 List<StarTreeValues> starTreeValuesSubs,
                 AtomicInteger fieldNumberAcrossStarTrees,
@@ -193,6 +197,12 @@ public class BaseStarTreeBuilderTests extends OpenSearchTestCase {
 
             @Override
             public StarTreeDocument getStarTreeDocument(int docId) throws IOException {
+                return null;
+            }
+
+            @Override
+            public StarTreeDocument getStarTreeDocumentForCreatingDocValues(int docId)
+                throws IOException {
                 return null;
             }
 
