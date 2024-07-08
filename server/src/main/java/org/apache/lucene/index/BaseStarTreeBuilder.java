@@ -7,9 +7,12 @@
  */
 package org.apache.lucene.index;
 
+import java.time.temporal.ChronoField;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesProducer;
+import org.apache.lucene.util.Accountable;
+import org.opensearch.common.time.DateUtils;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
@@ -44,17 +47,13 @@ import java.util.Set;
  *
  * @opensearch.experimental
  */
-public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
-
+public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountable {
     private static final Logger logger = LogManager.getLogger(BaseStarTreeBuilder.class);
-
     /**
      * Default value for star node
      */
     public static final Long STAR_IN_DOC_VALUES_INDEX = null;
-
     protected final Set<Integer> skipStarNodeCreationForDimensions;
-
     protected final List<MetricAggregatorInfo> metricAggregatorInfos;
     protected final int numMetrics;
     protected final int numDimensions;
@@ -62,10 +61,8 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
     protected int totalSegmentDocs;
     protected int numStarTreeNodes;
     protected final int maxLeafDocuments;
-
     protected final StarTreeBuilderUtils.TreeNode rootNode = getNewNode();
-    private final StarTreeField starTreeField;
-
+    protected final StarTreeField starTreeField;
     private final MapperService mapperService;
     private final SegmentWriteState state;
 
@@ -78,7 +75,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
      */
     protected BaseStarTreeBuilder(StarTreeField starTreeField, SegmentWriteState state, MapperService mapperService) throws IOException {
 
-        logger.debug("Building star tree : {}", starTreeField);
+        logger.info("Building star tree : {} maxLeaf docs : {}", starTreeField, starTreeField.getStarTreeConfig().maxLeafDocs());
 
         this.starTreeField = starTreeField;
         StarTreeFieldConfiguration starTreeFieldSpec = starTreeField.getStarTreeConfig();
@@ -170,7 +167,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
      */
     public void build(Map<String, DocValuesProducer> fieldProducerMap) throws IOException {
         long startTime = System.currentTimeMillis();
-        logger.debug("Star-tree build is a go with star tree field {}", starTreeField.getName());
+        //logger.info("Star-tree build is a go with star tree field {}", starTreeField.getName());
 
         List<SequentialDocValuesIterator> metricReaders = getMetricReaders(state, fieldProducerMap);
         List<Dimension> dimensionsSplitOrder = starTreeField.getDimensionsOrder();
@@ -187,9 +184,10 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             dimensionReaders,
             metricReaders
         );
-        logger.debug("Sorting and aggregating star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        logger.info("Sorting and aggregating star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        //logger.info("RAM USED : {}", this.ramBytesUsed());
         build(starTreeDocumentIterator);
-        logger.debug("Finished Building star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        logger.info("Finished Building star-tree in ms : {}", (System.currentTimeMillis() - startTime));
     }
 
     /**
@@ -205,7 +203,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             appendToStarTree(starTreeDocumentIterator.next());
         }
         int numStarTreeDocument = numStarTreeDocs;
-        logger.debug("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
+        //logger.info("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
 
         if (numStarTreeDocs == 0) {
             // TODO: Uncomment when segment codec is ready
@@ -215,20 +213,50 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         constructStarTree(rootNode, 0, numStarTreeDocs);
         int numStarTreeDocumentUnderStarNode = numStarTreeDocs - numStarTreeDocument;
-        logger.debug(
-            "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
-            numStarTreeNodes,
-            numStarTreeDocumentUnderStarNode
-        );
+//        logger.info(
+//            "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
+//            numStarTreeNodes,
+//            numStarTreeDocumentUnderStarNode
+//        );
 
         createAggregatedDocs(rootNode);
         int numAggregatedStarTreeDocument = numStarTreeDocs - numStarTreeDocument - numStarTreeDocumentUnderStarNode;
-        logger.debug("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
+        //logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
+        //logger.info("RAM USED : {}", this.ramBytesUsed());
 
         // TODO: When StarTree Codec is ready
         // Create doc values indices in disk
         // Serialize and save in disk
         // Write star tree metadata for off heap implementation
+    }
+
+    private long getTimeStampVal(final String fieldName, final long val) {
+        long roundedDate = 0;
+        long ratio = 0;
+
+        switch (fieldName) {
+
+            case "@timestamp":
+                ratio = ChronoField.MINUTE_OF_HOUR.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "hour":
+                ratio = ChronoField.HOUR_OF_DAY.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "day":
+                ratio = ChronoField.DAY_OF_MONTH.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "month":
+                roundedDate = DateUtils.roundMonthOfYear(val);
+                return roundedDate;
+            case "year":
+                roundedDate = DateUtils.roundYear(val);
+                return roundedDate;
+            default:
+                return val;
+        }
     }
 
     /**
@@ -320,6 +348,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     throw new IllegalStateException("unable to read the dimension values from the segment", e);
                 }
                 dimensions[i] = dimensionReaders[i].value(currentDocId);
+                dimensions[i] = getTimeStampVal(starTreeField.getDimensionsOrder().get(i).getField(), dimensions[i]);
             } else {
                 throw new IllegalStateException("dimension readers are empty");
             }

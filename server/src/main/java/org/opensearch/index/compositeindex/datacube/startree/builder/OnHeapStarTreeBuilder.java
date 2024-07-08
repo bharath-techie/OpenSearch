@@ -7,9 +7,11 @@
  */
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import java.util.Collection;
 import org.apache.lucene.index.BaseStarTreeBuilder;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.util.Accountable;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.Dimension;
@@ -50,6 +52,7 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
     @Override
     public void appendStarTreeDocument(StarTreeDocument starTreeDocument) throws IOException {
         starTreeDocuments.add(starTreeDocument);
+        //System.out.println(starTreeDocument);
     }
 
     @Override
@@ -293,5 +296,15 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
                 return next;
             }
         };
+    }
+
+    @Override
+    public long ramBytesUsed() {
+        return 0;
+    }
+
+    @Override
+    public Collection<Accountable> getChildResources() {
+        return super.getChildResources();
     }
 }

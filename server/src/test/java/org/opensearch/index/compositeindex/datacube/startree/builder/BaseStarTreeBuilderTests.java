@@ -160,6 +160,11 @@ public class BaseStarTreeBuilderTests extends OpenSearchTestCase {
 
         builder = new BaseStarTreeBuilder(starTreeField, state, mapperService) {
             @Override
+            public long ramBytesUsed() {
+                return 0;
+            }
+
+            @Override
             public void build(List<StarTreeValues> starTreeValuesSubs) throws IOException {}
 
             @Override
