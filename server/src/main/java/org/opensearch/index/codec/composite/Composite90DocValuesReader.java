@@ -25,8 +25,8 @@ import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.IndexInput;
-import org.apache.lucene.util.IOUtils;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.CompositeIndexMetadata;
 import org.opensearch.index.compositeindex.datacube.Dimension;
@@ -34,13 +34,12 @@ import org.opensearch.index.compositeindex.datacube.MergeDimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
-import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricEntry;
 import org.opensearch.index.compositeindex.datacube.startree.meta.StarTreeMetadata;
 import org.opensearch.index.compositeindex.datacube.startree.node.OffHeapStarTree;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTree;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNode;
-import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeConstants;
+import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeHelper;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -263,13 +262,15 @@ public class Composite90DocValuesReader extends DocValuesProducer implements Com
                 for (String dimension : dimensions) {
                     dimensionsDocIdSetIteratorMap.put(
                         dimension,
-                        starTree99DocValuesProducer.getSortedNumeric(dimension + StarTreeConstants.DIMENSION_SUFFIX)
+                        starTree99DocValuesProducer.getSortedNumeric(
+                            StarTreeHelper.fullFieldNameForStarTreeDimensionsDocValues(starTreeField.getName(), dimension)
+                        )
                     );
                 }
 
                 for (MetricEntry metricEntry : starTreeMetadata.getMetricEntries()) {
-                    String metricFullName = MetricAggregatorInfo.toFieldName(
-                        compositeIndexFieldInfo.getField(),
+                    String metricFullName = StarTreeHelper.fullFieldNameForStarTreeMetricsDocValues(
+                        starTreeField.getName(),
                         metricEntry.getMetricName(),
                         metricEntry.getMetricStat().getTypeName()
                     );

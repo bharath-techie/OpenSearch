@@ -13,13 +13,14 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
+import org.apache.lucene.codecs.lucene90.Composite99DocValuesConsumer;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.MergeState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.store.IndexOutput;
-import org.apache.lucene.util.IOUtils;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.builder.StarTreesBuilder;
@@ -48,6 +49,7 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
     private MergeState mergeState = null;
     private final Set<CompositeMappedFieldType> compositeMappedFieldTypes;
     private final Set<String> compositeFieldSet;
+    private final DocValuesConsumer composite99DocValuesConsumer;
 
     public IndexOutput dataOut;
     public IndexOutput metaOut;
@@ -103,6 +105,13 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
         for (CompositeMappedFieldType type : compositeMappedFieldTypes) {
             compositeFieldSet.addAll(type.fields());
         }
+        this.composite99DocValuesConsumer = new Composite99DocValuesConsumer(
+            segmentWriteState,
+            Composite90DocValuesFormat.DATA_DOC_VALUES_CODEC,
+            Composite90DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
+            Composite90DocValuesFormat.META_DOC_VALUES_CODEC,
+            Composite90DocValuesFormat.META_DOC_VALUES_EXTENSION
+        );
     }
 
     @Override
@@ -167,11 +176,10 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
         if (compositeFieldSet.isEmpty()) {
             for (CompositeMappedFieldType mappedType : compositeMappedFieldTypes) {
                 if (mappedType.getCompositeIndexType().equals(CompositeMappedFieldType.CompositeFieldType.STAR_TREE)) {
-                    // TODO : Call StarTree builder
+                    StarTreesBuilder starTreesBuilder = new StarTreesBuilder(state, mapperService);
+                    starTreesBuilder.build(metaOut, dataOut, fieldProducerMap, composite99DocValuesConsumer);
                 }
             }
-            StarTreesBuilder starTreesBuilder = new StarTreesBuilder(state, mapperService);
-            starTreesBuilder.build(metaOut, dataOut, fieldProducerMap);
         }
     }
 
@@ -233,6 +241,6 @@ public class Composite90DocValuesWriter extends DocValuesConsumer {
             }
         }
         final StarTreesBuilder starTreesBuilder = new StarTreesBuilder(state, mapperService);
-        starTreesBuilder.buildDuringMerge(metaOut, dataOut, starTreeFieldMap, starTreeSubsPerField);
+        starTreesBuilder.buildDuringMerge(metaOut, dataOut, starTreeFieldMap, starTreeSubsPerField, composite99DocValuesConsumer);
     }
 }

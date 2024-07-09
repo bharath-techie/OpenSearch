@@ -8,6 +8,7 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
 import org.apache.lucene.index.DocValuesType;
@@ -56,6 +57,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -85,6 +87,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
     private SegmentWriteState writeState;
     private IndexOutput dataOut;
     private IndexOutput metaOut;
+    private DocValuesConsumer docValuesConsumer;
 
     @Before
     public void setup() throws IOException {
@@ -103,6 +106,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
         );
 
         DocValuesProducer docValuesProducer = mock(DocValuesProducer.class);
+        docValuesConsumer = mock(DocValuesConsumer.class);
 
         compositeField = new StarTreeField(
             "test",
@@ -487,7 +491,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
         }
 
         Iterator<StarTreeDocument> segmentStarTreeDocumentIterator = builder.sortAndAggregateStarTreeDocuments(segmentStarTreeDocuments);
-        builder.build(segmentStarTreeDocumentIterator);
+        builder.build(segmentStarTreeDocumentIterator, new AtomicInteger(), docValuesConsumer);
         List<StarTreeDocument> resultStarTreeDocuments = builder.getStarTreeDocuments();
         assertEquals(8, resultStarTreeDocuments.size());
 
@@ -552,7 +556,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
         }
 
         Iterator<StarTreeDocument> segmentStarTreeDocumentIterator = builder.sortAndAggregateStarTreeDocuments(segmentStarTreeDocuments);
-        builder.build(segmentStarTreeDocumentIterator);
+        builder.build(segmentStarTreeDocumentIterator, new AtomicInteger(), docValuesConsumer);
 
         List<StarTreeDocument> resultStarTreeDocuments = builder.getStarTreeDocuments();
         assertEquals(8, resultStarTreeDocuments.size());
@@ -606,7 +610,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
         }
 
         Iterator<StarTreeDocument> segmentStarTreeDocumentIterator = builder.sortAndAggregateStarTreeDocuments(segmentStarTreeDocuments);
-        builder.build(segmentStarTreeDocumentIterator);
+        builder.build(segmentStarTreeDocumentIterator, new AtomicInteger(), docValuesConsumer);
 
         List<StarTreeDocument> resultStarTreeDocuments = builder.getStarTreeDocuments();
         assertEquals(8, resultStarTreeDocuments.size());
@@ -650,7 +654,7 @@ public class OnHeapStarTreeBuilderTests extends OpenSearchTestCase {
         }
 
         Iterator<StarTreeDocument> segmentStarTreeDocumentIterator = builder.sortAndAggregateStarTreeDocuments(segmentStarTreeDocuments);
-        builder.build(segmentStarTreeDocumentIterator);
+        builder.build(segmentStarTreeDocumentIterator, new AtomicInteger(), docValuesConsumer);
 
         List<StarTreeDocument> resultStarTreeDocuments = builder.getStarTreeDocuments();
         assertEquals(8, resultStarTreeDocuments.size());

@@ -8,6 +8,7 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
 import org.apache.lucene.index.BaseStarTreeBuilder;
@@ -55,6 +56,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -180,7 +182,11 @@ public class BaseStarTreeBuilderTests extends OpenSearchTestCase {
 
         builder = new BaseStarTreeBuilder(metaOut, dataOut, starTreeField, writeState, mapperService) {
             @Override
-            public void build(List<StarTreeValues> starTreeValuesSubs) throws IOException {}
+            public void build(
+                List<StarTreeValues> starTreeValuesSubs,
+                AtomicInteger fieldNumberAcrossStarTrees,
+                DocValuesConsumer starTreeDocValuesConsumer
+            ) throws IOException {}
 
             @Override
             public void appendStarTreeDocument(StarTreeDocument starTreeDocument) throws IOException {}

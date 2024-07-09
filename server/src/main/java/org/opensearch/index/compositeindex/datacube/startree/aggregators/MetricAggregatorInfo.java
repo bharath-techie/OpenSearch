@@ -84,8 +84,8 @@ public class MetricAggregatorInfo implements Comparable<MetricAggregatorInfo> {
 
     }
 
-    public static String toFieldName(String starFieldName, String field, String typeName) {
-        return starFieldName + DELIMITER + field + DELIMITER + typeName;
+    public static String toFieldName(String starFieldName, String field, String metricName) {
+        return starFieldName + DELIMITER + field + DELIMITER + metricName;
     }
 
     @Override
@@ -100,7 +100,7 @@ public class MetricAggregatorInfo implements Comparable<MetricAggregatorInfo> {
         }
         if (obj instanceof MetricAggregatorInfo) {
             MetricAggregatorInfo anotherPair = (MetricAggregatorInfo) obj;
-            return metricStat == anotherPair.metricStat && field.equals(anotherPair.field);
+            return metricStat.equals(anotherPair.metricStat) && field.equals(anotherPair.field);
         }
         return false;
     }

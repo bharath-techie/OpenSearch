@@ -7,6 +7,7 @@
  */
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.index.BaseStarTreeBuilder;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.search.DocIdSetIterator;
@@ -26,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * On heap based single tree builder
@@ -61,8 +63,12 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
     }
 
     @Override
-    public void build(List<StarTreeValues> starTreeValuesSubs) throws IOException {
-        build(mergeStarTrees(starTreeValuesSubs));
+    public void build(
+        List<StarTreeValues> starTreeValuesSubs,
+        AtomicInteger fieldNumberAcrossStarTrees,
+        DocValuesConsumer starTreeDocValuesConsumer
+    ) throws IOException {
+        build(mergeStarTrees(starTreeValuesSubs), fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
     }
 
     /**

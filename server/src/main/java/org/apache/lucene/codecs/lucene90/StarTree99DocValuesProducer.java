@@ -21,14 +21,14 @@ import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
-import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricEntry;
-import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeConstants;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeHelper.fullFieldNameForStarTreeDimensionsDocValues;
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeHelper.fullFieldNameForStarTreeMetricsDocValues;
 
 /**
  * This class is a custom abstraction of the {@link DocValuesProducer} for the Star Tree index structure.
@@ -41,7 +41,7 @@ public class StarTree99DocValuesProducer extends DocValuesProducer {
 
     Lucene90DocValuesProducer lucene90DocValuesProducer;
     private final List<FieldInfo> dimensions;
-    private final List<String> metrics;
+    private final List<MetricEntry> metrics;
     private final FieldInfos fieldInfos;
 
     public StarTree99DocValuesProducer(
@@ -55,15 +55,10 @@ public class StarTree99DocValuesProducer extends DocValuesProducer {
         String compositeFieldName
     ) throws IOException {
         this.dimensions = dimensions;
-        this.metrics = new ArrayList<>();
-        for (MetricEntry metricEntry : metricEntries) {
-            this.metrics.add(
-                MetricAggregatorInfo.toFieldName(compositeFieldName, metricEntry.getMetricName(), metricEntry.getMetricStat().getTypeName())
-            );
-        }
+        this.metrics = metricEntries;
 
         // populates the dummy list of field infos to fetch doc id set iterators for respective fields.
-        this.fieldInfos = new FieldInfos(getFieldInfoList());
+        this.fieldInfos = new FieldInfos(getFieldInfoList(compositeFieldName));
         SegmentReadState segmentReadState = new SegmentReadState(state.directory, state.segmentInfo, fieldInfos, state.context);
         lucene90DocValuesProducer = new Lucene90DocValuesProducer(segmentReadState, dataCodec, dataExtension, metaCodec, metaExtension);
     }
@@ -108,35 +103,36 @@ public class StarTree99DocValuesProducer extends DocValuesProducer {
         this.lucene90DocValuesProducer.close();
     }
 
-    private FieldInfo[] getFieldInfoList() {
+    private FieldInfo[] getFieldInfoList(String compositeFieldName) {
         FieldInfo[] fieldInfoList = new FieldInfo[this.dimensions.size() + metrics.size()];
+        // field number is not really used. We depend on unique field names to get the desired iterator
         int fieldNumber = 0;
 
         for (FieldInfo dimension : this.dimensions) {
             fieldInfoList[fieldNumber] = new FieldInfo(
-                dimension.getName() + StarTreeConstants.DIMENSION_SUFFIX,
+                fullFieldNameForStarTreeDimensionsDocValues(compositeFieldName, dimension.getName()),
                 fieldNumber,
                 false,
-                dimension.omitsNorms(),
-                dimension.hasPayloads(),
-                dimension.getIndexOptions(),
-                dimension.getDocValuesType(),
-                -1,
-                dimension.attributes(),
-                dimension.getPointDimensionCount(),
-                dimension.getPointIndexDimensionCount(),
-                dimension.getPointNumBytes(),
-                dimension.getVectorDimension(),
-                dimension.getVectorEncoding(),
-                dimension.getVectorSimilarityFunction(),
                 false,
-                dimension.isParentField()
+                true,
+                IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS,
+                DocValuesType.SORTED_NUMERIC,
+                -1,
+                Collections.emptyMap(),
+                0,
+                0,
+                0,
+                0,
+                VectorEncoding.FLOAT32,
+                VectorSimilarityFunction.EUCLIDEAN,
+                false,
+                false
             );
             fieldNumber++;
         }
-        for (String metric : metrics) {
+        for (MetricEntry metric : metrics) {
             fieldInfoList[fieldNumber] = new FieldInfo(
-                metric + StarTreeConstants.METRIC_SUFFIX,
+                fullFieldNameForStarTreeMetricsDocValues(compositeFieldName, metric.getMetricName(), metric.getMetricStat().getTypeName()),
                 fieldNumber,
                 false,
                 false,
