@@ -28,7 +28,6 @@ public class Composite99Codec extends FilterCodec {
     public static final String COMPOSITE_INDEX_CODEC_NAME = "Composite99Codec";
     private final MapperService mapperService;
 
-    // needed for SPI - this is used in reader path
     public Composite99Codec() {
         this(COMPOSITE_INDEX_CODEC_NAME, new Lucene99Codec(), null);
     }

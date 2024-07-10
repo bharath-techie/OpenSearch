@@ -5,9 +5,10 @@
  * this file be licensed under the Apache-2.0 license or a
  * compatible open source license.
  */
+
 /**
- * Core classes for handling star tree index.
+ * Holds classes associated with star tree node
  *
  * @opensearch.experimental
  */
-package org.opensearch.index.compositeindex.datacube.startree;
+package org.opensearch.index.compositeindex.datacube.startree.node;
