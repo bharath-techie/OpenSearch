@@ -138,7 +138,7 @@ public class StarTreesBuilder implements Closeable {
             case ON_HEAP:
                 return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
             case OFF_HEAP:
-                return new OffHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
+                return new OffHeapStarTreeBuilder4(metaOut, dataOut, starTreeField, state, mapperService);
             default:
                 throw new IllegalArgumentException(
                     String.format(

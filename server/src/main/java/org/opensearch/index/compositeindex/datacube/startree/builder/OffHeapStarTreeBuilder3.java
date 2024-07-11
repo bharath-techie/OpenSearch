@@ -8,6 +8,19 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
@@ -21,6 +34,7 @@ import org.apache.lucene.store.TrackingDirectoryWrapper;
 import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.Accountables;
 import org.apache.lucene.util.IOUtils;
+import org.apache.lucene.util.IntroSorter;
 import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.opensearch.common.annotation.ExperimentalApi;
@@ -34,19 +48,8 @@ import org.opensearch.index.compositeindex.datacube.startree.utils.QuickSorter;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
 import org.opensearch.index.mapper.MapperService;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicInteger;
-
 import static org.apache.lucene.util.RamUsageEstimator.shallowSizeOf;
+
 
 /**
  * Off heap implementation of star tree builder
@@ -76,8 +79,8 @@ import static org.apache.lucene.util.RamUsageEstimator.shallowSizeOf;
  * @opensearch.experimental
  */
 @ExperimentalApi
-public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
-    private static final Logger logger = LogManager.getLogger(OffHeapStarTreeBuilder.class);
+public class OffHeapStarTreeBuilder3 extends BaseStarTreeBuilder {
+    private static final Logger logger = LogManager.getLogger(OffHeapStarTreeBuilder3.class);
     private static final String SEGMENT_DOC_FILE_NAME = "segment.documents";
     private static final String STAR_TREE_DOC_FILE_NAME = "star-tree.documents";
     // TODO : Should this be via settings ?
@@ -96,7 +99,7 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
     int currBytes = 0;
     int docSizeInBytes = -1;
     TrackingDirectoryWrapper tmpDirectory;
-    private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(OffHeapStarTreeBuilder.class);
+    private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(OffHeapStarTreeBuilder3.class);
 
     /**
      * Builds star tree based on star tree field configuration consisting of dimensions, metrics and star tree index
@@ -106,7 +109,7 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
      * @param state         stores the segment write state
      * @param mapperService helps to find the original type of the field
      */
-    protected OffHeapStarTreeBuilder(
+    protected OffHeapStarTreeBuilder3(
         IndexOutput metaOut,
         IndexOutput dataOut,
         StarTreeField starTreeField,
@@ -237,9 +240,52 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
         // logger.info("Segment document is of length : {}", segmentDocsFileInput.length());
         segmentRandomInput = segmentDocsFileInput.randomAccessSlice(0, segmentDocsFileInput.length());
 
+        int[] sortedDocIds1 = Arrays.copyOf(sortedDocIds, sortedDocIds.length);
+        long startime = System.nanoTime();
+        new IntroSorter() {
+            private long[] dimensions;
+
+            @Override
+            protected void swap(int i, int j) {
+                int temp = sortedDocIds[i];
+                sortedDocIds[i] = sortedDocIds[j];
+                sortedDocIds[j] = temp;
+            }
+
+            @Override
+            protected void setPivot(int i) {
+                long offset = (long) sortedDocIds[i] * documentBytes;
+                dimensions = new long[starTreeField.getDimensionsOrder().size()];
+                try {
+                    for (int j = 0; j < dimensions.length; j++) {
+                        dimensions[j] = segmentRandomInput.readLong(offset + (long) j * Long.BYTES);
+                    }
+                } catch (IOException e) {
+                    throw new RuntimeException("Sort documents failed : " + e); // TODO: handle this better
+                }
+            }
+
+            @Override
+            protected int comparePivot(int j) {
+                long offset = (long) sortedDocIds[j] * documentBytes;
+                try {
+                    for (int i = 0; i < dimensions.length; i++) {
+                        long dimension = segmentRandomInput.readLong(offset + (long) i * Long.BYTES);
+                        if (dimensions[i] != dimension) {
+                            return Long.compare(dimensions[i], dimension);
+                        }
+                    }
+                } catch (IOException e) {
+                    throw new RuntimeException("Sort documents failed : " + e); // TODO: handle this better
+                }
+                return 0;
+            }
+        }.sort(0, numDocs);
+        System.out.println("introsort time : " + ((System.nanoTime() - startime)/1000000));
+        startime = System.nanoTime();
         QuickSorter.quickSort(0, numDocs, (i1, i2) -> {
-            long offset1 = (long) sortedDocIds[i1] * documentBytes;
-            long offset2 = (long) sortedDocIds[i2] * documentBytes;
+            long offset1 = (long) sortedDocIds1[i1] * documentBytes;
+            long offset2 = (long) sortedDocIds1[i2] * documentBytes;
             for (int i = 0; i < starTreeField.getDimensionsOrder().size(); i++) {
                 try {
                     long dimension1 = segmentRandomInput.readLong(offset1 + (long) i * Long.BYTES);
@@ -253,11 +299,31 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
             }
             return 0;
         }, (i1, i2) -> {
-            int temp = sortedDocIds[i1];
-            sortedDocIds[i1] = sortedDocIds[i2];
-            sortedDocIds[i2] = temp;
+            int temp = sortedDocIds1[i1];
+            sortedDocIds1[i1] = sortedDocIds1[i2];
+            sortedDocIds1[i2] = temp;
         });
+        System.out.println("Quicksort time : " + ((System.nanoTime() - startime)/1000000));
+        boolean res = Arrays.equals(sortedDocIds, sortedDocIds1);
+        for(int i=0; i<sortedDocIds1.length; i++) {
+            if(sortedDocIds1[i] != sortedDocIds[i]) {
 
+                long offset1 = (long) sortedDocIds1[i] * documentBytes;
+                long offset2 = (long) sortedDocIds[i] * documentBytes;
+                for (int j = 0; j < starTreeField.getDimensionsOrder().size(); j++) {
+                    try {
+                        long dimension1 = segmentRandomInput.readLong(offset1 + (long) j * Long.BYTES);
+                        long dimension2 = segmentRandomInput.readLong(offset2 + (long) j * Long.BYTES);
+                        if(dimension1 != dimension2) {
+                            System.out.println("Not equal : " + i + " :: " + sortedDocIds[i] + " :: " + sortedDocIds1[i]);
+                            System.out.println(" " + dimension1 + " : " + dimension2);
+                        }
+                    } catch (IOException e) {
+                        throw new RuntimeException("Sort documents failed : " + e); // TODO: handle this better
+                    }
+                }
+            }
+        }
         if (sortedDocIds != null) {
             // logger.info("Sorted doc ids length" + sortedDocIds.length);
         } else {
@@ -523,6 +589,43 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
             }
         }
         return numBytes;
+    }
+
+    private byte[] getStarTreeDocumentBytes(StarTreeDocument starTreeDocument) throws IOException {
+        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+
+        for (Long dimension : starTreeDocument.dimensions) {
+            if (dimension == null) {
+                dimension = Long.MAX_VALUE;
+            }
+            byteStream.write(ByteBuffer.allocate(Long.BYTES).putLong(dimension).array());
+        }
+
+        for (int i = 0; i < starTreeDocument.metrics.length; i++) {
+            switch (metricAggregatorInfos.get(i).getValueAggregators().getAggregatedValueType()) {
+                case LONG:
+                    if (starTreeDocument.metrics[i] != null) {
+                        byteStream.write(ByteBuffer.allocate(Long.BYTES).putLong((Long) starTreeDocument.metrics[i]).array());
+                    }
+                    break;
+                case DOUBLE:
+                    if (starTreeDocument.metrics[i] != null) {
+                        if (starTreeDocument.metrics[i] instanceof Double) {
+                            long val = NumericUtils.doubleToSortableLong((Double) starTreeDocument.metrics[i]);
+                            byteStream.write(ByteBuffer.allocate(Long.BYTES).putLong(val).array());
+                        } else {
+                            byteStream.write(ByteBuffer.allocate(Long.BYTES).putLong((Long) starTreeDocument.metrics[i]).array());
+                        }
+                    }
+                    break;
+                case INT:
+                case FLOAT:
+                default:
+                    throw new IllegalStateException();
+            }
+        }
+
+        return byteStream.toByteArray();
     }
 
     private StarTreeDocument readSegmentStarTreeDocument(RandomAccessInput input, long offset) throws IOException {

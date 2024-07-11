@@ -19,8 +19,8 @@ import java.util.Arrays;
  */
 @ExperimentalApi
 public class StarTreeDocument {
-    public final Long[] dimensions;
-    public final Object[] metrics;
+    public Long[] dimensions;
+    public Object[] metrics;
 
     public StarTreeDocument(Long[] dimensions, Object[] metrics) {
         this.dimensions = dimensions;

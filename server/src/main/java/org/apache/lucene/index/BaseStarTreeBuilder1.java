@@ -7,6 +7,18 @@
  */
 package org.apache.lucene.index;
 
+import java.io.IOException;
+import java.time.temporal.ChronoField;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
@@ -34,21 +46,9 @@ import org.opensearch.index.mapper.Mapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.NumberFieldMapper;
 
-import java.io.IOException;
-import java.time.temporal.ChronoField;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-
 import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeHelper.fullFieldNameForStarTreeDimensionsDocValues;
 import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeHelper.fullFieldNameForStarTreeMetricsDocValues;
+
 
 /**
  * Builder for star tree. Defines the algorithm to construct star-tree
@@ -56,8 +56,8 @@ import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTr
  *
  * @opensearch.experimental
  */
-public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountable {
-    private static final Logger logger = LogManager.getLogger(BaseStarTreeBuilder.class);
+public abstract class BaseStarTreeBuilder1 implements StarTreeBuilder, Accountable {
+    private static final Logger logger = LogManager.getLogger(BaseStarTreeBuilder1.class);
     /**
      * Default value for star node
      */
@@ -85,7 +85,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountabl
      * @param writeState    stores the segment write writeState
      * @param mapperService helps to find the original type of the field
      */
-    protected BaseStarTreeBuilder(
+    protected BaseStarTreeBuilder1(
         IndexOutput metaOut,
         IndexOutput dataOut,
         StarTreeField starTreeField,
@@ -252,7 +252,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountabl
             numStarTreeDocumentUnderStarNode
         );
 
-        createAggregatedDocs(rootNode);
+        StarTreeDocument doc = new StarTreeDocument(new Long[starTreeField.getDimensionsOrder().size()], new Object[numMetrics]);
+
+        createAggregatedDocs(rootNode, doc);
         int numAggregatedStarTreeDocument = numStarTreeDocs - numStarTreeDocument - numStarTreeDocumentUnderStarNode;
         logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
         logger.info("RAM USED : {}", this.ramBytesUsed());
@@ -338,9 +340,10 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountabl
             metricFieldInfoList[i] = fi;
             metricWriters.add(new SortedNumericDocValuesWriter(fi, Counter.newCounter()));
         }
+        StarTreeDocument starTreeDocument = new StarTreeDocument(new Long[numDimensions], new Object[numMetrics]);
 
         for (int docId = 0; docId < numStarTreeDocs; docId++) {
-            StarTreeDocument starTreeDocument = getStarTreeDocumentForCreatingDocValues(docId);
+            getStarTreeDocumentForCreatingDocValues(docId, starTreeDocument);
             for (int i = 0; i < starTreeDocument.dimensions.length; i++) {
                 Long val = starTreeDocument.dimensions[i];
                 if (val != null) {
@@ -425,16 +428,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountabl
      */
     public abstract void appendStarTreeDocument(StarTreeDocument starTreeDocument) throws IOException;
 
-    /**
-     * Returns the document of the given document id in the star-tree.
-     *
-     * @param docId document id
-     * @return star tree document
-     * @throws IOException if an I/O error occurs while fetching the star-tree document
-     */
-    public abstract StarTreeDocument getStarTreeDocument(int docId) throws IOException;
 
-    public abstract StarTreeDocument getStarTreeDocumentForCreatingDocValues(int docId) throws IOException;
+    public abstract void getStarTreeDocument(int docId, StarTreeDocument starTreeDocument) throws IOException;
+    public abstract void getStarTreeDocumentForCreatingDocValues(int docId, StarTreeDocument starTreeDocument) throws IOException;
 
     /**
      * Retrieves the list of star-tree documents in the star-tree.
@@ -718,7 +714,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountabl
      */
     public StarTreeDocument reduceStarTreeDocuments(StarTreeDocument aggregatedDocument, StarTreeDocument starTreeDocument) {
         // aggregate the documents
-        if (aggregatedDocument == null) {
+        if (aggregatedDocument == null || aggregatedDocument.dimensions == null) {
             Long[] dimensions = Arrays.copyOf(starTreeDocument.dimensions, numDimensions);
             Object[] metrics = new Object[numMetrics];
             for (int i = 0; i < numMetrics; i++) {
@@ -900,19 +896,21 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountabl
      * @return aggregated star-tree documents
      * @throws IOException throws an exception upon failing to create new aggregated docs based on star tree
      */
-    private StarTreeDocument createAggregatedDocs(StarTreeBuilderUtils.TreeNode node) throws IOException {
+    private StarTreeDocument createAggregatedDocs(StarTreeBuilderUtils.TreeNode node, StarTreeDocument doc) throws IOException {
         StarTreeDocument aggregatedStarTreeDocument = null;
         if (node.children == null) {
             // For leaf node
 
             if (node.startDocId == node.endDocId - 1) {
                 // If it has only one document, use it as the aggregated document
-                aggregatedStarTreeDocument = getStarTreeDocument(node.startDocId);
+                aggregatedStarTreeDocument = new StarTreeDocument(new Long[numDimensions], new Object[numMetrics]);
+                getStarTreeDocument(node.startDocId, aggregatedStarTreeDocument);
                 node.aggregatedDocId = node.startDocId;
             } else {
                 // If it has multiple documents, aggregate all of them
                 for (int i = node.startDocId; i < node.endDocId; i++) {
-                    aggregatedStarTreeDocument = reduceStarTreeDocuments(aggregatedStarTreeDocument, getStarTreeDocument(i));
+                    getStarTreeDocument(i, doc);
+                    aggregatedStarTreeDocument = reduceStarTreeDocuments(aggregatedStarTreeDocument, doc);
                 }
                 if (null == aggregatedStarTreeDocument) {
                     throw new IllegalStateException("aggregated star-tree document is null after reducing the documents");
@@ -929,16 +927,16 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder, Accountabl
                 // If it has star child, use the star child aggregated document directly
                 for (StarTreeBuilderUtils.TreeNode child : node.children.values()) {
                     if (child.isStarNode) {
-                        aggregatedStarTreeDocument = createAggregatedDocs(child);
+                        aggregatedStarTreeDocument = createAggregatedDocs(child, doc);
                         node.aggregatedDocId = child.aggregatedDocId;
                     } else {
-                        createAggregatedDocs(child);
+                        createAggregatedDocs(child, doc);
                     }
                 }
             } else {
                 // If no star child exists, aggregate all aggregated documents from non-star children
                 for (StarTreeBuilderUtils.TreeNode child : node.children.values()) {
-                    aggregatedStarTreeDocument = reduceStarTreeDocuments(aggregatedStarTreeDocument, createAggregatedDocs(child));
+                    aggregatedStarTreeDocument = reduceStarTreeDocuments(aggregatedStarTreeDocument, createAggregatedDocs(child, doc));
                 }
                 if (null == aggregatedStarTreeDocument) {
                     throw new IllegalStateException("aggregated star-tree document is null after reducing the documents");

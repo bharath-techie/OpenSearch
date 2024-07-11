@@ -41,10 +41,7 @@ public class OffHeapStarTree implements StarTree {
         }
         numNodes = data.readInt(); // num nodes
 
-        RandomAccessInput in = data.randomAccessSlice(
-            data.getFilePointer(),
-            starTreeMetadata.getDataLength() - data.getFilePointer()
-        );
+        RandomAccessInput in = data.randomAccessSlice(data.getFilePointer(), starTreeMetadata.getDataLength() - data.getFilePointer());
         root = new OffHeapStarTreeNode(in, 0);
     }
 
