@@ -8,7 +8,6 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
-import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
 import org.apache.lucene.index.DocValuesType;
@@ -54,6 +53,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -227,7 +227,7 @@ public class OffHeapStarTreeBuilderTests extends OpenSearchTestCase {
         Map<String, DocIdSetIterator> f2metricDocIdSetIterators = Map.of("field2", f2m1sndv);
         StarTreeValues starTreeValues2 = new StarTreeValues(sf, null, f2dimDocIdSetIterators, f2metricDocIdSetIterators);
 
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null ,null, sf, writeState, mapperService);
+        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null, null, sf, writeState, mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Sum [ metric] ]
@@ -333,7 +333,7 @@ public class OffHeapStarTreeBuilderTests extends OpenSearchTestCase {
         Map<String, DocIdSetIterator> f2metricDocIdSetIterators = Map.of("field2", f2m1sndv);
         StarTreeValues starTreeValues2 = new StarTreeValues(sf, null, f2dimDocIdSetIterators, f2metricDocIdSetIterators);
 
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null ,null, sf, writeState, mapperService);
+        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null, null, sf, writeState, mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
 
         while (starTreeDocumentIterator.hasNext()) {
@@ -431,7 +431,7 @@ public class OffHeapStarTreeBuilderTests extends OpenSearchTestCase {
         Map<String, DocIdSetIterator> f2metricDocIdSetIterators = Map.of("field2", f2m1sndv);
         StarTreeValues starTreeValues2 = new StarTreeValues(sf, null, f2dimDocIdSetIterators, f2metricDocIdSetIterators);
 
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null ,null, sf, writeState, mapperService);
+        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null, null, sf, writeState, mapperService);
         builder.build(List.of(starTreeValues, starTreeValues2), new AtomicInteger(0), null);
 
         builder.close();
@@ -521,7 +521,7 @@ public class OffHeapStarTreeBuilderTests extends OpenSearchTestCase {
         Map<String, DocIdSetIterator> f2metricDocIdSetIterators = Map.of("field2", f2m1sndv);
         StarTreeValues starTreeValues2 = new StarTreeValues(sf, null, f2dimDocIdSetIterators, f2metricDocIdSetIterators);
 
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null ,null, sf, writeState, mapperService);
+        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null, null, sf, writeState, mapperService);
         builder.build(List.of(starTreeValues, starTreeValues2), new AtomicInteger(0), null);
 
         builder.close();
@@ -610,7 +610,7 @@ public class OffHeapStarTreeBuilderTests extends OpenSearchTestCase {
         );
         Map<String, DocIdSetIterator> f2metricDocIdSetIterators = Map.of("field2", f2m1sndv);
         StarTreeValues starTreeValues2 = new StarTreeValues(sf, null, f2dimDocIdSetIterators, f2metricDocIdSetIterators);
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null ,null, sf, writeState, mapperService);
+        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(null, null, sf, writeState, mapperService);
         builder.build(List.of(starTreeValues, starTreeValues2), new AtomicInteger(0), null);
 
         builder.close();

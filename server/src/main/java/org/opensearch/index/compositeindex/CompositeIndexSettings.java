@@ -23,7 +23,7 @@ import org.opensearch.common.util.FeatureFlags;
 public class CompositeIndexSettings {
     public static final Setting<Boolean> STAR_TREE_INDEX_ENABLED_SETTING = Setting.boolSetting(
         "indices.composite_index.star_tree.enabled",
-        false,
+        true,
         value -> {
             if (FeatureFlags.isEnabled(FeatureFlags.STAR_TREE_INDEX_SETTING) == false && value == true) {
                 throw new IllegalArgumentException(

@@ -55,28 +55,28 @@ import static org.apache.lucene.util.RamUsageEstimator.shallowSizeOf;
  * and swap doc ids in array during sorting based on the actual segment document contents in the file )
  *
  * Star tree documents are stored in multiple files as the algo is:
- * 1. Initially create a bunch of aggregated documents based on segment documents
- * 2. Sometimes, for example in generateStarTreeDocumentsForStarNode, we need to read the newly aggregated documents
- * and create aggregated star documents and append
+ * 1. Initially create aggregated documents based on segment documents and save to star tree documents file
+ * 2. During creation of star (*) documents we need to read the already aggregated documents to aggregate
  * 3. Repeat until we have all combinations
  *
  * So for cases , where we need to read the previously written star documents in star-tree.documents file , we close the
  * star.document file and read the values and write the derived values on a new star-tree.documents file.
  * This is because:
  *
- * We cannot keep the 'IndexOutput' open and create a 'IndexInput' to read the content as some of the recent content
- * will not be visible in the reader. So we need to 'close' the 'IndexOutput' before we create a 'IndexInput'
+ * We cannot keep the 'IndexOutput' open and use 'IndexInput' to read the content as some of the recent content
+ * will not be visible in the reader.
+ * So we need to 'close' the 'IndexOutput' before we create a 'IndexInput'.
  * And we cannot reopen 'IndexOutput' - so we create a new file for new appends.
  *
  *
- * We keep these set of files and maintain a tracker array to track the start doc id for each file.
+ * We keep these set of files and maintain a tracker array to track the offsets of docs in each file.
  *
  * Once the files reach the threshold we merge the files.
  *
  * @opensearch.experimental
  */
 @ExperimentalApi
-public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
+public class OffHeapFinalBuilder extends BaseStarTreeBuilder {
     private static final Logger logger = LogManager.getLogger(OffHeapStarTreeBuilder.class);
     private static final String SEGMENT_DOC_FILE_NAME = "segment.documents";
     private static final String STAR_TREE_DOC_FILE_NAME = "star-tree.documents";
@@ -106,7 +106,7 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
      * @param state         stores the segment write state
      * @param mapperService helps to find the original type of the field
      */
-    protected OffHeapStarTreeBuilder(
+    protected OffHeapFinalBuilder(
         IndexOutput metaOut,
         IndexOutput dataOut,
         StarTreeField starTreeField,
@@ -202,7 +202,6 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
                         break;
                     }
                     i = 0;
-                    // Object[] metrics = new Object[metricReaders.size()];
                     for (SequentialDocValuesIterator metricDocValuesIterator : metricReaders) {
                         metricDocValuesIterator.nextDoc(currentDocId);
                         metrics[i] = metricDocValuesIterator.value(currentDocId);

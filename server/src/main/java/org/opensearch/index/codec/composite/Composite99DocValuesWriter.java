@@ -8,7 +8,6 @@
 
 package org.opensearch.index.codec.composite;
 
-import java.util.ArrayList;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.CodecUtil;
@@ -29,7 +28,7 @@ import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.index.mapper.MapperService;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -67,9 +66,13 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
         this.mapperService = mapperService;
         this.compositeMappedFieldTypes = mapperService.getCompositeFieldTypes();
         try {
-            this.composite99DocValuesConsumer = new Composite99DocValuesConsumer(segmentWriteState, Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
-                Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION, Composite99DocValuesFormat.META_DOC_VALUES_CODEC,
-                Composite99DocValuesFormat.META_DOC_VALUES_EXTENSION);
+            this.composite99DocValuesConsumer = new Composite99DocValuesConsumer(
+                segmentWriteState,
+                Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
+                Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
+                Composite99DocValuesFormat.META_DOC_VALUES_CODEC,
+                Composite99DocValuesFormat.META_DOC_VALUES_EXTENSION
+            );
 
             String dataFileName = IndexFileNames.segmentFileName(
                 segmentWriteState.segmentInfo.name,
@@ -142,7 +145,7 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
 
     @Override
     public void close() throws IOException {
-        if(delegate != null) {
+        if (delegate != null) {
             IOUtils.closeWhileHandlingException(delegate);
         }
         boolean success = false;
@@ -163,7 +166,7 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
             }
             metaOut = dataOut = null;
         }
-        if(composite99DocValuesConsumer != null) {
+        if (composite99DocValuesConsumer != null) {
             composite99DocValuesConsumer.close();
         }
     }

@@ -88,7 +88,6 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
         boolean success = false;
         try {
 
-
             CodecUtil.checkIndexHeader(
                 dataIn,
                 Composite99DocValuesFormat.DATA_CODEC_NAME,
@@ -97,7 +96,6 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                 readState.segmentInfo.getId(),
                 readState.segmentSuffix
             );
-
 
             Throwable priorE = null;
             try {
@@ -114,7 +112,6 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                     long magicMarker = metaIn.readLong();
 
                     if (magicMarker == -1) {
-                        logger.info("EOF reached for composite index metadata");
                         break;
                     } else if (magicMarker < 0) {
                         throw new CorruptIndexException("Unknown token encountered: " + magicMarker, metaIn);
@@ -196,7 +193,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
     @Override
     public void checkIntegrity() throws IOException {
         delegate.checkIntegrity();
-        //CodecUtil.checksumEntireFile(metaIn);
+        // CodecUtil.checksumEntireFile(metaIn);
         CodecUtil.checksumEntireFile(dataIn);
     }
 
@@ -204,7 +201,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
     public void close() throws IOException {
         delegate.close();
         starTreeMap.clear();
-        for(DocValuesProducer p : compositeDocValuesProducerMap.values()) {
+        for (DocValuesProducer p : compositeDocValuesProducerMap.values()) {
             p.close();
         }
         compositeIndexMetadataMap.clear();

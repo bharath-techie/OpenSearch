@@ -7,13 +7,12 @@
  */
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
-import java.util.Collection;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.index.BaseStarTreeBuilder;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.util.Accountable;
 import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.util.Accountable;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.Dimension;
@@ -25,6 +24,7 @@ import org.opensearch.index.mapper.MapperService;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -62,7 +62,7 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
     @Override
     public void appendStarTreeDocument(StarTreeDocument starTreeDocument) throws IOException {
         starTreeDocuments.add(starTreeDocument);
-        //System.out.println(starTreeDocument);
+        // System.out.println(starTreeDocument);
     }
 
     @Override
@@ -118,7 +118,7 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
                     int doc = dimensionDocValueIterator.nextDoc(currentDocId);
                     Long val = dimensionDocValueIterator.value(currentDocId);
                     // TODO : figure out how to identify a row with star tree docs here
-                    endOfDoc = (doc == DocIdSetIterator.NO_MORE_DOCS);
+                    endOfDoc = (doc == DocIdSetIterator.NO_MORE_DOCS || val == null);
                     if (endOfDoc) {
                         break;
                     }
