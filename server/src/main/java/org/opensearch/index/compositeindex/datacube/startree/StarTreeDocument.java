@@ -10,8 +10,6 @@ package org.opensearch.index.compositeindex.datacube.startree;
 
 import org.opensearch.common.annotation.ExperimentalApi;
 
-import java.util.Arrays;
-
 /**
  * Star tree document
  *
@@ -21,14 +19,11 @@ import java.util.Arrays;
 public class StarTreeDocument {
     public Long[] dimensions;
     public Object[] metrics;
+    public double[] doubleMetrics;
+    public long[] longMetrics;
 
     public StarTreeDocument(Long[] dimensions, Object[] metrics) {
         this.dimensions = dimensions;
         this.metrics = metrics;
-    }
-
-    @Override
-    public String toString() {
-        return Arrays.toString(dimensions) + " | " + Arrays.toString(metrics);
     }
 }

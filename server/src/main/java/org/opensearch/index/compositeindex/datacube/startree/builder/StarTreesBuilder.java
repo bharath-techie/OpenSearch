@@ -136,9 +136,9 @@ public class StarTreesBuilder implements Closeable {
     ) throws IOException {
         switch (starTreeField.getStarTreeConfig().getBuildMode()) {
             case ON_HEAP:
-                return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
+                // return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
             case OFF_HEAP:
-                return new OffHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
+                return new OffHeapIntroSortBuilder(metaOut, dataOut, starTreeField, state, mapperService);
             default:
                 throw new IllegalArgumentException(
                     String.format(

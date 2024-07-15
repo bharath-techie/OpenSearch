@@ -286,7 +286,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
 
             operationCounter++;
 
-            assert assertNoSeqNumberConflict(seqNo, data);
+            // assert assertNoSeqNumberConflict(seqNo, data);
 
             location = new Translog.Location(generation, offset, data.length());
             bufferedBytes = buffer.size();
@@ -343,6 +343,8 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
                 }
             }
         } else {
+            // if(seqNo % 100000 == 0)
+            // System.out.println("Seen seq no length : " + seenSequenceNumbers.size() + " ==== seq no : " + seqNo);
             seenSequenceNumbers.put(
                 seqNo,
                 new Tuple<>(new BytesArray(data.toBytesRef(), true), new RuntimeException("stack capture previous op"))

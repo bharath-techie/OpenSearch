@@ -12,6 +12,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
+import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo1;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 
 import java.io.IOException;
@@ -91,6 +92,27 @@ public class StarTreeBuilderUtils {
         long dataFileLength
     ) throws IOException {
         StarTreeMetaSerializer.serializeStarTreeMetadata(
+            metaOut,
+            CompositeMappedFieldType.CompositeFieldType.STAR_TREE,
+            starTreeField,
+            writeState,
+            metricAggregatorInfos,
+            segmentAggregatedCount,
+            dataFilePointer,
+            dataFileLength
+        );
+    }
+
+    public static void serializeStarTreeMetadata1(
+        IndexOutput metaOut,
+        StarTreeField starTreeField,
+        SegmentWriteState writeState,
+        List<MetricAggregatorInfo1> metricAggregatorInfos,
+        Integer segmentAggregatedCount,
+        long dataFilePointer,
+        long dataFileLength
+    ) throws IOException {
+        StarTreeMetaSerializer.serializeStarTreeMetadata1(
             metaOut,
             CompositeMappedFieldType.CompositeFieldType.STAR_TREE,
             starTreeField,

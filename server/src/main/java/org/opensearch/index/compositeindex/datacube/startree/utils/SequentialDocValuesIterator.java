@@ -31,7 +31,7 @@ public class SequentialDocValuesIterator {
     /**
      * The value associated with the latest document.
      */
-    private Long docValue;
+    private long docValue = -1;
 
     /**
      * The id of the latest document.
@@ -80,7 +80,7 @@ public class SequentialDocValuesIterator {
      *
      * @return the value associated with the latest document
      */
-    public Long getDocValue() {
+    public long getDocValue() {
         return docValue;
     }
 
@@ -90,6 +90,10 @@ public class SequentialDocValuesIterator {
      * @param docValue the value to be associated with the latest document
      */
     public void setDocValue(Long docValue) {
+        // this.docValue = docValue;
+    }
+
+    public void setDocValue(long docValue) {
         this.docValue = docValue;
     }
 
@@ -129,7 +133,7 @@ public class SequentialDocValuesIterator {
         return docId;
     }
 
-    public Long value(int currentDocId) throws IOException {
+    public long value(int currentDocId) throws IOException {
         if (this.getDocIdSetIterator() instanceof SortedNumericDocValues) {
             SortedNumericDocValues sortedNumericDocValues = (SortedNumericDocValues) this.getDocIdSetIterator();
             if (currentDocId < 0) {
@@ -140,18 +144,18 @@ public class SequentialDocValuesIterator {
             }
 
             if (docId == DocIdSetIterator.NO_MORE_DOCS) {
-                return null;
+                return -1;
             }
 
-            if (docValue == null) {
+            if (docValue == -1) {
                 setDocValue(sortedNumericDocValues.nextValue());
             }
             if (docId == currentDocId) {
-                Long nextValue = docValue;
-                docValue = null;
+                long nextValue = docValue;
+                docValue = -1;
                 return nextValue;
             } else {
-                return null;
+                return -1;
             }
         } else {
             throw new IllegalStateException("Unsupported Iterator requested for SequentialDocValuesIterator");

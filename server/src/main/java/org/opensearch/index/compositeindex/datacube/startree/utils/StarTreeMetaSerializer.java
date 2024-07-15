@@ -15,6 +15,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
+import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo1;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 
 import java.io.IOException;
@@ -89,6 +90,47 @@ public class StarTreeMetaSerializer {
         writeMeta(metaOut, writeState, metricAggregatorInfos, starTreeField, segmentAggregatedCount, dataFilePointer, dataFileLength);
     }
 
+    public static void serializeStarTreeMetadata1(
+        IndexOutput metaOut,
+        CompositeMappedFieldType.CompositeFieldType compositeFieldType,
+        StarTreeField starTreeField,
+        SegmentWriteState writeState,
+        List<MetricAggregatorInfo1> metricAggregatorInfos,
+        Integer segmentAggregatedCount,
+        long dataFilePointer,
+        long dataFileLength
+    ) throws IOException {
+        long totalSizeInBytes = 0;
+
+        // header size
+        totalSizeInBytes += computeHeaderByteSize(compositeFieldType, starTreeField.getName());
+        // number of dimensions
+        totalSizeInBytes += Integer.BYTES;
+        // dimension field numbers
+        totalSizeInBytes += (long) starTreeField.getDimensionsOrder().size() * Integer.BYTES;
+        // metric count
+        totalSizeInBytes += Integer.BYTES;
+        // metric - metric stat pair
+        totalSizeInBytes += computeMetricEntriesSizeInBytes1(metricAggregatorInfos);
+        // segment aggregated document count
+        totalSizeInBytes += Integer.BYTES;
+        // max leaf docs
+        totalSizeInBytes += Integer.BYTES;
+        // skip star node creation dimensions count
+        totalSizeInBytes += Integer.BYTES;
+        // skip star node creation dimensions field numbers
+        totalSizeInBytes += (long) starTreeField.getStarTreeConfig().getSkipStarNodeCreationInDims().size() * Integer.BYTES;
+        // data start file pointer
+        totalSizeInBytes += Long.BYTES;
+        // data length
+        totalSizeInBytes += Long.BYTES;
+
+        logger.info("Star tree size in bytes : {}", totalSizeInBytes);
+
+        writeMetaHeader(metaOut, compositeFieldType, starTreeField.getName());
+        writeMeta1(metaOut, writeState, metricAggregatorInfos, starTreeField, segmentAggregatedCount, dataFilePointer, dataFileLength);
+    }
+
     /**
      * Computes the byte size required to store the star-tree metric entry.
      *
@@ -100,6 +142,18 @@ public class StarTreeMetaSerializer {
         long totalMetricEntriesSize = 0;
 
         for (MetricAggregatorInfo metricAggregatorInfo : metricAggregatorInfos) {
+            totalMetricEntriesSize += metricAggregatorInfo.getField().getBytes(UTF_8).length;
+            totalMetricEntriesSize += metricAggregatorInfo.getMetricStat().getTypeName().getBytes(UTF_8).length;
+        }
+
+        return totalMetricEntriesSize;
+    }
+
+    private static long computeMetricEntriesSizeInBytes1(List<MetricAggregatorInfo1> metricAggregatorInfos) {
+
+        long totalMetricEntriesSize = 0;
+
+        for (MetricAggregatorInfo1 metricAggregatorInfo : metricAggregatorInfos) {
             totalMetricEntriesSize += metricAggregatorInfo.getField().getBytes(UTF_8).length;
             totalMetricEntriesSize += metricAggregatorInfo.getMetricStat().getTypeName().getBytes(UTF_8).length;
         }
@@ -189,6 +243,62 @@ public class StarTreeMetaSerializer {
 
         // metric - metric stat pair
         for (MetricAggregatorInfo metricAggregatorInfo : metricAggregatorInfos) {
+            String metricName = metricAggregatorInfo.getField();
+            String metricStatName = metricAggregatorInfo.getMetricStat().getTypeName();
+            metaOut.writeString(metricName);
+            metaOut.writeString(metricStatName);
+        }
+
+        // segment aggregated document count
+        metaOut.writeInt(segmentAggregatedDocCount);
+
+        // max leaf docs
+        metaOut.writeInt(starTreeField.getStarTreeConfig().maxLeafDocs());
+
+        // number of skip star node creation dimensions
+        metaOut.writeInt(starTreeField.getStarTreeConfig().getSkipStarNodeCreationInDims().size());
+
+        // skip star node creations
+        for (String dimension : starTreeField.getStarTreeConfig().getSkipStarNodeCreationInDims()) {
+            int dimensionFieldNumber = writeState.fieldInfos.fieldInfo(dimension).getFieldNumber();
+            metaOut.writeInt(dimensionFieldNumber);
+        }
+
+        // star tree build-mode
+        metaOut.writeString(starTreeField.getStarTreeConfig().getBuildMode().getTypeName());
+
+        // star-tree data file pointer
+        metaOut.writeLong(dataFilePointer);
+
+        // star-tree data file length
+        metaOut.writeLong(dataFileLength);
+
+    }
+
+    private static void writeMeta1(
+        IndexOutput metaOut,
+        SegmentWriteState writeState,
+        List<MetricAggregatorInfo1> metricAggregatorInfos,
+        StarTreeField starTreeField,
+        Integer segmentAggregatedDocCount,
+        long dataFilePointer,
+        long dataFileLength
+    ) throws IOException {
+
+        // number of dimensions
+        metaOut.writeInt(starTreeField.getDimensionsOrder().size());
+
+        // dimensions
+        for (Dimension dimension : starTreeField.getDimensionsOrder()) {
+            int dimensionFieldNumber = writeState.fieldInfos.fieldInfo(dimension.getField()).getFieldNumber();
+            metaOut.writeInt(dimensionFieldNumber);
+        }
+
+        // number of metrics
+        metaOut.writeInt(metricAggregatorInfos.size());
+
+        // metric - metric stat pair
+        for (MetricAggregatorInfo1 metricAggregatorInfo : metricAggregatorInfos) {
             String metricName = metricAggregatorInfo.getField();
             String metricStatName = metricAggregatorInfo.getMetricStat().getTypeName();
             metaOut.writeString(metricName);
