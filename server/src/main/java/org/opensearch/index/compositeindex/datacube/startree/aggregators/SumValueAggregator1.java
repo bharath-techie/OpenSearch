@@ -44,10 +44,31 @@ public class SumValueAggregator1 implements ValueAggregator1 {
     }
 
     @Override
+    public double getInitialAggregatedValueForSegmentDocValue(double segmentDocValue,
+        StarTreeNumericType starTreeNumericType) {
+        kahanSummation.reset(0, 0);
+        kahanSummation.add(segmentDocValue);
+        compensation = kahanSummation.delta();
+        sum = kahanSummation.value();
+        return kahanSummation.value();
+    }
+
+    @Override
     public double mergeAggregatedValueAndSegmentValue(double value, long segmentDocValue, StarTreeNumericType starTreeNumericType) {
         assert kahanSummation.value() == value;
         kahanSummation.reset(sum, compensation);
         kahanSummation.add(starTreeNumericType.getDoubleValue(segmentDocValue));
+        compensation = kahanSummation.delta();
+        sum = kahanSummation.value();
+        return kahanSummation.value();
+    }
+
+    @Override
+    public double mergeAggregatedValueAndSegmentValue(double value, double segmentDocValue,
+        StarTreeNumericType starTreeNumericType) {
+        assert kahanSummation.value() == value;
+        kahanSummation.reset(sum, compensation);
+        kahanSummation.add(segmentDocValue);
         compensation = kahanSummation.delta();
         sum = kahanSummation.value();
         return kahanSummation.value();

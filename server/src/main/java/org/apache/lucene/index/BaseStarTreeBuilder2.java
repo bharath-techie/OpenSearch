@@ -118,7 +118,7 @@ public abstract class BaseStarTreeBuilder2 implements StarTreeBuilder, Accountab
 
         this.metricAggregatorInfos = generateMetricAggregatorInfos(mapperService);
         this.numMetrics = metricAggregatorInfos.size();
-        this.maxLeafDocuments = starTreeFieldSpec.maxLeafDocs();
+        this.maxLeafDocuments = 1;//starTreeFieldSpec.maxLeafDocs();
     }
 
     /**
@@ -246,16 +246,16 @@ public abstract class BaseStarTreeBuilder2 implements StarTreeBuilder, Accountab
 
         constructStarTree(rootNode, 0, numStarTreeDocs);
         int numStarTreeDocumentUnderStarNode = numStarTreeDocs - numStarTreeDocument;
-        logger.info(
-            "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
-            numStarTreeNodes,
-            numStarTreeDocumentUnderStarNode
-        );
+//        logger.info(
+//            "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
+//            numStarTreeNodes,
+//            numStarTreeDocumentUnderStarNode
+//        );
 
         createAggregatedDocs(rootNode);
         int numAggregatedStarTreeDocument = numStarTreeDocs - numStarTreeDocument - numStarTreeDocumentUnderStarNode;
-        logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
-        logger.info("RAM USED : {}", this.ramBytesUsed());
+        //logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
+        //logger.info("RAM USED : {}", this.ramBytesUsed());
 
         // Create doc values indices in disk
         createSortedDocValuesIndices(starTreeDocValuesConsumer, fieldNumberAcrossStarTrees);
@@ -392,7 +392,7 @@ public abstract class BaseStarTreeBuilder2 implements StarTreeBuilder, Accountab
         long roundedDate = 0;
         long ratio = 0;
         switch (fieldName) {
-            case "@timestamp1":
+            case "@timestamp":
                 ratio = ChronoField.MINUTE_OF_HOUR.getBaseUnit().getDuration().toMillis();
                 roundedDate = DateUtils.roundFloor(val, ratio);
                 return roundedDate;
@@ -538,7 +538,7 @@ public abstract class BaseStarTreeBuilder2 implements StarTreeBuilder, Accountab
                     throw new IllegalStateException("unable to read the dimension values from the segment", e);
                 }
                 dimensions[i] = dimensionReaders[i].value(currentDocId);
-                // dimensions[i] = getTimeStampVal(starTreeField.getDimensionsOrder().get(i).getField(), dimensions[i]);
+                dimensions[i] = getTimeStampVal(starTreeField.getDimensionsOrder().get(i).getField(), dimensions[i]);
             } else {
                 throw new IllegalStateException("dimension readers are empty");
             }
@@ -606,16 +606,32 @@ public abstract class BaseStarTreeBuilder2 implements StarTreeBuilder, Accountab
         StarTreeDocumentModified aggregatedSegmentDocument,
         StarTreeDocumentModified segmentDocument
     ) {
+        return reduceSegmentStarTreeDocuments(aggregatedSegmentDocument, segmentDocument, false);
+    }
+
+    protected StarTreeDocumentModified reduceSegmentStarTreeDocuments(
+        StarTreeDocumentModified aggregatedSegmentDocument,
+        StarTreeDocumentModified segmentDocument,
+        boolean isMerge
+    ) {
         if (aggregatedSegmentDocument == null) {
             double[] metrics = new double[numMetrics];
             for (int i = 0; i < numMetrics; i++) {
                 try {
                     ValueAggregator1 metricValueAggregator = metricAggregatorInfos.get(i).getValueAggregators();
                     StarTreeNumericType starTreeNumericType = metricAggregatorInfos.get(i).getAggregatedValueType();
-                    metrics[i] = metricValueAggregator.getInitialAggregatedValueForSegmentDocValue(
-                        segmentDocument.longMetrics[i],
-                        starTreeNumericType
-                    );
+                    if(isMerge) {
+                        metrics[i] = metricValueAggregator.getInitialAggregatedValueForSegmentDocValue(
+                            segmentDocument.doubleMetrics[i],
+                            starTreeNumericType
+                        );
+                    } else {
+                        metrics[i] = metricValueAggregator.getInitialAggregatedValueForSegmentDocValue(
+                            segmentDocument.longMetrics[i],
+                            starTreeNumericType
+                        );
+                    }
+
                 } catch (Exception e) {
                     logger.error("Cannot parse initial segment doc value", e);
                     throw new IllegalStateException("Cannot parse initial segment doc value [" + segmentDocument.longMetrics[i] + "]");
@@ -627,53 +643,20 @@ public abstract class BaseStarTreeBuilder2 implements StarTreeBuilder, Accountab
                 try {
                     ValueAggregator1 metricValueAggregator = metricAggregatorInfos.get(i).getValueAggregators();
                     StarTreeNumericType starTreeNumericType = metricAggregatorInfos.get(i).getAggregatedValueType();
-                    aggregatedSegmentDocument.doubleMetrics[i] = metricValueAggregator.mergeAggregatedValueAndSegmentValue(
-                        aggregatedSegmentDocument.doubleMetrics[i],
-                        segmentDocument.longMetrics[i],
-                        starTreeNumericType
-                    );
-                } catch (Exception e) {
-                    logger.error("Cannot apply segment doc value for aggregation", e);
-                    throw new IllegalStateException(
-                        "Cannot apply segment doc value for aggregation [" + segmentDocument.longMetrics[i] + "]"
-                    );
-                }
-            }
-            return aggregatedSegmentDocument;
-        }
-    }
+                    if(isMerge) {
+                        aggregatedSegmentDocument.doubleMetrics[i] = metricValueAggregator.mergeAggregatedValueAndSegmentValue(
+                            aggregatedSegmentDocument.doubleMetrics[i],
+                            segmentDocument.doubleMetrics[i],
+                            starTreeNumericType
+                        );
+                    } else {
+                        aggregatedSegmentDocument.doubleMetrics[i] = metricValueAggregator.mergeAggregatedValueAndSegmentValue(
+                            aggregatedSegmentDocument.doubleMetrics[i],
+                            segmentDocument.longMetrics[i],
+                            starTreeNumericType
+                        );
+                    }
 
-    protected StarTreeDocumentModified reduceSegmentStarTreeDocuments(
-        StarTreeDocumentModified aggregatedSegmentDocument,
-        StarTreeDocumentModified segmentDocument,
-        boolean flag
-    ) {
-        if (flag) {
-            for (int i = 0; i < numMetrics; i++) {
-                try {
-                    ValueAggregator1 metricValueAggregator = metricAggregatorInfos.get(i).getValueAggregators();
-                    StarTreeNumericType starTreeNumericType = metricAggregatorInfos.get(i).getAggregatedValueType();
-                    aggregatedSegmentDocument.doubleMetrics[i] = metricValueAggregator.getInitialAggregatedValueForSegmentDocValue(
-                        segmentDocument.longMetrics[i],
-                        starTreeNumericType
-                    );
-                } catch (Exception e) {
-                    logger.error("Cannot parse initial segment doc value", e);
-                    throw new IllegalStateException("Cannot parse initial segment doc value [" + segmentDocument.longMetrics[i] + "]");
-                }
-            }
-            aggregatedSegmentDocument.dims = segmentDocument.dims;
-            return aggregatedSegmentDocument;
-        } else {
-            for (int i = 0; i < numMetrics; i++) {
-                try {
-                    ValueAggregator1 metricValueAggregator = metricAggregatorInfos.get(i).getValueAggregators();
-                    StarTreeNumericType starTreeNumericType = metricAggregatorInfos.get(i).getAggregatedValueType();
-                    aggregatedSegmentDocument.doubleMetrics[i] = metricValueAggregator.mergeAggregatedValueAndSegmentValue(
-                        aggregatedSegmentDocument.doubleMetrics[i],
-                        segmentDocument.longMetrics[i],
-                        starTreeNumericType
-                    );
                 } catch (Exception e) {
                     logger.error("Cannot apply segment doc value for aggregation", e);
                     throw new IllegalStateException(
@@ -794,6 +777,7 @@ public abstract class BaseStarTreeBuilder2 implements StarTreeBuilder, Accountab
      * @throws IOException throws an exception if we are unable to add the doc
      */
     private void appendToStarTree(StarTreeDocumentModified starTreeDocument) throws IOException {
+       // System.out.println(starTreeDocument);
         appendStarTreeDocument(starTreeDocument);
         numStarTreeDocs++;
     }

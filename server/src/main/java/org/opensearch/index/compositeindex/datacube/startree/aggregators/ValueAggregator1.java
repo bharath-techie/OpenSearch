@@ -32,10 +32,15 @@ public interface ValueAggregator1 {
      */
     double getInitialAggregatedValueForSegmentDocValue(long segmentDocValue, StarTreeNumericType starTreeNumericType);
 
+    double getInitialAggregatedValueForSegmentDocValue(double segmentDocValue, StarTreeNumericType starTreeNumericType);
+
+
     /**
      * Applies a segment doc value to the current aggregated value.
      */
     double mergeAggregatedValueAndSegmentValue(double value, long segmentDocValue, StarTreeNumericType starTreeNumericType);
+
+    double mergeAggregatedValueAndSegmentValue(double value, double segmentDocValue, StarTreeNumericType starTreeNumericType);
 
     /**
      * Applies an aggregated value to the current aggregated value.

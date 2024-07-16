@@ -35,8 +35,23 @@ public class CountValueAggregator1 implements ValueAggregator1 {
     }
 
     @Override
+    public double getInitialAggregatedValueForSegmentDocValue(double segmentDocValue,
+        StarTreeNumericType starTreeNumericType) {
+        if(segmentDocValue == 0)
+            return 1.0;
+        else
+            return segmentDocValue;
+    }
+
+    @Override
     public double mergeAggregatedValueAndSegmentValue(double value, long segmentDocValue, StarTreeNumericType starTreeNumericType) {
         return value + 1;
+    }
+
+    @Override
+    public double mergeAggregatedValueAndSegmentValue(double value, double segmentDocValue,
+        StarTreeNumericType starTreeNumericType) {
+        return value + segmentDocValue;
     }
 
     @Override
