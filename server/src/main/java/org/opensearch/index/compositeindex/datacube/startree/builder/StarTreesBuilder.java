@@ -102,9 +102,9 @@ public class StarTreesBuilder implements Closeable {
         for (Map.Entry<String, List<StarTreeValues>> entry : starTreeValuesSubsPerField.entrySet()) {
             List<StarTreeValues> starTreeValuesList = entry.getValue();
             StarTreeField starTreeField = starTreeFieldMap.get(entry.getKey());
-            StarTreeBuilder builder = getSingleTreeBuilder(starTreeField, state, mapperService);
-            builder.build(starTreeValuesList);
-            builder.close();
+            try (StarTreeBuilder builder = getSingleTreeBuilder(starTreeField, state, mapperService)) {
+                builder.build(starTreeValuesList);
+            }
         }
     }
 
@@ -117,8 +117,7 @@ public class StarTreesBuilder implements Closeable {
             case ON_HEAP:
                 return new OnHeapStarTreeBuilder(starTreeField, state, mapperService);
             case OFF_HEAP:
-                // TODO
-                // return new OffHeapSortBuilder(metaOut, dataOut, starTreeField, state, mapperService);
+                return new OffHeapStarTreeBuilder(starTreeField, state, mapperService);
             default:
                 throw new IllegalArgumentException(
                     String.format(

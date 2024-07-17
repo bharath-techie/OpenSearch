@@ -48,15 +48,6 @@ public class SequentialDocValuesIterator {
     }
 
     /**
-     * Returns the value associated with the latest document.
-     *
-     * @return the value associated with the latest document
-     */
-    public Long getDocValue() {
-        return docValue;
-    }
-
-    /**
      * Sets the value associated with the latest document.
      *
      * @param docValue the value to be associated with the latest document

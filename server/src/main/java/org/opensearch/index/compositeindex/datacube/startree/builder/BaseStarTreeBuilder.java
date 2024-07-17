@@ -66,7 +66,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
     protected final TreeNode rootNode = getNewNode();
 
-    private final StarTreeField starTreeField;
+    protected final StarTreeField starTreeField;
     private final MapperService mapperService;
     private final SegmentWriteState state;
 
