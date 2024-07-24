@@ -126,10 +126,10 @@ public class StarTreesBuilder implements Closeable {
                 continue;
             }
             StarTreeField starTreeField = starTreeValuesList.get(0).getStarTreeField();
-            StarTreeBuilder builder = getSingleTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
-            builder.build(starTreeValuesList, fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
+            try (StarTreeBuilder builder = getSingleTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService)) {
+                builder.build(starTreeValuesList, fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
             builder.close();
-            builder.close();
+            }
         }
         logger.debug(
             "Took {} ms to merge {} star-trees with star-tree fields",
@@ -152,8 +152,7 @@ public class StarTreesBuilder implements Closeable {
             case ON_HEAP:
                 return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
             case OFF_HEAP:
-                // TODO
-                // return new OffHeapStarTreeBuilder(starTreeField, state, mapperService);
+                return new OffHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
             default:
                 throw new IllegalArgumentException(
                     String.format(

@@ -199,6 +199,14 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         MapperService mapperService
     ) throws IOException;
 
+    public abstract BaseStarTreeBuilder getStarTreeBuilder(
+        IndexOutput metaOut,
+        IndexOutput dataOut,
+        StarTreeField starTreeField,
+        SegmentWriteState segmentWriteState,
+        MapperService mapperService
+    ) throws IOException;
+
     public void test_sortAndAggregateStarTreeDocuments() throws IOException {
 
         int noOfStarTreeDocuments = 5;
@@ -435,7 +443,9 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         starTreeDocuments[3] = new StarTreeDocument(new Long[] { null, null, null, null }, new Double[] { null, null, null });
         starTreeDocuments[4] = new StarTreeDocument(new Long[] { null, null, null, null }, new Double[] { null, null, null });
 
-        List<StarTreeDocument> inorderStarTreeDocuments = List.of();
+        List<StarTreeDocument> inorderStarTreeDocuments = List.of(
+            new StarTreeDocument(new Long[] { null, null, null, null }, new Object[] { 0.0, 0.0, 5L })
+        );
         Iterator<StarTreeDocument> expectedStarTreeDocumentIterator = inorderStarTreeDocuments.iterator();
 
         StarTreeDocument[] segmentStarTreeDocuments = new StarTreeDocument[noOfStarTreeDocuments];
@@ -1079,7 +1089,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         SortedNumericDocValues m1sndv = getSortedNumericMock(metricsList, metricsWithField);
         SortedNumericDocValues m2sndv = getSortedNumericMock(metricsList, metricsWithField);
 
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, getWriteState(6), mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, getWriteState(6), mapperService);
         SequentialDocValuesIterator[] dimDvs = { new SequentialDocValuesIterator(d1sndv), new SequentialDocValuesIterator(d2sndv) };
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.sortAndAggregateSegmentDocuments(
             dimDvs,
@@ -1144,7 +1154,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         SortedNumericDocValues d2sndv = getSortedNumericMock(dimList2, docsWithField2);
         SortedNumericDocValues m1sndv = getSortedNumericMock(metricsList, metricsWithField);
 
-        BaseStarTreeBuilder builder = getStarTreeBuilder(sf, getWriteState(100), mapperService);
+        builder = getStarTreeBuilder(sf, getWriteState(100), mapperService);
 
         DocValuesProducer d1vp = getDocValuesProducer(d1sndv);
         DocValuesProducer d2vp = getDocValuesProducer(d2sndv);
@@ -1233,7 +1243,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf,
             "6"
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, getWriteState(6), mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, getWriteState(6), mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Sum [ metric] ]
@@ -1283,7 +1293,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf,
             "6"
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, getWriteState(6), mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, getWriteState(6), mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Count [ metric] ]
@@ -1360,7 +1370,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf,
             "4"
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, getWriteState(4), mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, getWriteState(4), mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Count [ metric] ]
@@ -1373,6 +1383,66 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
          [8, 8] | [8]
          [null, 2] | [2]
          [null, 7] | [7]
+         */
+        int count = 0;
+        while (starTreeDocumentIterator.hasNext()) {
+            count++;
+            StarTreeDocument starTreeDocument = starTreeDocumentIterator.next();
+            if (Objects.equals(starTreeDocument.dimensions[0], 5L)) {
+                assertEquals(starTreeDocument.dimensions[0] * 2, starTreeDocument.metrics[0]);
+            } else {
+                assertEquals(starTreeDocument.dimensions[1], starTreeDocument.metrics[0]);
+            }
+        }
+        assertEquals(9, count);
+    }
+
+    public void testMergeFlowNumSegmentsDocs() throws IOException {
+        List<Long> dimList = List.of(0L, 1L, 2L, 3L, 4L, 5L, 6L, -1L, -1L, -1L);
+        List<Integer> docsWithField = List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+        List<Long> dimList2 = List.of(0L, 1L, 2L, 3L, 4L, 5L, 6L, -1L, -1L, -1L);
+        List<Integer> docsWithField2 = List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+
+        List<Long> metricsList = List.of(0L, 1L, 2L, 3L, 4L, 5L, 6L, -1L, -1L, -1L);
+        List<Integer> metricsWithField = List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+
+        List<Long> dimList3 = List.of(5L, 6L, 7L, 8L, -1L);
+        List<Integer> docsWithField3 = List.of(0, 1, 2, 3, 4);
+        List<Long> dimList4 = List.of(5L, 6L, 7L, 8L, -1L);
+        List<Integer> docsWithField4 = List.of(0, 1, 2, 3, 4);
+
+        List<Long> metricsList2 = List.of(5L, 6L, 7L, 8L, 9L);
+        List<Integer> metricsWithField2 = List.of(0, 1, 2, 3, 4);
+
+        StarTreeField sf = getStarTreeField(MetricStat.COUNT);
+        StarTreeValues starTreeValues = getStarTreeValues(
+            getSortedNumericMock(dimList, docsWithField),
+            getSortedNumericMock(dimList2, docsWithField2),
+            getSortedNumericMock(metricsList, metricsWithField),
+            sf,
+            "6"
+        );
+
+        StarTreeValues starTreeValues2 = getStarTreeValues(
+            getSortedNumericMock(dimList3, docsWithField3),
+            getSortedNumericMock(dimList4, docsWithField4),
+            getSortedNumericMock(metricsList2, metricsWithField2),
+            sf,
+            "4"
+        );
+        builder = getStarTreeBuilder(sf, getWriteState(4), mapperService);
+        Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
+        /**
+         * Asserting following dim / metrics [ dim1, dim2 / Count [ metric] ]
+         [0, 0] | [0]
+         [1, 1] | [1]
+         [2, 2] | [2]
+         [3, 3] | [3]
+         [4, 4] | [4]
+         [5, 5] | [10]
+         [6, 6] | [6]
+         [7, 7] | [7]
+         [8, 8] | [8]
          */
         int count = 0;
         while (starTreeDocumentIterator.hasNext()) {
@@ -1420,7 +1490,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf,
             "4"
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, getWriteState(4), mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, getWriteState(4), mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Count [ metric] ]
@@ -1480,7 +1550,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf,
             "4"
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, getWriteState(4), mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, getWriteState(4), mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Count [ metric] ]
@@ -1541,7 +1611,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf,
             "4"
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Count [ metric] ]
@@ -1593,7 +1663,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf,
             "0"
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, getWriteState(0), mapperService);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, getWriteState(0), mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Count [ metric] ]
@@ -1688,8 +1758,8 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             metricsWithField,
             sf
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
-        builder.build(List.of(starTreeValues, starTreeValues2), new AtomicInteger(), docValuesConsumer);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
+        builder.build(builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2)), new AtomicInteger(), docValuesConsumer);
         List<StarTreeDocument> starTreeDocuments = builder.getStarTreeDocuments();
         assertEquals(401, starTreeDocuments.size());
         int count = 0;
@@ -1798,8 +1868,8 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             sf
         );
 
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
-        builder.build(List.of(starTreeValues, starTreeValues2), new AtomicInteger(), docValuesConsumer);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
+        builder.build(builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2)), new AtomicInteger(), docValuesConsumer);
         List<StarTreeDocument> starTreeDocuments = builder.getStarTreeDocuments();
         /**
          635 docs get generated
@@ -1916,8 +1986,8 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             metricsWithField,
             sf
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
-        builder.build(List.of(starTreeValues, starTreeValues2), new AtomicInteger(), docValuesConsumer);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
+        builder.build(builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2)), new AtomicInteger(), docValuesConsumer);
         List<StarTreeDocument> starTreeDocuments = builder.getStarTreeDocuments();
         assertEquals(401, starTreeDocuments.size());
         builder.close();
@@ -2015,8 +2085,8 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             metricsWithField,
             sf
         );
-        OnHeapStarTreeBuilder builder = new OnHeapStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
-        builder.build(List.of(starTreeValues, starTreeValues2), new AtomicInteger(), docValuesConsumer);
+        builder = getStarTreeBuilder(metaOut, dataOut, sf, writeState, mapperService);
+        builder.build(builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2)), new AtomicInteger(), docValuesConsumer);
         List<StarTreeDocument> starTreeDocuments = builder.getStarTreeDocuments();
         Map<Integer, Map<Long, Integer>> dimValueToDocIdMap = new HashMap<>();
         traverseStarTree(builder.rootNode, dimValueToDocIdMap, true);
@@ -2175,7 +2245,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             getAttributes(1000)
         );
 
-        BaseStarTreeBuilder builder = getStarTreeBuilder(sf, writeState, mapperService);
+        builder = getStarTreeBuilder(sf, writeState, mapperService);
         Iterator<StarTreeDocument> starTreeDocumentIterator = builder.mergeStarTrees(List.of(starTreeValues, starTreeValues2));
         /**
          [0, 0, 0, 0] | [0.0]

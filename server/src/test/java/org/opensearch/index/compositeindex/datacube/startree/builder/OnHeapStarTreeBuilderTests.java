@@ -9,6 +9,7 @@
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
 import org.apache.lucene.index.SegmentWriteState;
+import org.apache.lucene.store.IndexOutput;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.mapper.MapperService;
 
@@ -23,5 +24,16 @@ public class OnHeapStarTreeBuilderTests extends AbstractStarTreeBuilderTests {
         MapperService mapperService
     ) throws IOException {
         return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
+    }
+
+    @Override
+    public BaseStarTreeBuilder getStarTreeBuilder(
+        IndexOutput metaOut,
+        IndexOutput dataOut,
+        StarTreeField starTreeField,
+        SegmentWriteState segmentWriteState,
+        MapperService mapperService
+    ) throws IOException {
+        return new OffHeapStarTreeBuilder(metaOut, dataOut,starTreeField, segmentWriteState, mapperService, randomIntBetween(2, 6));
     }
 }
