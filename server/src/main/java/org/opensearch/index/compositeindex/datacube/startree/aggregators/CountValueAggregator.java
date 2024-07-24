@@ -68,4 +68,9 @@ public class CountValueAggregator implements ValueAggregator<Long> {
     public Long toStarTreeNumericTypeValue(Long value) {
         return value;
     }
+
+    @Override
+    public long getIdentityMetricValue() {
+        return 0L;
+    }
 }

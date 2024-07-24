@@ -7,8 +7,10 @@
  */
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.search.DocIdSetIterator;
+import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.Dimension;
@@ -24,6 +26,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * On heap single tree builder
@@ -42,8 +45,14 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
      * @param segmentWriteState segment write state
      * @param mapperService     helps with the numeric type of field
      */
-    public OnHeapStarTreeBuilder(StarTreeField starTreeField, SegmentWriteState segmentWriteState, MapperService mapperService) {
-        super(starTreeField, segmentWriteState, mapperService);
+    public OnHeapStarTreeBuilder(
+        IndexOutput metaOut,
+        IndexOutput dataOut,
+        StarTreeField starTreeField,
+        SegmentWriteState segmentWriteState,
+        MapperService mapperService
+    ) throws IOException {
+        super(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
     }
 
     @Override
@@ -84,12 +93,16 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
             // TODO : we can save empty iterator for dimensions which are not part of segment
             starTreeDocuments[currentDocId] = getSegmentStarTreeDocument(currentDocId, dimensionReaders, metricReaders);
         }
-        return sortAndAggregateStarTreeDocuments(starTreeDocuments);
+        return sortAndAggregateStarTreeDocuments(starTreeDocuments, false);
     }
 
     @Override
-    public void build(List<StarTreeValues> starTreeValuesSubs) throws IOException {
-        build(mergeStarTrees(starTreeValuesSubs));
+    public void build(
+        List<StarTreeValues> starTreeValuesSubs,
+        AtomicInteger fieldNumberAcrossStarTrees,
+        DocValuesConsumer starTreeDocValuesConsumer
+    ) throws IOException {
+        build(mergeStarTrees(starTreeValuesSubs), fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
     }
 
     /**
@@ -162,8 +175,9 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
         return starTreeDocuments.toArray(starTreeDocumentsArr);
     }
 
-    Iterator<StarTreeDocument> sortAndAggregateStarTreeDocuments(StarTreeDocument[] starTreeDocuments) {
-        return sortAndAggregateStarTreeDocuments(starTreeDocuments, false);
+    @Override
+    public StarTreeDocument getStarTreeDocumentForCreatingDocValues(int docId) throws IOException {
+        return starTreeDocuments.get(docId);
     }
 
     /**

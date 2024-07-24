@@ -11,6 +11,8 @@ import org.opensearch.common.annotation.ExperimentalApi;
 
 import java.util.Map;
 
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils.ALL;
+
 /**
  * /**
  * Represents a node in a tree data structure, specifically designed for a star-tree implementation.
@@ -20,8 +22,6 @@ import java.util.Map;
  */
 @ExperimentalApi
 public class TreeNode {
-
-    public static final int ALL = -1;
 
     /**
      * The dimension id for the dimension (field) associated with this star-tree node.
@@ -54,12 +54,20 @@ public class TreeNode {
     public long dimensionValue = ALL;
 
     /**
-     * A flag indicating whether this node is a star node (a node that represents an aggregation of all dimensions).
+     * A byte indicating whether the node is star node, null node or default node (with dimension value present).
      */
-    public boolean isStarNode = false;
+    public byte nodeType = 0;
 
     /**
      * A map containing the child nodes of this star-tree node, keyed by their dimension id.
      */
     public Map<Long, TreeNode> children;
+
+    public long getDimensionValue() {
+        return dimensionValue;
+    }
+
+    public byte getNodeType() {
+        return nodeType;
+    }
 }
