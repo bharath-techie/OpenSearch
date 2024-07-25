@@ -80,7 +80,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         final Logger testLogger = LogManager.getLogger(StarTreeDocValuesFormatTests.class);
 
         try {
-            createMapperService(getExpandedMapping("status", "size"));
+            createMapperService(getExpandedMapping());
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -144,7 +144,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         directory.close();
     }
 
-    private XContentBuilder getExpandedMapping(String dim, String metric) throws IOException {
+    private XContentBuilder getExpandedMapping() throws IOException {
         return topMapping(b -> {
             b.startObject("composite");
             b.startObject("startree");

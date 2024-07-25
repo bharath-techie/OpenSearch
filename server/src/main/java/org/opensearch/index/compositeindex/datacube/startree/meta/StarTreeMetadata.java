@@ -12,6 +12,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.store.IndexInput;
 import org.opensearch.index.compositeindex.CompositeIndexMetadata;
+import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 
@@ -26,16 +27,16 @@ import java.util.Set;
  *
  * @opensearch.experimental
  */
-public class StarTreeMetadata extends CompositeIndexMetadata implements TreeMetadata {
-    private static final Logger logger = LogManager.getLogger(TreeMetadata.class);
+public class StarTreeMetadata extends CompositeIndexMetadata {
+    private static final Logger logger = LogManager.getLogger(StarTreeMetadata.class);
     private final IndexInput meta;
     private final String starTreeFieldName;
     private final String starTreeFieldType;
-    private final List<Integer> dimensionFieldNumbers;
+    private final List<String> dimensionFields;
     private final List<MetricEntry> metricEntries;
     private final Integer segmentAggregatedDocCount;
     private final Integer maxLeafDocs;
-    private final Set<Integer> skipStarNodeCreationInDims;
+    private final Set<String> skipStarNodeCreationInDims;
     private final StarTreeFieldConfiguration.StarTreeBuildMode starTreeBuildMode;
     private final long dataStartFilePointer;
     private final long dataLength;
@@ -47,7 +48,7 @@ public class StarTreeMetadata extends CompositeIndexMetadata implements TreeMeta
         try {
             this.starTreeFieldName = this.getCompositeFieldName();
             this.starTreeFieldType = this.getCompositeFieldType().getName();
-            this.dimensionFieldNumbers = readStarTreeDimensions();
+            this.dimensionFields = readStarTreeDimensions();
             this.metricEntries = readMetricEntries();
             this.segmentAggregatedDocCount = readSegmentAggregatedDocCount();
             this.maxLeafDocs = readMaxLeafDocs();
@@ -61,80 +62,69 @@ public class StarTreeMetadata extends CompositeIndexMetadata implements TreeMeta
         }
     }
 
-    @Override
-    public int readDimensionsCount() throws IOException {
+    private int readDimensionsCount() throws IOException {
         return meta.readVInt();
     }
 
-    @Override
-    public List<Integer> readStarTreeDimensions() throws IOException {
+    private List<String> readStarTreeDimensions() throws IOException {
         int dimensionCount = readDimensionsCount();
-        List<Integer> dimensionFieldNumbers = new ArrayList<>();
+        List<String> dimensionFields = new ArrayList<>();
 
         for (int i = 0; i < dimensionCount; i++) {
-            dimensionFieldNumbers.add(meta.readVInt());
+            dimensionFields.add(meta.readString());
         }
 
-        return dimensionFieldNumbers;
+        return dimensionFields;
     }
 
-    @Override
-    public int readMetricsCount() throws IOException {
+    private int readMetricsCount() throws IOException {
         return meta.readVInt();
     }
 
-    @Override
-    public List<MetricEntry> readMetricEntries() throws IOException {
+    private List<MetricEntry> readMetricEntries() throws IOException {
         int metricCount = readMetricsCount();
         List<MetricEntry> metricEntries = new ArrayList<>();
 
         for (int i = 0; i < metricCount; i++) {
-            int metricFieldNumber = meta.readVInt();
+            String metricFieldName = meta.readString();
             int metricStatOrdinal = meta.readVInt();
-            metricEntries.add(new MetricEntry(metricFieldNumber, metricStatOrdinal));
+            metricEntries.add(new MetricEntry(metricFieldName, MetricStat.fromMetricOrdinal(metricStatOrdinal)));
         }
 
         return metricEntries;
     }
 
-    @Override
-    public int readSegmentAggregatedDocCount() throws IOException {
+    private int readSegmentAggregatedDocCount() throws IOException {
         return meta.readVInt();
     }
 
-    @Override
-    public int readMaxLeafDocs() throws IOException {
+    private int readMaxLeafDocs() throws IOException {
         return meta.readVInt();
     }
 
-    @Override
-    public int readSkipStarNodeCreationInDimsCount() throws IOException {
+    private int readSkipStarNodeCreationInDimsCount() throws IOException {
         return meta.readVInt();
     }
 
-    @Override
-    public Set<Integer> readSkipStarNodeCreationInDims() throws IOException {
+    private Set<String> readSkipStarNodeCreationInDims() throws IOException {
 
         int skipStarNodeCreationInDimsCount = readSkipStarNodeCreationInDimsCount();
-        Set<Integer> skipStarNodeCreationInDims = new HashSet<>();
+        Set<String> skipStarNodeCreationInDims = new HashSet<>();
         for (int i = 0; i < skipStarNodeCreationInDimsCount; i++) {
-            skipStarNodeCreationInDims.add(meta.readVInt());
+            skipStarNodeCreationInDims.add(meta.readString());
         }
         return skipStarNodeCreationInDims;
     }
 
-    @Override
-    public StarTreeFieldConfiguration.StarTreeBuildMode readBuildMode() throws IOException {
+    private StarTreeFieldConfiguration.StarTreeBuildMode readBuildMode() throws IOException {
         return StarTreeFieldConfiguration.StarTreeBuildMode.fromBuildModeOrdinal(meta.readByte());
     }
 
-    @Override
-    public long readDataStartFilePointer() throws IOException {
+    private long readDataStartFilePointer() throws IOException {
         return meta.readVLong();
     }
 
-    @Override
-    public long readDataLength() throws IOException {
+    private long readDataLength() throws IOException {
         return meta.readVLong();
     }
 
@@ -161,8 +151,8 @@ public class StarTreeMetadata extends CompositeIndexMetadata implements TreeMeta
      *
      * @return star-tree dimension field numbers
      */
-    public List<Integer> getDimensionFieldNumbers() {
-        return dimensionFieldNumbers;
+    public List<String> getDimensionFields() {
+        return dimensionFields;
     }
 
     /**
@@ -197,7 +187,7 @@ public class StarTreeMetadata extends CompositeIndexMetadata implements TreeMeta
      *
      * @return the set of dimensions.
      */
-    public Set<Integer> getSkipStarNodeCreationInDims() {
+    public Set<String> getSkipStarNodeCreationInDims() {
         return skipStarNodeCreationInDims;
     }
 

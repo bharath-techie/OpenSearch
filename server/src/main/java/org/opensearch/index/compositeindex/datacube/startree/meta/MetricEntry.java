@@ -8,6 +8,8 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.meta;
 
+import org.opensearch.index.compositeindex.datacube.MetricStat;
+
 /**
  * Holds the pair of metric name and it's associated stat
  *
@@ -15,19 +17,19 @@ package org.opensearch.index.compositeindex.datacube.startree.meta;
  */
 public class MetricEntry {
 
-    private final int metricFieldNumber;
-    private final int metricStatOrdinal;
+    private final String metricFieldName;
+    private final MetricStat metricStat;
 
-    public MetricEntry(int metricFieldNumber, int metricStatOrdinal) {
-        this.metricFieldNumber = metricFieldNumber;
-        this.metricStatOrdinal = metricStatOrdinal;
+    public MetricEntry(String metricFieldName, MetricStat metricStat) {
+        this.metricFieldName = metricFieldName;
+        this.metricStat = metricStat;
     }
 
-    public int getMetricFieldNumber() {
-        return metricFieldNumber;
+    public String getMetricFieldName() {
+        return metricFieldName;
     }
 
-    public int getMetricStatOrdinal() {
-        return metricStatOrdinal;
+    public MetricStat getMetricStat() {
+        return metricStat;
     }
 }

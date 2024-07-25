@@ -26,6 +26,6 @@ public class CompositeIndexConstants {
     /**
      * Represents the key to fetch number of documents in a segment.
      */
-    public static final String SEGMENT_DOCS_COUNT = "segment_docs_count";
+    public static final String SEGMENT_DOCS_COUNT = "segmentDocsCount";
 
 }

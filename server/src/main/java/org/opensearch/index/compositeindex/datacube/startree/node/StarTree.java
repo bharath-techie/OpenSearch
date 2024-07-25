@@ -12,6 +12,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.index.compositeindex.datacube.startree.meta.StarTreeMetadata;
+import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeDataWriter;
 
 import java.io.IOException;
 
@@ -34,14 +35,17 @@ public class StarTree implements Tree {
             logger.error("Invalid magic marker");
             throw new IOException("Invalid magic marker");
         }
-        int version = data.readVInt();
+        int version = data.readInt();
         if (VERSION != version) {
             logger.error("Invalid star tree version");
             throw new IOException("Invalid version");
         }
-        numNodes = data.readVInt(); // num nodes
+        numNodes = data.readInt(); // num nodes
 
-        RandomAccessInput in = data.randomAccessSlice(starTreeMetadata.getDataStartFilePointer(), starTreeMetadata.getDataLength());
+        RandomAccessInput in = data.randomAccessSlice(
+            StarTreeDataWriter.computeStarTreeDataHeaderByteSize(),
+            starTreeMetadata.getDataLength() - StarTreeDataWriter.computeStarTreeDataHeaderByteSize()
+        );
         root = new FixedLengthStarTreeNode(in, 0);
     }
 

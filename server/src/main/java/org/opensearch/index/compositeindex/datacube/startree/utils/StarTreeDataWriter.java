@@ -62,7 +62,7 @@ public class StarTreeDataWriter {
      *
      * @return the byte size of the star-tree data header
      */
-    private static int computeStarTreeDataHeaderByteSize() {
+    public static int computeStarTreeDataHeaderByteSize() {
         // Magic marker (8), version (4)
         int headerSizeInBytes = 12;
 

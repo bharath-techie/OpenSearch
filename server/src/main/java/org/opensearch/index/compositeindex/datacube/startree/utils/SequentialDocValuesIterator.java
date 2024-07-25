@@ -49,7 +49,7 @@ public class SequentialDocValuesIterator {
     }
 
     /**
-     * Constructs a new SequentialDocValuesIterator instance with the given SortedNumericDocValues.
+     * Constructs a new SequentialDocValuesIterator instance with an empty sorted numeric.
      *
      */
     public SequentialDocValuesIterator() {

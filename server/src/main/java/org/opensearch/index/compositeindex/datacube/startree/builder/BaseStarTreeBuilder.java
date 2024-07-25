@@ -23,6 +23,7 @@ import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
+import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
@@ -31,7 +32,6 @@ import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.ValueAggregator;
-import org.opensearch.index.compositeindex.datacube.startree.aggregators.numerictype.StarTreeNumericType;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeType;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
 import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils;
@@ -90,7 +90,6 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
     private final IndexOutput metaOut;
     private final IndexOutput dataOut;
-    static String NUM_SEGMENT_DOCS = "numSegmentDocs";
 
     /**
      * Reads all the configuration related to dimensions and metrics, builds a star-tree based on the different construction parameters.
@@ -179,6 +178,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                 SequentialDocValuesIterator metricReader;
                 FieldInfo metricFieldInfo = state.fieldInfos.fieldInfo(metric.getField());
                 if (metricStat != MetricStat.COUNT) {
+                    if (metricFieldInfo == null) {
+                        metricFieldInfo = getFieldInfo(metric.getField());
+                    }
                     metricReader = new SequentialDocValuesIterator(
                         fieldProducerMap.get(metricFieldInfo.name).getSortedNumeric(metricFieldInfo)
                     );
@@ -250,7 +252,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         if (numStarTreeDocs == 0) {
             // serialize the star tree data
-            serializeStarTree(numSegmentStarTreeDocument);
+            serializeStarTree(numStarTreeDocument);
             return;
         }
 
@@ -270,7 +272,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         createSortedDocValuesIndices(starTreeDocValuesConsumer, fieldNumberAcrossStarTrees);
 
         // serialize star-tree
-        serializeStarTree(numSegmentStarTreeDocument);
+        serializeStarTree(numStarTreeDocument);
     }
 
     private void serializeStarTree(int numSegmentStarTreeDocument) throws IOException {
@@ -335,10 +337,15 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                 try {
                     switch (metricAggregatorInfos.get(i).getValueAggregators().getAggregatedValueType()) {
                         case LONG:
-                            metricWriters.get(i).addValue(docId, (Long) starTreeDocument.metrics[i]);
+                            if (starTreeDocument.metrics[i] != null) {
+                                metricWriters.get(i).addValue(docId, (Long) starTreeDocument.metrics[i]);
+                            }
                             break;
                         case DOUBLE:
-                            metricWriters.get(i).addValue(docId, NumericUtils.doubleToSortableLong((Double) starTreeDocument.metrics[i]));
+                            if (starTreeDocument.metrics[i] != null) {
+                                metricWriters.get(i)
+                                    .addValue(docId, NumericUtils.doubleToSortableLong((Double) starTreeDocument.metrics[i]));
+                            }
                             break;
                         default:
                             throw new IllegalStateException("Unknown metric doc value type");
@@ -528,7 +535,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     if (isMerge) {
                         metrics[i] = metricValueAggregator.getInitialAggregatedValue(segmentDocument.metrics[i]);
                     } else {
-                        metrics[i] = metricValueAggregator.getInitialAggregatedValueForSegmentDocValue(getLong(segmentDocument.metrics[i], metricValueAggregator.getIdentityMetricValue()));
+                        metrics[i] = metricValueAggregator.getInitialAggregatedValueForSegmentDocValue(
+                            getLong(segmentDocument.metrics[i], metricValueAggregator.getIdentityMetricValue())
+                        );
                     }
 
                 } catch (Exception e) {
@@ -626,6 +635,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             return aggregatedDocument;
         }
     }
+
     private static FieldInfo getFieldInfo(String field) {
         return new FieldInfo(
             field,

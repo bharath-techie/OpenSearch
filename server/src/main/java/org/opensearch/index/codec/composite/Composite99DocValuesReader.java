@@ -32,7 +32,6 @@ import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.compositeindex.CompositeIndexMetadata;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
-import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.ReadDimension;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
@@ -46,7 +45,6 @@ import org.opensearch.index.mapper.CompositeMappedFieldType;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -125,7 +123,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                 while (true) {
 
                     // validate magic marker
-                    long magicMarker = metaIn.readVLong();
+                    long magicMarker = metaIn.readLong();
                     if (magicMarker == -1) {
                         logger.info("EOF reached for composite index metadata");
                         break;
@@ -161,24 +159,19 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                             compositeIndexInputMap.put(compositeFieldName, starTreeIndexInput);
                             compositeIndexMetadataMap.put(compositeFieldName, starTreeMetadata);
 
-                            List<Integer> dimensionFieldNumbers = starTreeMetadata.getDimensionFieldNumbers();
+                            List<String> dimensionFields = starTreeMetadata.getDimensionFields();
 
                             // generating star tree unique fields (fully qualified name for dimension and metrics)
-                            for (Integer fieldNumber : dimensionFieldNumbers) {
-                                fields.add(
-                                    fullyQualifiedFieldNameForStarTreeDimensionsDocValues(
-                                        compositeFieldName,
-                                        readState.fieldInfos.fieldInfo(fieldNumber).getName()
-                                    )
-                                );
+                            for (String dimensions : dimensionFields) {
+                                fields.add(fullyQualifiedFieldNameForStarTreeDimensionsDocValues(compositeFieldName, dimensions));
                             }
 
                             for (MetricEntry metricEntry : starTreeMetadata.getMetricEntries()) {
                                 fields.add(
                                     fullyQualifiedFieldNameForStarTreeMetricsDocValues(
                                         compositeFieldName,
-                                        readState.fieldInfos.fieldInfo(metricEntry.getMetricFieldNumber()).getName(),
-                                        MetricStat.fromMetricOrdinal(metricEntry.getMetricStatOrdinal()).getTypeName()
+                                        metricEntry.getMetricFieldName(),
+                                        metricEntry.getMetricStat().getTypeName()
                                     )
                                 );
                             }
@@ -285,28 +278,20 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                 StarTreeMetadata starTreeMetadata = (StarTreeMetadata) compositeIndexMetadataMap.get(compositeIndexFieldInfo.getField());
 
                 // build skip star node dimensions
-                Set<Integer> skipStarNodeCreationInDimsFieldNumbers = starTreeMetadata.getSkipStarNodeCreationInDims();
-                Set<String> skipStarNodeCreationInDims = new HashSet<>();
-                for (Integer fieldNumber : skipStarNodeCreationInDimsFieldNumbers) {
-                    skipStarNodeCreationInDims.add(readState.fieldInfos.fieldInfo(fieldNumber).getName());
-                }
+                Set<String> skipStarNodeCreationInDims = starTreeMetadata.getSkipStarNodeCreationInDims();
 
                 // build dimensions
-                List<Integer> dimensionFieldNumbers = starTreeMetadata.getDimensionFieldNumbers();
-                List<String> dimensions = new ArrayList<>();
                 List<Dimension> readDimensions = new ArrayList<>();
-                for (Integer fieldNumber : dimensionFieldNumbers) {
-                    dimensions.add(readState.fieldInfos.fieldInfo(fieldNumber).getName());
-                    readDimensions.add(new ReadDimension(readState.fieldInfos.fieldInfo(fieldNumber).name));
+                for (String dimension : starTreeMetadata.getDimensionFields()) {
+                    readDimensions.add(new ReadDimension(dimension));
                 }
 
                 // build metrics
                 Map<String, Metric> starTreeMetricMap = new LinkedHashMap<>();
                 for (MetricEntry metricEntry : starTreeMetadata.getMetricEntries()) {
-                    String metricName = readState.fieldInfos.fieldInfo(metricEntry.getMetricFieldNumber()).getName();
-
+                    String metricName = metricEntry.getMetricFieldName();
                     Metric metric = starTreeMetricMap.computeIfAbsent(metricName, field -> new Metric(field, new ArrayList<>()));
-                    metric.getMetrics().add(MetricStat.fromMetricOrdinal(metricEntry.getMetricStatOrdinal()));
+                    metric.getMetrics().add(metricEntry.getMetricStat());
                 }
                 List<Metric> starTreeMetrics = new ArrayList<>(starTreeMetricMap.values());
 
@@ -332,7 +317,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                 Map<String, DocIdSetIterator> metricsDocIdSetIteratorMap = new LinkedHashMap<>();
 
                 // get doc id set iterators for dimensions
-                for (String dimension : dimensions) {
+                for (String dimension : starTreeMetadata.getDimensionFields()) {
                     dimensionsDocIdSetIteratorMap.put(
                         dimension,
                         compositeDocValuesProducer.getSortedNumeric(
@@ -345,8 +330,8 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                 for (MetricEntry metricEntry : starTreeMetadata.getMetricEntries()) {
                     String metricFullName = fullyQualifiedFieldNameForStarTreeMetricsDocValues(
                         starTreeField.getName(),
-                        readState.fieldInfos.fieldInfo(metricEntry.getMetricFieldNumber()).getName(),
-                        MetricStat.fromMetricOrdinal(metricEntry.getMetricStatOrdinal()).getTypeName()
+                        metricEntry.getMetricFieldName(),
+                        metricEntry.getMetricStat().getTypeName()
                     );
                     metricsDocIdSetIteratorMap.put(metricFullName, compositeDocValuesProducer.getSortedNumeric(metricFullName));
                 }

@@ -47,7 +47,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         TreeNode root = generateSampleTree(levelOrderStarTreeNodeMap);
         long starTreeDataLength = StarTreeUtils.writeStarTree(dataOut, root, 7, "star-tree");
 
-        //asserting on the actual length of the star tree data file
+        // asserting on the actual length of the star tree data file
         assertEquals(starTreeDataLength, 247);
         dataOut.close();
 
@@ -112,7 +112,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         root.endDocId = 100;
         root.childDimensionId = 1;
         root.aggregatedDocId = randomInt();
-        root.nodeType = randomByte();
+        root.nodeType = (byte) 0;
         root.children = new HashMap<>();
 
         levelOrderStarTreeNode.put(root.dimensionValue, root);
@@ -125,7 +125,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         dim1Node1.endDocId = 50;
         dim1Node1.childDimensionId = 2;
         dim1Node1.aggregatedDocId = randomInt();
-        dim1Node1.nodeType = randomByte();
+        root.nodeType = (byte) 0;
         dim1Node1.children = new HashMap<>();
 
         TreeNode dim1Node2 = new TreeNode();
@@ -135,7 +135,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         dim1Node2.endDocId = 100;
         dim1Node2.childDimensionId = 2;
         dim1Node2.aggregatedDocId = randomInt();
-        dim1Node2.nodeType = randomByte();
+        root.nodeType = (byte) 0;
         dim1Node2.children = new HashMap<>();
 
         root.children.put(1L, dim1Node1);
@@ -152,7 +152,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         dim2Node1.endDocId = 25;
         dim2Node1.childDimensionId = -1;
         dim2Node1.aggregatedDocId = randomInt();
-        dim2Node1.nodeType = randomByte();
+        root.nodeType = (byte) 0;
         dim2Node1.children = null;
 
         TreeNode dim2Node2 = new TreeNode();
@@ -162,7 +162,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         dim2Node2.endDocId = 50;
         dim2Node2.childDimensionId = -1;
         dim2Node2.aggregatedDocId = randomInt();
-        dim2Node2.nodeType = randomByte();
+        root.nodeType = (byte) 0;
         dim2Node2.children = null;
 
         TreeNode dim2Node3 = new TreeNode();
@@ -172,7 +172,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         dim2Node3.endDocId = 75;
         dim2Node3.childDimensionId = -1;
         dim2Node3.aggregatedDocId = randomInt();
-        dim2Node3.nodeType = randomByte();
+        root.nodeType = (byte) 0;
         dim2Node3.children = null;
 
         TreeNode dim2Node4 = new TreeNode();
@@ -182,7 +182,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         dim2Node4.endDocId = 100;
         dim2Node4.childDimensionId = -1;
         dim2Node4.aggregatedDocId = randomInt();
-        dim2Node4.nodeType = randomByte();
+        root.nodeType = (byte) 0;
         dim2Node4.children = null;
 
         dim1Node1.children.put(3L, dim2Node1);

@@ -28,6 +28,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.SEGMENT_DOCS_COUNT;
+
 /**
  * On heap single tree builder
  *
@@ -140,10 +142,9 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
                 metricReaders.add(new SequentialDocValuesIterator(metricDocValuesEntry.getValue()));
             }
 
-            boolean endOfDoc = false;
             int currentDocId = 0;
             int numSegmentDocs = Integer.parseInt(
-                starTreeValues.getAttributes().getOrDefault(NUM_SEGMENT_DOCS, String.valueOf(DocIdSetIterator.NO_MORE_DOCS))
+                starTreeValues.getAttributes().getOrDefault(SEGMENT_DOCS_COUNT, String.valueOf(DocIdSetIterator.NO_MORE_DOCS))
             );
             while (currentDocId < numSegmentDocs) {
                 Long[] dims = new Long[dimensionsSplitOrder.size()];

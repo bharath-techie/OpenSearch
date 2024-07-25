@@ -120,9 +120,7 @@ public class StarTreeMetaTests extends OpenSearchTestCase {
         metrics = List.of(
             new Metric("field2", List.of(MetricStat.SUM)),
             new Metric("field4", List.of(MetricStat.SUM)),
-            new Metric("field6", List.of(MetricStat.COUNT)),
-            new Metric("field9", List.of(MetricStat.MIN)),
-            new Metric("field10", List.of(MetricStat.MAX))
+            new Metric("field6", List.of(MetricStat.COUNT))
         );
         int maxLeafDocs = randomNonNegativeInt();
         StarTreeFieldConfiguration starTreeFieldConfiguration = new StarTreeFieldConfiguration(
@@ -159,7 +157,7 @@ public class StarTreeMetaTests extends OpenSearchTestCase {
         );
         metaOut.close();
         metaIn = directory.openInput("star-tree-metadata", IOContext.READONCE);
-        assertEquals(MAGIC_MARKER, metaIn.readVLong());
+        assertEquals(MAGIC_MARKER, metaIn.readLong());
         assertEquals(VERSION, metaIn.readVInt());
 
         String compositeFieldName = metaIn.readString();
@@ -174,20 +172,13 @@ public class StarTreeMetaTests extends OpenSearchTestCase {
         assertNotNull(starTreeMetadata);
 
         for (int i = 0; i < dimensionsOrder.size(); i++) {
-            assertEquals(
-                writeState.fieldInfos.fieldInfo(dimensionsOrder.get(i).getField()).getFieldNumber(),
-                starTreeMetadata.getDimensionFieldNumbers().get(i),
-                0
-            );
+            assertEquals(dimensionsOrder.get(i).getField(), starTreeMetadata.getDimensionFields().get(i));
         }
 
         for (int i = 0; i < metricAggregatorInfos.size(); i++) {
             MetricEntry metricEntry = starTreeMetadata.getMetricEntries().get(i);
-            assertEquals(
-                metricAggregatorInfos.get(i).getField(),
-                writeState.fieldInfos.fieldInfo(metricEntry.getMetricFieldNumber()).getName()
-            );
-            assertEquals(metricAggregatorInfos.get(i).getMetricStat(), MetricStat.fromMetricOrdinal(metricEntry.getMetricStatOrdinal()));
+            assertEquals(metricAggregatorInfos.get(i).getField(), metricEntry.getMetricFieldName());
+            assertEquals(metricAggregatorInfos.get(i).getMetricStat(), metricEntry.getMetricStat());
         }
         assertEquals(segmentDocumentCount, starTreeMetadata.getSegmentAggregatedDocCount(), 0);
         assertEquals(maxLeafDocs, starTreeMetadata.getMaxLeafDocs(), 0);
@@ -196,8 +187,7 @@ public class StarTreeMetaTests extends OpenSearchTestCase {
             starTreeMetadata.getSkipStarNodeCreationInDims().size()
         );
         for (String skipStarNodeCreationInDims : starTreeField.getStarTreeConfig().getSkipStarNodeCreationInDims()) {
-            Integer skipStarNodeCreationInDimsFieldNumber = writeState.fieldInfos.fieldInfo(skipStarNodeCreationInDims).getFieldNumber();
-            assertTrue(starTreeMetadata.getSkipStarNodeCreationInDims().contains(skipStarNodeCreationInDimsFieldNumber));
+            assertTrue(starTreeMetadata.getSkipStarNodeCreationInDims().contains(skipStarNodeCreationInDims));
         }
         assertEquals(starTreeFieldConfiguration.getBuildMode(), starTreeMetadata.getStarTreeBuildMode());
         assertEquals(dataFileLength, starTreeMetadata.getDataLength());

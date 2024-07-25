@@ -84,7 +84,7 @@ public class StarTreeMetaWriter {
         String starTreeFieldName
     ) throws IOException {
         // magic marker for sanity
-        metaOut.writeVLong(MAGIC_MARKER);
+        metaOut.writeLong(MAGIC_MARKER);
 
         // version
         metaOut.writeVInt(VERSION);
@@ -123,8 +123,7 @@ public class StarTreeMetaWriter {
 
         // dimensions
         for (Dimension dimension : starTreeField.getDimensionsOrder()) {
-            int dimensionFieldNumber = writeState.fieldInfos.fieldInfo(dimension.getField()).getFieldNumber();
-            metaOut.writeVInt(dimensionFieldNumber);
+            metaOut.writeString(dimension.getField());
         }
 
         // number of metrics
@@ -132,10 +131,8 @@ public class StarTreeMetaWriter {
 
         // metric - metric stat pair
         for (MetricAggregatorInfo metricAggregatorInfo : metricAggregatorInfos) {
-            String metricName = metricAggregatorInfo.getField();
-            int metricFieldNumber = writeState.fieldInfos.fieldInfo(metricName).getFieldNumber();
+            metaOut.writeString(metricAggregatorInfo.getField());
             int metricStatOrdinal = metricAggregatorInfo.getMetricStat().getMetricOrdinal();
-            metaOut.writeVInt(metricFieldNumber);
             metaOut.writeVInt(metricStatOrdinal);
         }
 
@@ -150,8 +147,7 @@ public class StarTreeMetaWriter {
 
         // skip star node creations
         for (String dimension : starTreeField.getStarTreeConfig().getSkipStarNodeCreationInDims()) {
-            int dimensionFieldNumber = writeState.fieldInfos.fieldInfo(dimension).getFieldNumber();
-            metaOut.writeVInt(dimensionFieldNumber);
+            metaOut.writeString(dimension);
         }
 
         // star tree build-mode

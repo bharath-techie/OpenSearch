@@ -30,8 +30,8 @@ public class FixedLengthStarTreeNode implements StarTreeNode {
     private static final int START_DOC_ID_OFFSET = DIMENSION_VALUE_OFFSET + Long.BYTES;
     private static final int END_DOC_ID_OFFSET = START_DOC_ID_OFFSET + Integer.BYTES;
     private static final int AGGREGATE_DOC_ID_OFFSET = END_DOC_ID_OFFSET + Integer.BYTES;
-    private static final int STAR_NODE_TYPE_OFFSET = AGGREGATE_DOC_ID_OFFSET + Byte.BYTES;
-    private static final int FIRST_CHILD_ID_OFFSET = STAR_NODE_TYPE_OFFSET + Integer.BYTES;
+    private static final int STAR_NODE_TYPE_OFFSET = AGGREGATE_DOC_ID_OFFSET + Integer.BYTES;
+    private static final int FIRST_CHILD_ID_OFFSET = STAR_NODE_TYPE_OFFSET + Byte.BYTES;
     private static final int LAST_CHILD_ID_OFFSET = FIRST_CHILD_ID_OFFSET + Integer.BYTES;
 
     public static final int INVALID_ID = -1;
@@ -46,6 +46,15 @@ public class FixedLengthStarTreeNode implements StarTreeNode {
         this.nodeId = nodeId;
         firstChildId = getInt(FIRST_CHILD_ID_OFFSET);
     }
+
+    // output.writeInt(node.dimensionId);
+    // output.writeLong(node.dimensionValue);
+    // output.writeInt(node.startDocId);
+    // output.writeInt(node.endDocId);
+    // output.writeInt(node.aggregatedDocId);
+    // output.writeByte(node.nodeType);
+    // output.writeInt(firstChildId);
+    // output.writeInt(lastChildId);
 
     private int getInt(int fieldOffset) throws IOException {
         return in.readInt(nodeId * SERIALIZABLE_DATA_SIZE_IN_BYTES + fieldOffset);
