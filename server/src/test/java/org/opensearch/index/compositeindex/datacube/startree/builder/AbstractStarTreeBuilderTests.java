@@ -41,9 +41,9 @@ import org.opensearch.index.compositeindex.datacube.NumericDimension;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeDocument;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
+import org.opensearch.index.compositeindex.datacube.startree.node.InMemoryTreeNode;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeType;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
-import org.opensearch.index.compositeindex.datacube.startree.utils.TreeNode;
 import org.opensearch.index.mapper.ContentPath;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.Mapper;
@@ -2051,13 +2051,13 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         return sf;
     }
 
-    private void traverseStarTree(TreeNode root, Map<Integer, Map<Long, Integer>> dimValueToDocIdMap, boolean traverStarNodes) {
-        TreeNode starTree = root;
+    private void traverseStarTree(InMemoryTreeNode root, Map<Integer, Map<Long, Integer>> dimValueToDocIdMap, boolean traverStarNodes) {
+        InMemoryTreeNode starTree = root;
         // Use BFS to traverse the star tree
-        Queue<TreeNode> queue = new ArrayDeque<>();
+        Queue<InMemoryTreeNode> queue = new ArrayDeque<>();
         queue.add(starTree);
         int currentDimensionId = -1;
-        TreeNode starTreeNode;
+        InMemoryTreeNode starTreeNode;
         List<Integer> docIds = new ArrayList<>();
         while ((starTreeNode = queue.poll()) != null) {
             int dimensionId = starTreeNode.dimensionId;
@@ -2076,9 +2076,9 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             dimValueToDocIdMap.put(dimensionId, map);
 
             if (starTreeNode.children != null && (!traverStarNodes || (starTreeNode.nodeType == StarTreeNodeType.STAR.getValue()))) {
-                Iterator<TreeNode> childrenIterator = starTreeNode.children.values().iterator();
+                Iterator<InMemoryTreeNode> childrenIterator = starTreeNode.children.values().iterator();
                 while (childrenIterator.hasNext()) {
-                    TreeNode childNode = childrenIterator.next();
+                    InMemoryTreeNode childNode = childrenIterator.next();
                     queue.add(childNode);
                 }
             }

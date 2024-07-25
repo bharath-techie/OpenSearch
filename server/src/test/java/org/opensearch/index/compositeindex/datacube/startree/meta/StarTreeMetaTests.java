@@ -23,6 +23,9 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.Version;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.meta.MetricEntry;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.meta.StarTreeMetadata;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.writer.StarTreeWriter;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
@@ -30,7 +33,6 @@ import org.opensearch.index.compositeindex.datacube.NumericDimension;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
-import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils;
 import org.opensearch.index.fielddata.IndexNumericFieldData;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.test.OpenSearchTestCase;
@@ -45,7 +47,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
 
-import static org.opensearch.index.compositeindex.CompositeIndexConstants.MAGIC_MARKER;
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.COMPOSITE_FIELD_MARKER;
 import static org.opensearch.index.compositeindex.CompositeIndexConstants.VERSION;
 import static org.opensearch.index.mapper.CompositeMappedFieldType.CompositeFieldType.STAR_TREE;
 
@@ -146,7 +148,7 @@ public class StarTreeMetaTests extends OpenSearchTestCase {
         dataFilePointer = randomNonNegativeLong();
         segmentDocumentCount = randomNonNegativeInt();
         metaOut = directory.createOutput("star-tree-metadata", IOContext.DEFAULT);
-        StarTreeUtils.writeStarTreeMetadata(
+        StarTreeWriter.writeStarTreeMetadata(
             metaOut,
             starTreeField,
             writeState,
@@ -157,7 +159,7 @@ public class StarTreeMetaTests extends OpenSearchTestCase {
         );
         metaOut.close();
         metaIn = directory.openInput("star-tree-metadata", IOContext.READONCE);
-        assertEquals(MAGIC_MARKER, metaIn.readLong());
+        assertEquals(COMPOSITE_FIELD_MARKER, metaIn.readLong());
         assertEquals(VERSION, metaIn.readVInt());
 
         String compositeFieldName = metaIn.readString();

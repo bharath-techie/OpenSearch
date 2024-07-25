@@ -12,9 +12,8 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
-import org.opensearch.index.compositeindex.datacube.startree.meta.StarTreeMetadata;
-import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils;
-import org.opensearch.index.compositeindex.datacube.startree.utils.TreeNode;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.meta.StarTreeMetadata;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.writer.StarTreeWriter;
 import org.opensearch.test.OpenSearchTestCase;
 import org.junit.Before;
 
@@ -43,9 +42,9 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
     public void test_StarTreeNode() throws IOException {
 
         dataOut = directory.createOutput("star-tree-data", IOContext.DEFAULT);
-        Map<Long, TreeNode> levelOrderStarTreeNodeMap = new LinkedHashMap<>();
-        TreeNode root = generateSampleTree(levelOrderStarTreeNodeMap);
-        long starTreeDataLength = StarTreeUtils.writeStarTree(dataOut, root, 7, "star-tree");
+        Map<Long, InMemoryTreeNode> levelOrderStarTreeNodeMap = new LinkedHashMap<>();
+        InMemoryTreeNode root = generateSampleTree(levelOrderStarTreeNodeMap);
+        long starTreeDataLength = StarTreeWriter.writeStarTree(dataOut, root, 7, "star-tree");
 
         // asserting on the actual length of the star tree data file
         assertEquals(starTreeDataLength, 247);
@@ -85,7 +84,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
 
     }
 
-    private void assertStarTreeNode(StarTreeNode starTreeNode, TreeNode treeNode) throws IOException {
+    private void assertStarTreeNode(StarTreeNode starTreeNode, InMemoryTreeNode treeNode) throws IOException {
         assertEquals(starTreeNode.getDimensionId(), treeNode.dimensionId);
         assertEquals(starTreeNode.getDimensionValue(), treeNode.dimensionValue);
         assertEquals(starTreeNode.getStartDocId(), treeNode.startDocId);
@@ -104,9 +103,9 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
 
     }
 
-    private TreeNode generateSampleTree(Map<Long, TreeNode> levelOrderStarTreeNode) {
+    private InMemoryTreeNode generateSampleTree(Map<Long, InMemoryTreeNode> levelOrderStarTreeNode) {
         // Create the root node
-        TreeNode root = new TreeNode();
+        InMemoryTreeNode root = new InMemoryTreeNode();
         root.dimensionId = 0;
         root.startDocId = 0;
         root.endDocId = 100;
@@ -118,7 +117,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         levelOrderStarTreeNode.put(root.dimensionValue, root);
 
         // Create child nodes for dimension 1
-        TreeNode dim1Node1 = new TreeNode();
+        InMemoryTreeNode dim1Node1 = new InMemoryTreeNode();
         dim1Node1.dimensionId = 1;
         dim1Node1.dimensionValue = 1;
         dim1Node1.startDocId = 0;
@@ -128,7 +127,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         root.nodeType = (byte) 0;
         dim1Node1.children = new HashMap<>();
 
-        TreeNode dim1Node2 = new TreeNode();
+        InMemoryTreeNode dim1Node2 = new InMemoryTreeNode();
         dim1Node2.dimensionId = 1;
         dim1Node2.dimensionValue = 2;
         dim1Node2.startDocId = 50;
@@ -145,7 +144,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         levelOrderStarTreeNode.put(dim1Node2.dimensionValue, dim1Node2);
 
         // Create child nodes for dimension 2
-        TreeNode dim2Node1 = new TreeNode();
+        InMemoryTreeNode dim2Node1 = new InMemoryTreeNode();
         dim2Node1.dimensionId = 2;
         dim2Node1.dimensionValue = 3;
         dim2Node1.startDocId = 0;
@@ -155,7 +154,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         root.nodeType = (byte) 0;
         dim2Node1.children = null;
 
-        TreeNode dim2Node2 = new TreeNode();
+        InMemoryTreeNode dim2Node2 = new InMemoryTreeNode();
         dim2Node2.dimensionId = 2;
         dim2Node2.dimensionValue = 4;
         dim2Node2.startDocId = 25;
@@ -165,7 +164,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         root.nodeType = (byte) 0;
         dim2Node2.children = null;
 
-        TreeNode dim2Node3 = new TreeNode();
+        InMemoryTreeNode dim2Node3 = new InMemoryTreeNode();
         dim2Node3.dimensionId = 2;
         dim2Node3.dimensionValue = 5;
         dim2Node3.startDocId = 50;
@@ -175,7 +174,7 @@ public class FixedLengthStarTreeNodeTests extends OpenSearchTestCase {
         root.nodeType = (byte) 0;
         dim2Node3.children = null;
 
-        TreeNode dim2Node4 = new TreeNode();
+        InMemoryTreeNode dim2Node4 = new InMemoryTreeNode();
         dim2Node4.dimensionId = 2;
         dim2Node4.dimensionValue = 6;
         dim2Node4.startDocId = 75;

@@ -16,7 +16,7 @@ public class CompositeIndexConstants {
     /**
      * The magic marker value used for sanity checks in the Composite Index implementation.
      */
-    public static final long MAGIC_MARKER = 0xC0950513F1E1DL; // Composite Field
+    public static final long COMPOSITE_FIELD_MARKER = 0xC0950513F1E1DL; // Composite Field
 
     /**
      * The version of the Composite Index implementation.

@@ -47,15 +47,6 @@ public class FixedLengthStarTreeNode implements StarTreeNode {
         firstChildId = getInt(FIRST_CHILD_ID_OFFSET);
     }
 
-    // output.writeInt(node.dimensionId);
-    // output.writeLong(node.dimensionValue);
-    // output.writeInt(node.startDocId);
-    // output.writeInt(node.endDocId);
-    // output.writeInt(node.aggregatedDocId);
-    // output.writeByte(node.nodeType);
-    // output.writeInt(firstChildId);
-    // output.writeInt(lastChildId);
-
     private int getInt(int fieldOffset) throws IOException {
         return in.readInt(nodeId * SERIALIZABLE_DATA_SIZE_IN_BYTES + fieldOffset);
     }

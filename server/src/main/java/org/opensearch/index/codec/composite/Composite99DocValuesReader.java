@@ -29,14 +29,14 @@ import org.apache.lucene.store.IndexInput;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.meta.MetricEntry;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.meta.StarTreeMetadata;
 import org.opensearch.index.compositeindex.CompositeIndexMetadata;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.ReadDimension;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
-import org.opensearch.index.compositeindex.datacube.startree.meta.MetricEntry;
-import org.opensearch.index.compositeindex.datacube.startree.meta.StarTreeMetadata;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTree;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNode;
 import org.opensearch.index.compositeindex.datacube.startree.node.Tree;
@@ -50,7 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.opensearch.index.compositeindex.CompositeIndexConstants.MAGIC_MARKER;
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.COMPOSITE_FIELD_MARKER;
 import static org.opensearch.index.compositeindex.CompositeIndexConstants.SEGMENT_DOCS_COUNT;
 import static org.opensearch.index.compositeindex.CompositeIndexConstants.VERSION;
 import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils.fullyQualifiedFieldNameForStarTreeDimensionsDocValues;
@@ -129,7 +129,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                         break;
                     } else if (magicMarker < 0) {
                         throw new CorruptIndexException("Unknown token encountered: " + magicMarker, metaIn);
-                    } else if (MAGIC_MARKER != magicMarker) {
+                    } else if (COMPOSITE_FIELD_MARKER != magicMarker) {
                         logger.error("Invalid composite field magic marker");
                         throw new IOException("Invalid composite field magic marker");
                     }

@@ -7,6 +7,8 @@
  */
 
 /**
- *  Classes responsible for handling all star tree structures and operations as part of codec
+ * Writer package for star tree
+ *
+ * @opensearch.experimental
  */
-package org.opensearch.index.codec.composite.datacube.startree;
+package org.opensearch.index.codec.composite.datacube.startree.fileformats.writer;

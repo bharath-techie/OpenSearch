@@ -11,12 +11,12 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
-import org.opensearch.index.compositeindex.datacube.startree.meta.StarTreeMetadata;
-import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeDataWriter;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.meta.StarTreeMetadata;
+import org.opensearch.index.codec.composite.datacube.startree.fileformats.writer.StarTreeDataWriter;
 
 import java.io.IOException;
 
-import static org.opensearch.index.compositeindex.CompositeIndexConstants.MAGIC_MARKER;
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.COMPOSITE_FIELD_MARKER;
 import static org.opensearch.index.compositeindex.CompositeIndexConstants.VERSION;
 
 /**
@@ -31,7 +31,7 @@ public class StarTree implements Tree {
 
     public StarTree(IndexInput data, StarTreeMetadata starTreeMetadata) throws IOException {
         long magicMarker = data.readLong();
-        if (MAGIC_MARKER != magicMarker) {
+        if (COMPOSITE_FIELD_MARKER != magicMarker) {
             logger.error("Invalid magic marker");
             throw new IOException("Invalid magic marker");
         }

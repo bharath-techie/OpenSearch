@@ -6,11 +6,12 @@
  * compatible open source license.
  */
 
-package org.opensearch.index.compositeindex.datacube.startree.utils;
+package org.opensearch.index.codec.composite.datacube.startree.fileformats.writer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.IndexOutput;
+import org.opensearch.index.compositeindex.datacube.startree.node.InMemoryTreeNode;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -19,7 +20,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
 
-import static org.opensearch.index.compositeindex.CompositeIndexConstants.MAGIC_MARKER;
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.COMPOSITE_FIELD_MARKER;
 import static org.opensearch.index.compositeindex.CompositeIndexConstants.VERSION;
 import static org.opensearch.index.compositeindex.datacube.startree.node.FixedLengthStarTreeNode.SERIALIZABLE_DATA_SIZE_IN_BYTES;
 import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils.ALL;
@@ -43,7 +44,7 @@ public class StarTreeDataWriter {
      * @return the total size in bytes of the serialized star-tree data
      * @throws IOException if an I/O error occurs while writing the star-tree data
      */
-    public static long writeStarTree(IndexOutput indexOutput, TreeNode rootNode, int numNodes, String name) throws IOException {
+    public static long writeStarTree(IndexOutput indexOutput, InMemoryTreeNode rootNode, int numNodes, String name) throws IOException {
         long totalSizeInBytes = 0L;
         totalSizeInBytes += computeStarTreeDataHeaderByteSize();
         totalSizeInBytes += (long) numNodes * SERIALIZABLE_DATA_SIZE_IN_BYTES;
@@ -79,7 +80,7 @@ public class StarTreeDataWriter {
      * @throws IOException if an I/O error occurs while writing the header
      */
     private static void writeStarTreeHeader(IndexOutput output, int numNodes) throws IOException {
-        output.writeLong(MAGIC_MARKER);
+        output.writeLong(COMPOSITE_FIELD_MARKER);
         output.writeInt(VERSION);
         output.writeInt(numNodes);
     }
@@ -91,21 +92,23 @@ public class StarTreeDataWriter {
      * @param rootNode the root node of the star-tree
      * @throws IOException if an I/O error occurs while writing the nodes
      */
-    private static void writeStarTreeNodes(IndexOutput output, TreeNode rootNode) throws IOException {
-        Queue<TreeNode> queue = new LinkedList<>();
+    private static void writeStarTreeNodes(IndexOutput output, InMemoryTreeNode rootNode) throws IOException {
+        Queue<InMemoryTreeNode> queue = new LinkedList<>();
         queue.add(rootNode);
 
         int currentNodeId = 0;
         while (!queue.isEmpty()) {
-            TreeNode node = queue.remove();
+            InMemoryTreeNode node = queue.remove();
 
             if (node.children == null || node.children.isEmpty()) {
                 writeStarTreeNode(output, node, ALL, ALL);
             } else {
 
                 // Sort all children nodes based on dimension value
-                List<TreeNode> sortedChildren = new ArrayList<>(node.children.values());
-                sortedChildren.sort(Comparator.comparingInt(TreeNode::getNodeType).thenComparingLong(TreeNode::getDimensionValue));
+                List<InMemoryTreeNode> sortedChildren = new ArrayList<>(node.children.values());
+                sortedChildren.sort(
+                    Comparator.comparingInt(InMemoryTreeNode::getNodeType).thenComparingLong(InMemoryTreeNode::getDimensionValue)
+                );
 
                 int firstChildId = currentNodeId + queue.size() + 1;
                 int lastChildId = firstChildId + sortedChildren.size() - 1;
@@ -127,7 +130,7 @@ public class StarTreeDataWriter {
      * @param lastChildId  the ID of the last child node
      * @throws IOException if an I/O error occurs while writing the node
      */
-    private static void writeStarTreeNode(IndexOutput output, TreeNode node, int firstChildId, int lastChildId) throws IOException {
+    private static void writeStarTreeNode(IndexOutput output, InMemoryTreeNode node, int firstChildId, int lastChildId) throws IOException {
         output.writeInt(node.dimensionId);
         output.writeLong(node.dimensionValue);
         output.writeInt(node.startDocId);

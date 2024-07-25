@@ -5,7 +5,7 @@
  * this file be licensed under the Apache-2.0 license or a
  * compatible open source license.
  */
-package org.opensearch.index.compositeindex.datacube.startree.utils;
+package org.opensearch.index.compositeindex.datacube.startree.node;
 
 import org.opensearch.common.annotation.ExperimentalApi;
 
@@ -21,7 +21,7 @@ import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTr
  * @opensearch.experimental
  */
 @ExperimentalApi
-public class TreeNode {
+public class InMemoryTreeNode {
 
     /**
      * The dimension id for the dimension (field) associated with this star-tree node.
@@ -61,7 +61,7 @@ public class TreeNode {
     /**
      * A map containing the child nodes of this star-tree node, keyed by their dimension id.
      */
-    public Map<Long, TreeNode> children;
+    public Map<Long, InMemoryTreeNode> children;
 
     public long getDimensionValue() {
         return dimensionValue;

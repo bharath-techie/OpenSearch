@@ -10,14 +10,10 @@ package org.opensearch.index.compositeindex.datacube.startree.utils;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.IndexOptions;
-import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
-import org.apache.lucene.store.IndexOutput;
-import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
 
@@ -31,52 +27,6 @@ public class StarTreeUtils {
     private StarTreeUtils() {}
 
     public static final int ALL = -1;
-
-    /**
-     * Write star tree to index output stream
-     *
-     * @param dataOut  data index output
-     * @param rootNode root star-tree node
-     * @param numNodes number of nodes in the tree
-     * @param name     name of the star-tree field
-     * @return total size of the three
-     * @throws IOException when star-tree data serialization fails
-     */
-    public static long writeStarTree(IndexOutput dataOut, TreeNode rootNode, int numNodes, String name) throws IOException {
-        return StarTreeDataWriter.writeStarTree(dataOut, rootNode, numNodes, name);
-    }
-
-    /**
-     * Write star tree metadata to index output stream
-     *
-     * @param metaOut                meta index output
-     * @param starTreeField          star tree field
-     * @param writeState             segment write state
-     * @param metricAggregatorInfos  metric aggregator infos
-     * @param segmentAggregatedCount segment aggregated count
-     * @param dataFilePointer        data file pointer
-     * @param dataFileLength         data file length
-     * @throws IOException when star-tree data serialization fails
-     */
-    public static void writeStarTreeMetadata(
-        IndexOutput metaOut,
-        StarTreeField starTreeField,
-        SegmentWriteState writeState,
-        List<MetricAggregatorInfo> metricAggregatorInfos,
-        Integer segmentAggregatedCount,
-        long dataFilePointer,
-        long dataFileLength
-    ) throws IOException {
-        StarTreeMetaWriter.writeStarTreeMetadata(
-            metaOut,
-            starTreeField,
-            writeState,
-            metricAggregatorInfos,
-            segmentAggregatedCount,
-            dataFilePointer,
-            dataFileLength
-        );
-    }
 
     /**
      * The suffix appended to dimension field names in the Star Tree index.

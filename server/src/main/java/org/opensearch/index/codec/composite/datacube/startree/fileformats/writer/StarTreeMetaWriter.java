@@ -6,7 +6,7 @@
  * compatible open source license.
  */
 
-package org.opensearch.index.compositeindex.datacube.startree.utils;
+package org.opensearch.index.codec.composite.datacube.startree.fileformats.writer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -20,7 +20,7 @@ import org.opensearch.index.mapper.CompositeMappedFieldType;
 import java.io.IOException;
 import java.util.List;
 
-import static org.opensearch.index.compositeindex.CompositeIndexConstants.MAGIC_MARKER;
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.COMPOSITE_FIELD_MARKER;
 import static org.opensearch.index.compositeindex.CompositeIndexConstants.VERSION;
 
 /**
@@ -84,7 +84,7 @@ public class StarTreeMetaWriter {
         String starTreeFieldName
     ) throws IOException {
         // magic marker for sanity
-        metaOut.writeLong(MAGIC_MARKER);
+        metaOut.writeLong(COMPOSITE_FIELD_MARKER);
 
         // version
         metaOut.writeVInt(VERSION);
