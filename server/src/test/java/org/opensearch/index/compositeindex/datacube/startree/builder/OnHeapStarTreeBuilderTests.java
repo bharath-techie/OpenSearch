@@ -12,13 +12,16 @@ import org.apache.lucene.index.SegmentWriteState;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.mapper.MapperService;
 
+import java.io.IOException;
+
 public class OnHeapStarTreeBuilderTests extends AbstractStarTreeBuilderTests {
+
     @Override
     public BaseStarTreeBuilder getStarTreeBuilder(
         StarTreeField starTreeField,
         SegmentWriteState segmentWriteState,
         MapperService mapperService
-    ) {
-        return new OnHeapStarTreeBuilder(starTreeField, segmentWriteState, mapperService);
+    ) throws IOException {
+        return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
     }
 }
