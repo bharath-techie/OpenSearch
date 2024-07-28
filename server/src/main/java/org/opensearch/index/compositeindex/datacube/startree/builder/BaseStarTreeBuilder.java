@@ -7,6 +7,7 @@
  */
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import java.time.temporal.ChronoField;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
@@ -19,6 +20,7 @@ import org.apache.lucene.index.SortedNumericDocValuesWriterWrapper;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
+import org.opensearch.common.time.DateUtils;
 import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
 import org.opensearch.index.codec.composite.datacube.startree.fileformats.writer.StarTreeWriter;
 import org.opensearch.index.compositeindex.datacube.Dimension;
@@ -275,7 +277,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             appendToStarTree(starTreeDocumentIterator.next());
         }
         int numStarTreeDocument = numStarTreeDocs;
-        logger.debug("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
+        logger.info("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
 
         if (numStarTreeDocs == 0) {
             // serialize the star tree data
@@ -504,6 +506,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     throw new IllegalStateException("unable to read the dimension values from the segment", e);
                 }
                 dimensions[i] = dimensionReaders[i].value(currentDocId);
+                dimensions[i] = getTimeStampVal(starTreeField.getDimensionsOrder().get(i).getField(), dimensions[i]);
             } else {
                 throw new IllegalStateException("dimension readers are empty");
             }
@@ -563,7 +566,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                         metrics[i] = metricValueAggregator.getInitialAggregatedValue(segmentDocument.metrics[i]);
                     } else {
                         metrics[i] = metricValueAggregator.getInitialAggregatedValueForSegmentDocValue(
-                            getLong(segmentDocument.metrics[i], metricValueAggregator.getIdentityMetricValue())
+                            getLong(segmentDocument.metrics[i])
                         );
                     }
 
@@ -585,7 +588,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                     } else {
                         aggregatedSegmentDocument.metrics[i] = metricValueAggregator.mergeAggregatedValueAndSegmentValue(
                             aggregatedSegmentDocument.metrics[i],
-                            getLong(segmentDocument.metrics[i], metricValueAggregator.getIdentityMetricValue())
+                            getLong(segmentDocument.metrics[i])
                         );
                     }
                 } catch (Exception e) {
@@ -599,25 +602,16 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
     /**
      * Safely converts the metric value of object type to long.
+     * Nulls are handled during aggregation
      *
      * @param metric              value of the metric
-     * @param identityMetricValue value of the metric which does not really affect the aggregations
      * @return converted metric value to long
      */
-    private static long getLong(Object metric, long identityMetricValue) {
-
-        long metricValue;
-        try {
-            if (metric instanceof Long) {
-                metricValue = (long) metric;
-            } else {
-                logger.debug("metric value is null, returning identity metric value for the aggregator");
-                return identityMetricValue;
-            }
-        } catch (Exception e) {
-            throw new IllegalStateException("unable to cast segment metric", e);
+    private static Long getLong(Object metric) {
+        Long metricValue = null;
+        if (metric instanceof Long) {
+            metricValue = (long) metric;
         }
-
         return metricValue;
     }
 
@@ -858,8 +852,37 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         return val;
     }
 
-    public void close() throws IOException {
+    private long getTimeStampVal(final String fieldName, final long val) {
+        long roundedDate = 0;
+        long ratio = 0;
 
+        switch (fieldName) {
+
+            case "dropoff_datetime":
+                ratio = ChronoField.MINUTE_OF_HOUR.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "hour":
+                ratio = ChronoField.HOUR_OF_DAY.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "day":
+                ratio = ChronoField.DAY_OF_MONTH.getBaseUnit().getDuration().toMillis();
+                roundedDate = DateUtils.roundFloor(val, ratio);
+                return roundedDate;
+            case "month":
+                roundedDate = DateUtils.roundMonthOfYear(val);
+                return roundedDate;
+            case "year":
+                roundedDate = DateUtils.roundYear(val);
+                return roundedDate;
+            default:
+                return val;
+        }
+    }
+
+
+    public void close() throws IOException {
     }
 
     abstract Iterator<StarTreeDocument> mergeStarTrees(List<StarTreeValues> starTreeValues) throws IOException;

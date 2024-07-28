@@ -65,5 +65,5 @@ public interface ValueAggregator<A> {
     /**
      * Fetches a value that does not alter the result of aggregations
      */
-    long getIdentityMetricValue();
+    A getIdentityMetricValue();
 }

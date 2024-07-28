@@ -10,29 +10,24 @@ package org.opensearch.index.compositeindex.datacube.startree.aggregators;
 import org.apache.lucene.util.NumericUtils;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.numerictype.StarTreeNumericType;
-import org.opensearch.search.aggregations.metrics.CompensatedSum;
 
 /**
- * Sum value aggregator for star tree
+ * Min value aggregator for star tree
  *
  * @opensearch.experimental
  */
-public class SumValueAggregator implements ValueAggregator<Double> {
+public class MinValueAggregator implements ValueAggregator<Double> {
 
     public static final StarTreeNumericType VALUE_AGGREGATOR_TYPE = StarTreeNumericType.DOUBLE;
-    private double sum = 0;
-    private double compensation = 0;
-    private CompensatedSum kahanSummation = new CompensatedSum(0, 0);
-
     private final StarTreeNumericType starTreeNumericType;
 
-    public SumValueAggregator(StarTreeNumericType starTreeNumericType) {
+    public MinValueAggregator(StarTreeNumericType starTreeNumericType) {
         this.starTreeNumericType = starTreeNumericType;
     }
 
     @Override
     public MetricStat getAggregationType() {
-        return MetricStat.SUM;
+        return MetricStat.MIN;
     }
 
     @Override
@@ -42,56 +37,42 @@ public class SumValueAggregator implements ValueAggregator<Double> {
 
     @Override
     public Double getInitialAggregatedValueForSegmentDocValue(Long segmentDocValue) {
-        kahanSummation.reset(0, 0);
-        if (segmentDocValue != null) {
-            kahanSummation.add(starTreeNumericType.getDoubleValue(segmentDocValue));
-        } else {
-            kahanSummation.add(getIdentityMetricValue());
+        if (segmentDocValue == null) {
+            return getIdentityMetricValue();
         }
-        compensation = kahanSummation.delta();
-        sum = kahanSummation.value();
-        return kahanSummation.value();
+        return starTreeNumericType.getDoubleValue(segmentDocValue);
     }
 
     @Override
     public Double mergeAggregatedValueAndSegmentValue(Double value, Long segmentDocValue) {
-        assert value == null || kahanSummation.value() == value;
-        kahanSummation.reset(sum, compensation);
-        if (segmentDocValue != null) {
-            kahanSummation.add(starTreeNumericType.getDoubleValue(segmentDocValue));
-        } else {
-            kahanSummation.add(getIdentityMetricValue());
+        if (segmentDocValue == null && value != null) {
+            return value;
+        } else if (segmentDocValue != null && value == null) {
+            return starTreeNumericType.getDoubleValue(segmentDocValue);
+        } else if (segmentDocValue == null) {
+            return getIdentityMetricValue();
         }
-        compensation = kahanSummation.delta();
-        sum = kahanSummation.value();
-        return kahanSummation.value();
+        return Math.min(value, starTreeNumericType.getDoubleValue(segmentDocValue));
     }
 
     @Override
     public Double mergeAggregatedValues(Double value, Double aggregatedValue) {
-        assert aggregatedValue == null || kahanSummation.value() == aggregatedValue;
-        kahanSummation.reset(sum, compensation);
-        if (value != null) {
-            kahanSummation.add(value);
-        } else {
-            kahanSummation.add(getIdentityMetricValue());
+        if (value == null && aggregatedValue != null) {
+            return aggregatedValue;
+        } else if (value != null && aggregatedValue == null) {
+            return value;
+        } else if (value == null) {
+            return getIdentityMetricValue();
         }
-        compensation = kahanSummation.delta();
-        sum = kahanSummation.value();
-        return kahanSummation.value();
+        return Math.min(value, aggregatedValue);
     }
 
     @Override
     public Double getInitialAggregatedValue(Double value) {
-        kahanSummation.reset(0, 0);
-        if (value != null) {
-            kahanSummation.add(value);
-        } else {
-            kahanSummation.add(getIdentityMetricValue());
+        if (value == null) {
+            return getIdentityMetricValue();
         }
-        compensation = kahanSummation.delta();
-        sum = kahanSummation.value();
-        return kahanSummation.value();
+        return value;
     }
 
     @Override
@@ -103,7 +84,7 @@ public class SumValueAggregator implements ValueAggregator<Double> {
     public Long toLongValue(Double value) {
         try {
             if (value == null) {
-                return 0L;
+                return null;
             }
             return NumericUtils.doubleToSortableLong(value);
         } catch (Exception e) {
@@ -117,7 +98,7 @@ public class SumValueAggregator implements ValueAggregator<Double> {
             if (value == null) {
                 return getIdentityMetricValue();
             }
-            return VALUE_AGGREGATOR_TYPE.getDoubleValue(value);
+            return starTreeNumericType.getDoubleValue(value);
         } catch (Exception e) {
             throw new IllegalStateException("Cannot convert " + value + " to sortable aggregation type", e);
         }
@@ -125,6 +106,7 @@ public class SumValueAggregator implements ValueAggregator<Double> {
 
     @Override
     public Double getIdentityMetricValue() {
-        return 0D;
+        // in present aggregations, if the metric behind min is missing, we treat it as null
+        return null;
     }
 }
