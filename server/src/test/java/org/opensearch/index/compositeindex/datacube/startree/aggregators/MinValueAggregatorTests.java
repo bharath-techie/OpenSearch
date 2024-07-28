@@ -12,51 +12,24 @@ import org.apache.lucene.util.NumericUtils;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.numerictype.StarTreeNumericType;
 
-public class SumValueAggregatorTests extends AbstractValueAggregatorTests {
-
-    private SumValueAggregator aggregator;
-
-    @Override
-    public ValueAggregator getValueAggregator() {
-        aggregator = new SumValueAggregator(StarTreeNumericType.LONG);
-        return aggregator;
-    }
+public class MinValueAggregatorTests extends AbstractValueAggregatorTests {
+    private final MinValueAggregator aggregator = new MinValueAggregator(StarTreeNumericType.LONG);
 
     public void testMergeAggregatedValueAndSegmentValue() {
+        Long randomLong = randomNonNegativeLong();
         double randomDouble = randomDouble();
-        Long randomLong = randomLong();
-        aggregator.getInitialAggregatedValue(randomDouble);
-        assertEquals(
-            randomDouble + randomLong.doubleValue(),
-            aggregator.mergeAggregatedValueAndSegmentValue(randomDouble, randomLong),
-            0.0
-        );
-    }
-
-    public void testMergeAggregatedValueAndSegmentValue_nullSegmentDocValue() {
-        double randomDouble1 = randomDouble();
-        Long randomLong = randomLong();
-        aggregator.getInitialAggregatedValue(randomDouble1);
-        assertEquals(randomDouble1, aggregator.mergeAggregatedValueAndSegmentValue(randomDouble1, null), 0.0);
-        assertEquals(
-            randomDouble1 + randomLong.doubleValue(),
-            aggregator.mergeAggregatedValueAndSegmentValue(randomDouble1, randomLong),
-            0.0
-        );
-    }
-
-    public void testMergeAggregatedValueAndSegmentValue_nullInitialDocValue() {
-        Long randomLong = randomLong();
-        aggregator.getInitialAggregatedValue(null);
+        assertEquals(randomLong.doubleValue(), aggregator.mergeAggregatedValueAndSegmentValue(Double.MAX_VALUE, randomLong), 0.0);
         assertEquals(randomLong.doubleValue(), aggregator.mergeAggregatedValueAndSegmentValue(null, randomLong), 0.0);
+        assertEquals(randomDouble, aggregator.mergeAggregatedValueAndSegmentValue(randomDouble, null), 0.0);
+        assertEquals(2.0, aggregator.mergeAggregatedValueAndSegmentValue(2.0, 3L), 0.0);
     }
 
     public void testMergeAggregatedValues() {
-        double randomDouble1 = randomDouble();
-        double randomDouble2 = randomDouble();
-        aggregator.getInitialAggregatedValue(randomDouble1);
-        assertEquals(randomDouble1, aggregator.mergeAggregatedValues(null, randomDouble1), 0.0);
-        assertEquals(randomDouble1 + randomDouble2, aggregator.mergeAggregatedValues(randomDouble2, randomDouble1), 0.0);
+        double randomDouble = randomDouble();
+        assertEquals(randomDouble, aggregator.mergeAggregatedValues(Double.MAX_VALUE, randomDouble), 0.0);
+        assertEquals(randomDouble, aggregator.mergeAggregatedValues(null, randomDouble), 0.0);
+        assertEquals(randomDouble, aggregator.mergeAggregatedValues(randomDouble, null), 0.0);
+        assertEquals(2.0, aggregator.mergeAggregatedValues(2.0, 3.0), 0.0);
     }
 
     public void testGetInitialAggregatedValue() {
@@ -74,17 +47,23 @@ public class SumValueAggregatorTests extends AbstractValueAggregatorTests {
     }
 
     public void testToStarTreeNumericTypeValue() {
+        MinValueAggregator aggregator = new MinValueAggregator(StarTreeNumericType.DOUBLE);
         long randomLong = randomLong();
         assertEquals(NumericUtils.sortableLongToDouble(randomLong), aggregator.toStarTreeNumericTypeValue(randomLong), 0.0);
     }
 
     public void testIdentityMetricValue() {
-        assertEquals(0.0, aggregator.getIdentityMetricValue(), 0);
+        assertNull(aggregator.getIdentityMetricValue());
+    }
+
+    @Override
+    public ValueAggregator getValueAggregator() {
+        return aggregator;
     }
 
     @Override
     public MetricStat getMetricStat() {
-        return MetricStat.SUM;
+        return MetricStat.MIN;
     }
 
     @Override
