@@ -9,6 +9,7 @@
 package org.opensearch.index.compositeindex.datacube.startree.aggregators;
 
 import org.apache.lucene.util.NumericUtils;
+import org.opensearch.index.compositeindex.datacube.startree.StarTreeTestUtils;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.numerictype.StarTreeNumericType;
 
 public class MinValueAggregatorTests extends AbstractValueAggregatorTests {
@@ -22,18 +23,18 @@ public class MinValueAggregatorTests extends AbstractValueAggregatorTests {
         Long randomLong = randomLong();
         double randomDouble = randomDouble();
         assertEquals(
-            Math.min(aggregator.toStarTreeNumericTypeValue(randomLong), randomDouble),
+            Math.min(StarTreeTestUtils.toStarTreeNumericTypeValue(randomLong, aggregator.starTreeNumericType), randomDouble),
             aggregator.mergeAggregatedValueAndSegmentValue(randomDouble, randomLong),
             0.0
         );
         assertEquals(
-            aggregator.toStarTreeNumericTypeValue(randomLong),
+            StarTreeTestUtils.toStarTreeNumericTypeValue(randomLong, starTreeNumericType),
             aggregator.mergeAggregatedValueAndSegmentValue(null, randomLong),
             0.0
         );
         assertEquals(randomDouble, aggregator.mergeAggregatedValueAndSegmentValue(randomDouble, null), 0.0);
         assertEquals(
-            Math.min(2.0, aggregator.toStarTreeNumericTypeValue(3L)),
+            Math.min(2.0, StarTreeTestUtils.toStarTreeNumericTypeValue(3L, starTreeNumericType)),
             aggregator.mergeAggregatedValueAndSegmentValue(2.0, 3L),
             0.0
         );

@@ -6,16 +6,9 @@
  * compatible open source license.
  */
 
-package org.opensearch.index.codec.composite;
-
-import org.opensearch.common.annotation.ExperimentalApi;
-
 /**
- * Interface for composite index values
+ * Writer package for star tree
  *
  * @opensearch.experimental
  */
-@ExperimentalApi
-public interface CompositeIndexValues {
-    CompositeIndexValues getValues();
-}
+package org.opensearch.index.compositeindex.datacube.startree.fileformats.data;

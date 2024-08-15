@@ -67,7 +67,11 @@ class SumValueAggregator implements ValueAggregator<Double> {
         assert aggregatedValue == null || kahanSummation.value() == aggregatedValue;
         // add takes care of the sum and compensation internally
         if (value != null) {
-            kahanSummation.add(value);
+            if (value != null) {
+                kahanSummation.add(value);
+            } else {
+                kahanSummation.add(getIdentityMetricValue());
+            }
         } else {
             kahanSummation.add(getIdentityMetricValue());
         }
@@ -92,7 +96,7 @@ class SumValueAggregator implements ValueAggregator<Double> {
             if (value == null) {
                 return getIdentityMetricValue();
             }
-            return starTreeNumericType.getDoubleValue(value);
+            return VALUE_AGGREGATOR_TYPE.getDoubleValue(value);
         } catch (Exception e) {
             throw new IllegalStateException("Cannot convert " + value + " to sortable aggregation type", e);
         }

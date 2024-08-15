@@ -7,6 +7,6 @@
  */
 
 /**
- *  classes responsible for handling all composite index codecs and operations
+ *  Responsible for handling all composite index codecs and operations
  */
 package org.opensearch.index.codec.composite;
