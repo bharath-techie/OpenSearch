@@ -11,8 +11,10 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
+import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.EmptyDocValuesProducer;
 import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedNumericDocValuesWriterWrapper;
@@ -144,6 +146,16 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
     public List<MetricAggregatorInfo> generateMetricAggregatorInfos(MapperService mapperService) {
         List<MetricAggregatorInfo> metricAggregatorInfos = new ArrayList<>();
         for (Metric metric : this.starTreeField.getMetrics()) {
+            if (metric.getField().equals("_doc_count")) {
+                MetricAggregatorInfo metricAggregatorInfo = new MetricAggregatorInfo(
+                    MetricStat.DOC_COUNT,
+                    metric.getField(),
+                    starTreeField.getName(),
+                    IndexNumericFieldData.NumericType.LONG
+                );
+                metricAggregatorInfos.add(metricAggregatorInfo);
+                continue;
+            }
             for (MetricStat metricStat : metric.getMetrics()) {
                 if (metricStat.isDerivedMetric()) {
                     continue;
@@ -435,7 +447,14 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             );
         }
         for (String metric : starTreeValues.getStarTreeField().getMetricNames()) {
-            metricReaders.add(new SequentialDocValuesIterator(starTreeValues.getMetricDocValuesIteratorMap().get(metric)));
+            DocIdSetIterator disi = starTreeValues.getMetricDocValuesIteratorMap().get(metric);
+            SortedNumericDocValues sndv = null;
+            if(disi instanceof NumericDocValues) {
+                sndv = DocValues.singleton((NumericDocValues) disi);
+            } else {
+                sndv = (SortedNumericDocValues) disi;
+            }
+            metricReaders.add(new SequentialDocValuesIterator(sndv));
         }
         numSegmentDocs.set(Integer.parseInt(
             starTreeValues.getAttributes().getOrDefault(SEGMENT_DOCS_COUNT, String.valueOf(DocIdSetIterator.NO_MORE_DOCS)))
