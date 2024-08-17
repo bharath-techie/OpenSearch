@@ -21,14 +21,25 @@ public enum MetricStat {
     AVG("avg", 1),
     SUM("sum", 2),
     MIN("min", 3),
-    MAX("max", 4);
+    MAX("max", 4),
+    DOC_COUNT("doc_count", 5, true);
 
     private final String typeName;
     private final int metricOrdinal;
 
+    // System field stats cannot be used as input for user metric types
+    private final boolean isSystemFieldStat;
+
+    MetricStat(String typeName, int metricOrdinal, boolean isSystemFieldStat) {
+        this.typeName = typeName;
+        this.metricOrdinal = metricOrdinal;
+        this.isSystemFieldStat = isSystemFieldStat;
+    }
+
     MetricStat(String typeName, int metricOrdinal) {
         this.typeName = typeName;
         this.metricOrdinal = metricOrdinal;
+        this.isSystemFieldStat = false;
     }
 
     public String getTypeName() {
@@ -41,7 +52,8 @@ public enum MetricStat {
 
     public static MetricStat fromTypeName(String typeName) {
         for (MetricStat metric : MetricStat.values()) {
-            if (metric.getTypeName().equalsIgnoreCase(typeName)) {
+            // prevent system fields to be entered as user input
+            if (metric.getTypeName().equalsIgnoreCase(typeName) && metric.isSystemFieldStat == false) {
                 return metric;
             }
         }

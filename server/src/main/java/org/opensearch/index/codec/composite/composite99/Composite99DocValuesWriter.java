@@ -17,6 +17,7 @@ import org.apache.lucene.index.EmptyDocValuesProducer;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.MergeState;
+import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.store.IndexOutput;
@@ -30,6 +31,7 @@ import org.opensearch.index.compositeindex.datacube.startree.builder.StarTreesBu
 import org.opensearch.index.compositeindex.datacube.startree.index.CompositeIndexValues;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
+import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.StarTreeMapper;
 
@@ -77,6 +79,9 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
         segmentFieldSet = new HashSet<>();
         for (FieldInfo fi : segmentWriteState.fieldInfos) {
             if (DocValuesType.SORTED_NUMERIC.equals(fi.getDocValuesType())) {
+                segmentFieldSet.add(fi.name);
+            }
+            if(fi.name.equals(DocCountFieldMapper.NAME)) {
                 segmentFieldSet.add(fi.name);
             }
         }
@@ -136,6 +141,10 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
     @Override
     public void addNumericField(FieldInfo field, DocValuesProducer valuesProducer) throws IOException {
         delegate.addNumericField(field, valuesProducer);
+        // Perform this only during flush flow
+        if (mergeState.get() == null && segmentHasCompositeFields) {
+            createCompositeIndicesIfPossible(valuesProducer, field);
+        }
     }
 
     @Override
@@ -197,12 +206,21 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
         if (segmentFieldSet.isEmpty()) {
             Set<String> compositeFieldSetCopy = new HashSet<>(compositeFieldSet);
             for (String compositeField : compositeFieldSetCopy) {
-                fieldProducerMap.put(compositeField, new EmptyDocValuesProducer() {
-                    @Override
-                    public SortedNumericDocValues getSortedNumeric(FieldInfo field) {
-                        return DocValues.emptySortedNumeric();
-                    }
-                });
+                if (compositeField.equals("_doc_count")) {
+                    fieldProducerMap.put(compositeField, new EmptyDocValuesProducer() {
+                        @Override
+                        public NumericDocValues getNumeric(FieldInfo field) {
+                            return DocValues.emptyNumeric();
+                        }
+                    });
+                } else {
+                    fieldProducerMap.put(compositeField, new EmptyDocValuesProducer() {
+                        @Override
+                        public SortedNumericDocValues getSortedNumeric(FieldInfo field) {
+                            return DocValues.emptySortedNumeric();
+                        }
+                    });
+                }
                 compositeFieldSet.remove(compositeField);
             }
         }
