@@ -188,7 +188,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
                 StarTreeValues starTreeValues = (StarTreeValues) starTreeDocValuesReader.getCompositeIndexValues(compositeIndexFieldInfo);
                 StarTreeDocument[] starTreeDocuments = StarTreeTestUtils.getSegmentsStarTreeDocuments(
                     List.of(starTreeValues),
-                    List.of(StarTreeNumericType.DOUBLE, StarTreeNumericType.LONG),
+                    List.of(StarTreeNumericType.DOUBLE, StarTreeNumericType.LONG, StarTreeNumericType.LONG),
                     reader.maxDoc()
                 );
                 assertStarTreeDocuments(starTreeDocuments, expectedStarTreeDocuments);

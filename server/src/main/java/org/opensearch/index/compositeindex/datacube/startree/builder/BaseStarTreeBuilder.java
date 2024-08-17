@@ -37,6 +37,7 @@ import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeTy
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
 import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils;
 import org.opensearch.index.fielddata.IndexNumericFieldData;
+import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.Mapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.NumberFieldMapper;
@@ -146,7 +147,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
     public List<MetricAggregatorInfo> generateMetricAggregatorInfos(MapperService mapperService) {
         List<MetricAggregatorInfo> metricAggregatorInfos = new ArrayList<>();
         for (Metric metric : this.starTreeField.getMetrics()) {
-            if (metric.getField().equals("_doc_count")) {
+            if (metric.getField().equals(DocCountFieldMapper.NAME)) {
                 MetricAggregatorInfo metricAggregatorInfo = new MetricAggregatorInfo(
                     MetricStat.DOC_COUNT,
                     metric.getField(),
@@ -198,9 +199,14 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                 if (metricFieldInfo == null) {
                     metricFieldInfo = StarTreeUtils.getFieldInfo(metric.getField(), 1);
                 }
-                metricReader = new SequentialDocValuesIterator(
-                    fieldProducerMap.get(metricFieldInfo.name).getSortedNumeric(metricFieldInfo)
-                );
+                if(metricFieldInfo.name.equals(DocCountFieldMapper.NAME)) {
+                    metricReader = new SequentialDocValuesIterator(
+                        DocValues.singleton(fieldProducerMap.get(metricFieldInfo.name).getNumeric(metricFieldInfo))
+                    );
+                } else {
+                    metricReader = new SequentialDocValuesIterator(
+                        fieldProducerMap.get(metricFieldInfo.name).getSortedNumeric(metricFieldInfo));
+                }
                 // } else {
                 // metricReader = new SequentialDocValuesIterator();
                 // }
