@@ -220,7 +220,7 @@ public class StarTreeMapperTests extends MapperTestCase {
             assertEquals("status", starTreeFieldType.getMetrics().get(0).getField());
             List<MetricStat> expectedMetrics = Arrays.asList(
                 MetricStat.AVG,
-                MetricStat.VALUE_COUNT,
+                MetricStat.COUNT,
                 MetricStat.SUM,
                 MetricStat.MAX,
                 MetricStat.MIN
@@ -405,11 +405,11 @@ public class StarTreeMapperTests extends MapperTestCase {
         assertEquals(metric1, metric2);
         List<MetricStat> m2 = new ArrayList<>();
         m2.add(MetricStat.MAX);
-        m2.add(MetricStat.VALUE_COUNT);
+        m2.add(MetricStat.COUNT);
         metric2 = new Metric("name", m2);
         assertNotEquals(metric1, metric2);
 
-        assertEquals(MetricStat.VALUE_COUNT, MetricStat.fromTypeName("value_count"));
+        assertEquals(MetricStat.COUNT, MetricStat.fromTypeName("count"));
         assertEquals(MetricStat.MAX, MetricStat.fromTypeName("max"));
         assertEquals(MetricStat.MIN, MetricStat.fromTypeName("min"));
         assertEquals(MetricStat.SUM, MetricStat.fromTypeName("sum"));
