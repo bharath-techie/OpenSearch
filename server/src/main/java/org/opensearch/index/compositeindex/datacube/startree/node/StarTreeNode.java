@@ -20,6 +20,7 @@ import java.util.Iterator;
  */
 @ExperimentalApi
 public interface StarTreeNode {
+    long ALL = -1l;
 
     /**
      * Returns the dimension ID of the current star-tree node.
