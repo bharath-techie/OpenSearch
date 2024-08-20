@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Add took time to request nodes stats ([#15054](https://github.com/opensearch-project/OpenSearch/pull/15054))
 - [Workload Management] Add Get QueryGroup API Logic ([14709](https://github.com/opensearch-project/OpenSearch/pull/14709))
 - [Workload Management] QueryGroup resource tracking framework changes ([#13897](https://github.com/opensearch-project/OpenSearch/pull/13897))
+- Support filtering on a large list encoded by bitmap ([#14774](https://github.com/opensearch-project/OpenSearch/pull/14774))
 - Add slice execution listeners to SearchOperationListener interface ([#15153](https://github.com/opensearch-project/OpenSearch/pull/15153))
 
 ### Dependencies
@@ -36,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Bump `com.azure:azure-xml` from 1.0.0 to 1.1.0 ([#15206](https://github.com/opensearch-project/OpenSearch/pull/15206))
 - Bump `reactor` from 3.5.19 to 3.5.20 ([#15262](https://github.com/opensearch-project/OpenSearch/pull/15262))
 - Bump `reactor-netty` from 1.1.21 to 1.1.22 ([#15262](https://github.com/opensearch-project/OpenSearch/pull/15262))
+- Bump `org.apache.kerby:kerb-admin` from 2.0.3 to 2.1.0 ([#15301](https://github.com/opensearch-project/OpenSearch/pull/15301))
+- Bump `com.azure:azure-core-http-netty` from 1.15.1 to 1.15.3 ([#15300](https://github.com/opensearch-project/OpenSearch/pull/15300))
+- Bump `com.gradle.develocity` from 3.17.6 to 3.18 ([#15297](https://github.com/opensearch-project/OpenSearch/pull/15297))
 
 ### Changed
 - Add lower limit for primary and replica batch allocators timeout ([#14979](https://github.com/opensearch-project/OpenSearch/pull/14979))

@@ -52,7 +52,7 @@ abstract class StatelessDoubleValueAggregator implements ValueAggregator<Double>
     }
 
     @Override
-    public Double toStarTreeNumericTypeValue(Long value) {
+    public Double toAggregatedValueType(Long value) {
         try {
             if (value == null) {
                 return getIdentityMetricValue();

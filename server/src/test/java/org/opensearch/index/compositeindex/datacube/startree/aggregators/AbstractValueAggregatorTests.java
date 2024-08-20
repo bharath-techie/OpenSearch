@@ -70,7 +70,7 @@ public abstract class AbstractValueAggregatorTests extends OpenSearchTestCase {
             assertEquals(CountValueAggregator.DEFAULT_INITIAL_VALUE, aggregator.getInitialAggregatedValueForSegmentDocValue(randomLong()));
         } else {
             assertEquals(
-                StarTreeTestUtils.toStarTreeNumericTypeValue(randomLong, starTreeNumericType),
+                starTreeNumericType.getDoubleValue(randomLong),
                 aggregator.getInitialAggregatedValueForSegmentDocValue(randomLong)
             );
         }
