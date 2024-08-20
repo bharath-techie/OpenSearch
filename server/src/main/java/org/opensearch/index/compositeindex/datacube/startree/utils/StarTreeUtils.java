@@ -83,6 +83,7 @@ public class StarTreeUtils {
     public static FieldInfo getFieldInfo(String fieldName, int fieldNumber) {
         return getFieldInfo(fieldName, fieldNumber, DocValuesType.SORTED_NUMERIC);
     }
+
     /**
      * Get new field info instance for a given field name and field number
      * @param fieldName name of the field

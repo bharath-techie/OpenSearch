@@ -81,7 +81,7 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
             if (DocValuesType.SORTED_NUMERIC.equals(fi.getDocValuesType())) {
                 segmentFieldSet.add(fi.name);
             }
-            if(fi.name.equals(DocCountFieldMapper.NAME)) {
+            if (fi.name.equals(DocCountFieldMapper.NAME)) {
                 segmentFieldSet.add(fi.name);
             }
         }

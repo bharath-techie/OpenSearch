@@ -1048,7 +1048,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             List.of(
                 new MetricEntry("field2", MetricStat.SUM),
                 new MetricEntry("field4", MetricStat.SUM),
-                new MetricEntry("field6", MetricStat.COUNT),
+                new MetricEntry("field6", MetricStat.VALUE_COUNT),
                 new MetricEntry("field9", MetricStat.MIN),
                 new MetricEntry("field10", MetricStat.MAX)
             ),
@@ -1163,7 +1163,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             List.of(
                 new MetricEntry("field2", MetricStat.SUM),
                 new MetricEntry("field4", MetricStat.SUM),
-                new MetricEntry("field6", MetricStat.COUNT),
+                new MetricEntry("field6", MetricStat.VALUE_COUNT),
                 new MetricEntry("field9", MetricStat.MIN),
                 new MetricEntry("field10", MetricStat.MAX)
             ),
@@ -1268,7 +1268,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             List.of(
                 new MetricEntry("field2", MetricStat.SUM),
                 new MetricEntry("field4", MetricStat.SUM),
-                new MetricEntry("field6", MetricStat.COUNT),
+                new MetricEntry("field6", MetricStat.VALUE_COUNT),
                 new MetricEntry("field9", MetricStat.MIN),
                 new MetricEntry("field10", MetricStat.MAX)
             ),
@@ -1446,7 +1446,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             List.of(
                 new MetricEntry("field2", MetricStat.SUM),
                 new MetricEntry("field4", MetricStat.SUM),
-                new MetricEntry("field6", MetricStat.COUNT),
+                new MetricEntry("field6", MetricStat.VALUE_COUNT),
                 new MetricEntry("field9", MetricStat.MIN),
                 new MetricEntry("field10", MetricStat.MAX)
             ),
@@ -1554,7 +1554,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             List.of(
                 new MetricEntry("field2", MetricStat.SUM),
                 new MetricEntry("field4", MetricStat.SUM),
-                new MetricEntry("field6", MetricStat.COUNT),
+                new MetricEntry("field6", MetricStat.VALUE_COUNT),
                 new MetricEntry("field9", MetricStat.MIN),
                 new MetricEntry("field10", MetricStat.MAX)
             ),
@@ -1925,7 +1925,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.SUM), new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.SUM), new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             6,
             1000,
             Set.of(),
@@ -2014,7 +2014,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.SUM), new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.SUM), new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             6,
             1000,
             Set.of(),
@@ -2079,7 +2079,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         DocValuesProducer d2vp = getDocValuesProducer(d2sndv);
         DocValuesProducer m1vp = getDocValuesProducer(m1sndv);
         Map<String, DocValuesProducer> fieldProducerMap = Map.of("field1", d1vp, "field3", d2vp, "field2", m1vp);
-//        builder.build(starTreeDocumentIterator, new AtomicInteger(), docValuesConsumer);
+        // builder.build(starTreeDocumentIterator, new AtomicInteger(), docValuesConsumer);
         builder.build(fieldProducerMap, new AtomicInteger(), docValuesConsumer);
         /**
          * Asserting following dim / metrics [ dim1, dim2 / Sum [ metric] ]
@@ -2096,10 +2096,10 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
          */
         List<StarTreeDocument> starTreeDocuments = builder.getStarTreeDocuments();
         for (StarTreeDocument starTreeDocument : starTreeDocuments) {
-//            assertEquals(
-//                starTreeDocument.dimensions[1] != null ? starTreeDocument.dimensions[1] * 10.0 : 49500.0,
-//                starTreeDocument.metrics[0]
-//            );
+            // assertEquals(
+            // starTreeDocument.dimensions[1] != null ? starTreeDocument.dimensions[1] * 10.0 : 49500.0,
+            // starTreeDocument.metrics[0]
+            // );
         }
         validateStarTree(builder.getRootNode(), 2, 1, builder.getStarTreeDocuments());
 
@@ -2352,7 +2352,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             6,
             1000,
             Set.of(),
@@ -2473,7 +2473,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             9,
             1000,
             Set.of(),
@@ -2632,7 +2632,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             10,
             1000,
             Set.of(),
@@ -2732,7 +2732,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             6,
             1000,
             Set.of(),
@@ -2836,7 +2836,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             7,
             1000,
             Set.of(),
@@ -2936,7 +2936,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             10,
             1000,
             Set.of(),
@@ -3034,7 +3034,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             10,
             1000,
             Set.of(),
@@ -3120,7 +3120,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             STAR_TREE,
             mock(IndexInput.class),
             List.of("field1", "field3"),
-            List.of(new MetricEntry("field2", MetricStat.COUNT)),
+            List.of(new MetricEntry("field2", MetricStat.VALUE_COUNT)),
             6,
             1000,
             Set.of(),

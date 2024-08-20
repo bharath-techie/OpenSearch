@@ -52,8 +52,8 @@ public class DocCountAggregator implements ValueAggregator<Long> {
     }
 
     @Override
-    public Long toStarTreeNumericTypeValue(Long value) {
-        return value;
+    public Long toAggregatedValueType(Long rawValue) {
+        return rawValue;
     }
 
     @Override

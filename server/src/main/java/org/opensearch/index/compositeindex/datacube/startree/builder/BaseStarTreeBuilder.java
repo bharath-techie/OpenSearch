@@ -183,7 +183,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             for (MetricStat metricStat : metric.getMetrics()) {
                 SequentialDocValuesIterator metricReader = null;
                 FieldInfo metricFieldInfo = state.fieldInfos.fieldInfo(metric.getField());
-                // if (metricStat != MetricStat.COUNT) {
+                // if (metricStat != MetricStat.VALUE_COUNT) {
 
                 if (metricStat.equals(MetricStat.DOC_COUNT)) {
                     if (metricFieldInfo == null) {
