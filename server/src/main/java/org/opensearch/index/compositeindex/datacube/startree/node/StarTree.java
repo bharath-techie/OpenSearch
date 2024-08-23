@@ -13,6 +13,8 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.index.compositeindex.datacube.startree.fileformats.data.StarTreeDataWriter;
 import org.opensearch.index.compositeindex.datacube.startree.fileformats.meta.StarTreeMetadata;
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.COMPOSITE_FIELD_MARKER;
+import static org.opensearch.index.compositeindex.datacube.startree.fileformats.StarTreeWriter.VERSION_CURRENT;
 
 import java.io.IOException;
 
@@ -28,15 +30,15 @@ public class StarTree {
 
     public StarTree(IndexInput data, StarTreeMetadata starTreeMetadata) throws IOException {
         long magicMarker = data.readLong();
-        // if (COMPOSITE_FIELD_MARKER != magicMarker) {
-        // logger.error("Invalid magic marker");
-        // throw new IOException("Invalid magic marker");
-        // }
+         if (COMPOSITE_FIELD_MARKER != magicMarker) {
+         logger.error("Invalid magic marker");
+         throw new IOException("Invalid magic marker");
+         }
         int version = data.readInt();
-        // if (VERSION_CURRENT != version) {
-        // logger.error("Invalid star tree version");
-        // throw new IOException("Invalid version");
-        // }
+         if (VERSION_CURRENT != version) {
+         logger.error("Invalid star tree version");
+         throw new IOException("Invalid version");
+         }
         numNodes = data.readInt(); // num nodes
 
         RandomAccessInput in = data.randomAccessSlice(
