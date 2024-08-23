@@ -45,12 +45,12 @@ public class OriginalOrStarTreeQuery extends Query implements Accountable {
 
     @Override
     public boolean equals(Object o) {
-        return false;
+        return true;
     }
 
     @Override
     public int hashCode() {
-        return 0;
+        return originalQuery.hashCode();
     }
 
     @Override

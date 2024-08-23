@@ -75,8 +75,9 @@ import static org.opensearch.index.compositeindex.datacube.startree.StarTreeTest
  */
 @LuceneTestCase.SuppressSysoutChecks(bugUrl = "we log a lot on purpose")
 public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
-    MapperService mapperService = null;
+
     StarTreeFieldConfiguration.StarTreeBuildMode buildMode;
+    MapperService mapperService;
 
     public StarTreeDocValuesFormatTests(StarTreeFieldConfiguration.StarTreeBuildMode buildMode) {
         this.buildMode = buildMode;
@@ -108,13 +109,14 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
     @Override
     protected Codec getCodec() {
         final Logger testLogger = LogManager.getLogger(StarTreeDocValuesFormatTests.class);
-
+        Codec codec;
         try {
-            createMapperService(getExpandedMapping());
+            mapperService = createMapperService(getExpandedMapping());
+            codec = new Composite99Codec(Lucene99Codec.Mode.BEST_SPEED, mapperService, testLogger);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
-        Codec codec = new Composite99Codec(Lucene99Codec.Mode.BEST_SPEED, mapperService, testLogger);
+
         return codec;
     }
 
@@ -201,7 +203,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         directory.close();
     }
 
-    private XContentBuilder getExpandedMapping() throws IOException {
+    public static XContentBuilder getExpandedMapping() throws IOException {
         return topMapping(b -> {
             b.startObject("composite");
             b.startObject("startree");
@@ -222,6 +224,8 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
             b.startArray("stats");
             b.value("sum");
             b.value("value_count");
+            b.value("max");
+            b.value("min");
             b.endArray();
             b.endObject();
             b.endArray();
@@ -242,13 +246,14 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         });
     }
 
-    private XContentBuilder topMapping(CheckedConsumer<XContentBuilder, IOException> buildFields) throws IOException {
+    private static XContentBuilder topMapping(CheckedConsumer<XContentBuilder, IOException> buildFields) throws IOException {
         XContentBuilder builder = XContentFactory.jsonBuilder().startObject().startObject("_doc");
         buildFields.accept(builder);
         return builder.endObject().endObject();
     }
 
-    private void createMapperService(XContentBuilder builder) throws IOException {
+    public static MapperService createMapperService(XContentBuilder builder) throws IOException {
+        MapperService mapperService = null;
         IndexMetadata indexMetadata = IndexMetadata.builder("test")
             .settings(
                 Settings.builder()
@@ -267,5 +272,6 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
             "test"
         );
         mapperService.merge(indexMetadata, MapperService.MergeReason.INDEX_TEMPLATE);
+        return mapperService;
     }
 }

@@ -79,6 +79,8 @@ import org.opensearch.script.ScriptContext;
 import org.opensearch.script.ScriptFactory;
 import org.opensearch.script.ScriptService;
 import org.opensearch.search.aggregations.AggregatorFactory;
+import org.opensearch.search.aggregations.metrics.MaxAggregatorFactory;
+import org.opensearch.search.aggregations.metrics.MinAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.SumAggregatorFactory;
 import org.opensearch.search.aggregations.support.AggregationUsageService;
 import org.opensearch.search.aggregations.support.ValuesSourceRegistry;
@@ -585,7 +587,7 @@ public class QueryShardContext extends QueryRewriteContext {
     }
 
     public boolean validateStarTreeMetricSuport(CompositeDataCubeFieldType compositeIndexFieldInfo, AggregatorFactory aggregatorFactory) {
-        String field = null;
+        String field;
         Map<String, List<MetricStat>> supportedMetrics = compositeIndexFieldInfo.getMetrics()
             .stream()
             .collect(Collectors.toMap(Metric::getField, Metric::getMetrics));
@@ -595,14 +597,16 @@ public class QueryShardContext extends QueryRewriteContext {
             return false;
         }
 
-        // TODO: increment supported aggregation type
         if (aggregatorFactory instanceof SumAggregatorFactory) {
             field = ((SumAggregatorFactory) aggregatorFactory).getField();
-            if (supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(MetricStat.SUM)) {
-                return true;
-            }
+            return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(MetricStat.SUM);
+        } else if (aggregatorFactory instanceof MaxAggregatorFactory) {
+            field = ((MaxAggregatorFactory) aggregatorFactory).getField();
+            return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(MetricStat.MAX);
+        } else if (aggregatorFactory instanceof MinAggregatorFactory) {
+            field = ((MinAggregatorFactory) aggregatorFactory).getField();
+            return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(MetricStat.MIN);
         }
-
         return false;
     }
 
