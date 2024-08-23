@@ -9,11 +9,8 @@ package org.opensearch.index.compositeindex.datacube.startree.builder;
 
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.index.SegmentWriteState;
-import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.annotation.ExperimentalApi;
-import org.opensearch.index.codec.composite.datacube.startree.StarTreeValues;
-import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeDocument;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
@@ -27,9 +24,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.opensearch.index.compositeindex.CompositeIndexConstants.SEGMENT_DOCS_COUNT;
 
 /**
  * On heap single tree builder
@@ -138,10 +132,7 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
             setReadersAndNumSegmentDocs(dimensionReaders, metricReaders, numSegmentDocs, starTreeValues);
 
             int currentDocId = 0;
-            int numSegmentDocs = Integer.parseInt(
-                starTreeValues.getAttributes().getOrDefault(SEGMENT_DOCS_COUNT, String.valueOf(DocIdSetIterator.NO_MORE_DOCS))
-            );
-            while (currentDocId < numSegmentDocs) {
+            while (currentDocId < numSegmentDocs.get()) {
                 starTreeDocuments.add(getStarTreeDocument(currentDocId, dimensionReaders, metricReaders));
                 currentDocId++;
             }

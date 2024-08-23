@@ -51,6 +51,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.SEGMENT_DOCS_COUNT;
 import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils.ALL;
 import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils.fullyQualifiedFieldNameForStarTreeDimensionsDocValues;
 import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils.fullyQualifiedFieldNameForStarTreeMetricsDocValues;
@@ -436,8 +437,8 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         for (String metric : starTreeValues.getStarTreeField().getMetricNames()) {
             metricReaders.add(new SequentialDocValuesIterator(starTreeValues.getMetricDocValuesIteratorMap().get(metric)));
         }
-        numSegmentDocs.set(
-            Integer.parseInt(starTreeValues.getAttributes().getOrDefault(NUM_SEGMENT_DOCS, String.valueOf(DocIdSetIterator.NO_MORE_DOCS)))
+        numSegmentDocs.set(Integer.parseInt(
+            starTreeValues.getAttributes().getOrDefault(SEGMENT_DOCS_COUNT, String.valueOf(DocIdSetIterator.NO_MORE_DOCS)))
         );
     }
 

@@ -24,7 +24,8 @@ public enum MetricStat {
     SUM("sum",1),
     MIN("min",2),
     MAX("max",3),
-    AVG("avg", 4, VALUE_COUNT, SUM);
+    AVG("avg", 4,VALUE_COUNT, SUM);
+
 
     private final String typeName;
     private final MetricStat[] baseMetrics;

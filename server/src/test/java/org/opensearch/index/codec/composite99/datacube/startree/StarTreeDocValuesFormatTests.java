@@ -51,6 +51,9 @@ import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfig
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeTestUtils;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.numerictype.StarTreeNumericType;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
+import org.opensearch.index.compositeindex.datacube.startree.utils.date.DateTimeUnitAdapter;
+import org.opensearch.index.compositeindex.datacube.startree.utils.date.DateTimeUnitRounding;
+import org.opensearch.index.mapper.DateFieldMapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.StarTreeMapper;
 import org.opensearch.indices.IndicesModule;
@@ -119,15 +122,15 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         List<MetricStat> m1 = new ArrayList<>();
         m1.add(MetricStat.MAX);
         Metric metric = new Metric("sndv", m1);
-        List<Rounding.DateTimeUnit> d1CalendarIntervals = new ArrayList<>();
-        d1CalendarIntervals.add(Rounding.DateTimeUnit.HOUR_OF_DAY);
+        List<DateTimeUnitRounding> d1CalendarIntervals = new ArrayList<>();
+        d1CalendarIntervals.add(new DateTimeUnitAdapter(Rounding.DateTimeUnit.HOUR_OF_DAY));
         StarTreeField starTreeField = getStarTreeField(d1CalendarIntervals, metric);
 
         return new StarTreeMapper.StarTreeFieldType("star_tree", starTreeField);
     }
 
-    private StarTreeField getStarTreeField(List<Rounding.DateTimeUnit> d1CalendarIntervals, Metric metric1) {
-        DateDimension d1 = new DateDimension("field", d1CalendarIntervals);
+    private StarTreeField getStarTreeField(List<DateTimeUnitRounding> d1CalendarIntervals, Metric metric1) {
+        DateDimension d1 = new DateDimension("field", d1CalendarIntervals, DateFieldMapper.Resolution.MILLISECONDS);
         NumericDimension d2 = new NumericDimension("dv");
 
         List<Metric> metrics = List.of(metric1);

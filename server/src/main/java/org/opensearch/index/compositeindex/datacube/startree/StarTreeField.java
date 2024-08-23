@@ -21,6 +21,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils.fullyQualifiedFieldNameForStarTreeMetricsDocValues;
+
+
 /**
  * Star tree field which contains dimensions, metrics and specs
  *
@@ -46,9 +49,15 @@ public class StarTreeField implements ToXContent {
         }
         metricNames = new ArrayList<>();
         for (Metric metric : metrics) {
+            String field = metric.getField();
             for (MetricStat metricStat : metric.getMetrics()) {
                 // TODO : revisit this post file formats
-                metricNames.add(metric.getField() + "_" + metricStat.name());
+                String mname = fullyQualifiedFieldNameForStarTreeMetricsDocValues(
+                    name,
+                    field,
+                    metricStat.getTypeName()
+                );
+                metricNames.add(mname);
             }
         }
     }
