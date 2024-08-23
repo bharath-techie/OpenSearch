@@ -218,7 +218,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
             b.field("name", "field");
             b.startArray("stats");
             b.value("sum");
-            b.value("count");
+            b.value("value_count");
             b.endArray();
             b.endObject();
             b.endArray();

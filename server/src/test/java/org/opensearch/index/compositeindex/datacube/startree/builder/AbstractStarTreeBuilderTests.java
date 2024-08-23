@@ -125,7 +125,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         metrics = List.of(
             new Metric("field2", List.of(MetricStat.SUM)),
             new Metric("field4", List.of(MetricStat.SUM)),
-            new Metric("field6", List.of(MetricStat.COUNT)),
+            new Metric("field6", List.of(MetricStat.VALUE_COUNT)),
             new Metric("field9", List.of(MetricStat.MIN)),
             new Metric("field10", List.of(MetricStat.MAX)),
             new Metric("_doc_count", List.of(MetricStat.DOC_COUNT))
@@ -2270,7 +2270,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         Dimension d1 = new NumericDimension("field1");
         Dimension d2 = new NumericDimension("field3");
         Metric m1 = new Metric("field2", List.of(MetricStat.SUM));
-        Metric m2 = new Metric("field2", List.of(MetricStat.COUNT));
+        Metric m2 = new Metric("field2", List.of(MetricStat.VALUE_COUNT));
         List<Dimension> dims = List.of(d1, d2);
         List<Metric> metrics = List.of(m1, m2);
         StarTreeFieldConfiguration c = new StarTreeFieldConfiguration(10, new HashSet<>(), getBuildMode());
@@ -2648,7 +2648,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         List<Long> metricsList2 = List.of(5L, 6L, 7L, 8L, 9L);
         List<Integer> metricsWithField2 = List.of(0, 1, 2, 3, 4);
 
-        StarTreeField sf = getStarTreeField(MetricStat.COUNT);
+        StarTreeField sf = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
             getSortedNumericMock(dimList, docsWithField),
             getSortedNumericMock(dimList2, docsWithField2),
