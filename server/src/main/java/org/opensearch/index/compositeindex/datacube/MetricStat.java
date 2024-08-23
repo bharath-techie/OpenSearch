@@ -20,22 +20,28 @@ import java.util.List;
  */
 @ExperimentalApi
 public enum MetricStat {
-    VALUE_COUNT("value_count"),
-    SUM("sum"),
-    MIN("min"),
-    MAX("max"),
-    AVG("avg", VALUE_COUNT, SUM);
+    VALUE_COUNT("value_count",0),
+    SUM("sum",1),
+    MIN("min",2),
+    MAX("max",3),
+    AVG("avg", 4, VALUE_COUNT, SUM);
 
     private final String typeName;
     private final MetricStat[] baseMetrics;
+    private final int metricOrdinal;
 
-    MetricStat(String typeName, MetricStat... baseMetrics) {
+    MetricStat(String typeName, int metricOrdinal, MetricStat... baseMetrics) {
         this.typeName = typeName;
         this.baseMetrics = baseMetrics;
+        this.metricOrdinal = metricOrdinal;
     }
 
     public String getTypeName() {
         return typeName;
+    }
+
+    public int getMetricOrdinal() {
+        return metricOrdinal;
     }
 
     /**
@@ -61,5 +67,14 @@ public enum MetricStat {
             }
         }
         throw new IllegalArgumentException("Invalid metric stat: " + typeName);
+    }
+
+    public static MetricStat fromMetricOrdinal(int metricOrdinal) {
+        for (MetricStat metric : MetricStat.values()) {
+            if (metric.getMetricOrdinal() == metricOrdinal) {
+                return metric;
+            }
+        }
+        throw new IllegalArgumentException("Invalid metric stat: " + metricOrdinal);
     }
 }

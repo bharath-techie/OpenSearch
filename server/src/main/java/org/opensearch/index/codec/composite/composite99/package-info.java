@@ -7,8 +7,6 @@
  */
 
 /**
- * Holds classes associated with star tree node
- *
- * @opensearch.experimental
+ *  Responsible for handling all composite index codecs and operations associated with Composite99 codec
  */
-package org.opensearch.index.compositeindex.datacube.startree.node;
+package org.opensearch.index.codec.composite.composite99;
