@@ -26,21 +26,22 @@ import java.io.IOException;
 public class StarTree {
     private static final Logger logger = LogManager.getLogger(StarTree.class);
     private final FixedLengthStarTreeNode root;
-    private final Integer numNodes;
+    private Integer numNodes;
 
     public StarTree(IndexInput data, StarTreeMetadata starTreeMetadata) throws IOException {
-        long magicMarker = data.readLong();
-         if (COMPOSITE_FIELD_MARKER != magicMarker) {
-         logger.error("Invalid magic marker");
-         throw new IOException("Invalid magic marker");
-         }
-        int version = data.readInt();
-         if (VERSION_CURRENT != version) {
-         logger.error("Invalid star tree version");
-         throw new IOException("Invalid version");
-         }
-        numNodes = data.readInt(); // num nodes
-
+        if(data.getFilePointer() < StarTreeDataWriter.computeStarTreeDataHeaderByteSize()) {
+            long magicMarker = data.readLong();
+            if (COMPOSITE_FIELD_MARKER != magicMarker) {
+                logger.error("Invalid magic marker");
+                throw new IOException("Invalid magic marker");
+            }
+            int version = data.readInt();
+            if (VERSION_CURRENT != version) {
+                logger.error("Invalid star tree version");
+                throw new IOException("Invalid version");
+            }
+            numNodes = data.readInt(); // num nodes
+        }
         RandomAccessInput in = data.randomAccessSlice(
             StarTreeDataWriter.computeStarTreeDataHeaderByteSize(),
             starTreeMetadata.getDataLength() - StarTreeDataWriter.computeStarTreeDataHeaderByteSize()
