@@ -92,6 +92,10 @@ public class SumAggregator extends NumericMetricsAggregator.SingleValue {
 
     @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, final LeafBucketCollector sub) throws IOException {
+        if (valuesSource == null) {
+            return LeafBucketCollector.NO_OP_COLLECTOR;
+        }
+
         if (context.query() instanceof OriginalOrStarTreeQuery && ((OriginalOrStarTreeQuery) context.query()).isStarTreeUsed()) {
             StarTreeQuery starTreeQuery = ((OriginalOrStarTreeQuery) context.query()).getStarTreeQuery();
             return getStarTreeLeafCollector(ctx, sub, starTreeQuery.getStarTree());
@@ -100,9 +104,6 @@ public class SumAggregator extends NumericMetricsAggregator.SingleValue {
     }
 
     private LeafBucketCollector getDefaultLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
-        if (valuesSource == null) {
-            return LeafBucketCollector.NO_OP_COLLECTOR;
-        }
         final BigArrays bigArrays = context.bigArrays();
         final SortedNumericDoubleValues values = valuesSource.doubleValues(ctx);
         final CompensatedSum kahanSummation = new CompensatedSum(0, 0);
@@ -134,14 +135,13 @@ public class SumAggregator extends NumericMetricsAggregator.SingleValue {
 
     private LeafBucketCollector getStarTreeLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub, CompositeIndexFieldInfo starTree)
         throws IOException {
-        final BigArrays bigArrays = context.bigArrays();
-        final CompensatedSum kahanSummation = new CompensatedSum(0, 0);
-
         StarTreeValues starTreeValues = getStarTreeValues(ctx, starTree);
         String fieldName = ((ValuesSource.Numeric.FieldData) valuesSource).getIndexFieldName();
         String metricName = StarTreeUtils.fullyQualifiedFieldNameForStarTreeMetricsDocValues(starTree.getField(), fieldName, "sum");
-
         SortedNumericDocValues values = (SortedNumericDocValues) starTreeValues.getMetricDocValuesIteratorMap().get(metricName);
+
+        final BigArrays bigArrays = context.bigArrays();
+        final CompensatedSum kahanSummation = new CompensatedSum(0, 0);
 
         return new LeafBucketCollectorBase(sub, values) {
             @Override
