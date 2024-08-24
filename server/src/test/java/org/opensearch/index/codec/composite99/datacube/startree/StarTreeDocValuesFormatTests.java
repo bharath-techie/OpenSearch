@@ -174,10 +174,10 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         assertEquals(1, ir.leaves().size());
 
         StarTreeDocument[] expectedStarTreeDocuments = new StarTreeDocument[4];
-        expectedStarTreeDocuments[0] = new StarTreeDocument(new Long[] { 1L, 1L }, new Double[] { 2.0, 2.0 });
-        expectedStarTreeDocuments[1] = new StarTreeDocument(new Long[] { 2L, 2L }, new Double[] { 4.0, 2.0 });
-        expectedStarTreeDocuments[2] = new StarTreeDocument(new Long[] { null, 1L }, new Double[] { 2.0, 2.0 });
-        expectedStarTreeDocuments[3] = new StarTreeDocument(new Long[] { null, 2L }, new Double[] { 4.0, 2.0 });
+        expectedStarTreeDocuments[0] = new StarTreeDocument(new Long[] { 1L, 1L }, new Double[] { 2.0, 2.0, 2.0 });
+        expectedStarTreeDocuments[1] = new StarTreeDocument(new Long[] { 2L, 2L }, new Double[] { 4.0, 2.0, 2.0 });
+        expectedStarTreeDocuments[2] = new StarTreeDocument(new Long[] { null, 1L }, new Double[] { 2.0, 2.0, 2.0 });
+        expectedStarTreeDocuments[3] = new StarTreeDocument(new Long[] { null, 2L }, new Double[] { 4.0, 2.0, 2.0 });
 
         for (LeafReaderContext context : ir.leaves()) {
             SegmentReader reader = Lucene.segmentReader(context.reader());
@@ -191,6 +191,9 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
                     List.of(StarTreeNumericType.DOUBLE, StarTreeNumericType.LONG, StarTreeNumericType.LONG),
                     reader.maxDoc()
                 );
+                for(StarTreeDocument s : starTreeDocuments) {
+                    System.out.println(s);
+                }
                 assertStarTreeDocuments(starTreeDocuments, expectedStarTreeDocuments);
             }
         }

@@ -119,7 +119,6 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
             );
 
             this.composite99DocValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
-                Composite99Codec.COMPOSITE_INDEX_CODEC_NAME,
                 consumerWriteState,
                 Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
                 Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,

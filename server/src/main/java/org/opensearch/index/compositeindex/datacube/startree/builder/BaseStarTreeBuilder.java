@@ -194,6 +194,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         for (Metric metric : this.starTreeField.getMetrics()) {
             for (MetricStat metricStat : metric.getMetrics()) {
                 SequentialDocValuesIterator metricReader;
+                if (metricStat.isDerivedMetric()) {
+                    continue;
+                }
                 FieldInfo metricFieldInfo = state.fieldInfos.fieldInfo(metric.getField());
                 // if (metricStat != MetricStat.COUNT) {
                 if (metricFieldInfo == null) {

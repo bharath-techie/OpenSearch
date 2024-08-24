@@ -10,8 +10,8 @@ package org.apache.lucene.codecs.lucene90;
 
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.SegmentReadState;
-import org.opensearch.index.codec.composite.DocValuesProvider;
 
+import java.io.Closeable;
 import java.io.IOException;
 
 /**
@@ -21,7 +21,7 @@ import java.io.IOException;
  *
  * @opensearch.experimental
  */
-public class Lucene90DocValuesProducerWrapper implements DocValuesProvider {
+public class Lucene90DocValuesProducerWrapper implements Closeable {
 
     private final Lucene90DocValuesProducer lucene90DocValuesProducer;
 
@@ -35,9 +35,12 @@ public class Lucene90DocValuesProducerWrapper implements DocValuesProvider {
         lucene90DocValuesProducer = new Lucene90DocValuesProducer(state, dataCodec, dataExtension, metaCodec, metaExtension);
     }
 
-    @Override
-    public DocValuesProducer getDocValuesProducer() {
+    public DocValuesProducer getLucene90DocValuesProducer() {
         return lucene90DocValuesProducer;
     }
 
+    @Override
+    public void close() throws IOException {
+        lucene90DocValuesProducer.close();
+    }
 }

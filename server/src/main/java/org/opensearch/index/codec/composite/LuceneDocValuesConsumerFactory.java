@@ -14,33 +14,34 @@ import org.apache.lucene.index.SegmentWriteState;
 
 import java.io.IOException;
 
-import static org.opensearch.index.codec.composite.composite99.Composite99Codec.COMPOSITE_INDEX_CODEC_NAME;
-
 /**
  * A factory class that provides a factory method for creating {@link DocValuesConsumer} instances
- * based on the specified composite codec.
+ * for the latest composite codec.
+ * <p>
+ * The segments are written using the latest composite codec. The codec
+ * internally manages calling the appropriate consumer factory for its abstractions.
+ * <p>
+ * This design ensures forward compatibility for writing operations
  *
  * @opensearch.experimental
  */
 public class LuceneDocValuesConsumerFactory {
 
     public static DocValuesConsumer getDocValuesConsumerForCompositeCodec(
-        String compositeCodec,
         SegmentWriteState state,
         String dataCodec,
         String dataExtension,
         String metaCodec,
         String metaExtension
     ) throws IOException {
-
-        switch (compositeCodec) {
-            case COMPOSITE_INDEX_CODEC_NAME:
-                return new Lucene90DocValuesConsumerWrapper(state, dataCodec, dataExtension, metaCodec, metaExtension)
-                    .getLucene90DocValuesConsumer();
-            default:
-                throw new IllegalStateException("Invalid composite codec " + "[" + compositeCodec + "]");
-        }
-
+        Lucene90DocValuesConsumerWrapper lucene90DocValuesConsumerWrapper = new Lucene90DocValuesConsumerWrapper(
+            state,
+            dataCodec,
+            dataExtension,
+            metaCodec,
+            metaExtension
+        );
+        return lucene90DocValuesConsumerWrapper.getLucene90DocValuesConsumer();
     }
 
 }

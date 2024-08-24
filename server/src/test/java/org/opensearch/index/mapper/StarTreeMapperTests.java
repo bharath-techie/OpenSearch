@@ -221,9 +221,7 @@ public class StarTreeMapperTests extends MapperTestCase {
             List<MetricStat> expectedMetrics = Arrays.asList(
                 MetricStat.AVG,
                 MetricStat.VALUE_COUNT,
-                MetricStat.SUM,
-                MetricStat.MAX,
-                MetricStat.MIN
+                MetricStat.SUM
             );
             assertEquals(expectedMetrics, starTreeFieldType.getMetrics().get(0).getMetrics());
 
