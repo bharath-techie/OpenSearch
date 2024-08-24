@@ -115,12 +115,18 @@ public class StarTreeMetaWriter {
         long dataFileLength
     ) throws IOException {
 
+        int numDims = 0;
+        for(Dimension dim : starTreeField.getDimensionsOrder()) {
+            numDims += dim.getNumSubDimensions();
+        }
         // number of dimensions
-        metaOut.writeVInt(starTreeField.getDimensionsOrder().size());
+        metaOut.writeVInt(numDims);
 
         // dimensions
         for (Dimension dimension : starTreeField.getDimensionsOrder()) {
-            metaOut.writeString(dimension.getField());
+            for(String dim : dimension.getDimensionFieldsNames()) {
+                metaOut.writeString(dim);
+            }
         }
 
         // number of metrics
