@@ -8,6 +8,7 @@
 
 package org.opensearch.index.codec.composite;
 
+import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene90.Lucene90DocValuesProducerWrapper;
 import org.apache.lucene.index.SegmentReadState;
@@ -40,17 +41,14 @@ public class LuceneDocValuesProducerFactory {
 
         switch (compositeCodec) {
             case Composite99Codec.COMPOSITE_INDEX_CODEC_NAME:
-                try (
-                    Lucene90DocValuesProducerWrapper lucene90DocValuesProducerWrapper = new Lucene90DocValuesProducerWrapper(
-                        state,
-                        dataCodec,
-                        dataExtension,
-                        metaCodec,
-                        metaExtension
-                    )
-                ) {
-                    return lucene90DocValuesProducerWrapper.getLucene90DocValuesProducer();
-                }
+                Lucene90DocValuesProducerWrapper lucene90DocValuesProducerWrapper = new Lucene90DocValuesProducerWrapper(
+                    state,
+                    dataCodec,
+                    dataExtension,
+                    metaCodec,
+                    metaExtension);
+                return lucene90DocValuesProducerWrapper.getLucene90DocValuesProducer();
+
             default:
                 throw new IllegalStateException("Invalid composite codec " + "[" + compositeCodec + "]");
         }
