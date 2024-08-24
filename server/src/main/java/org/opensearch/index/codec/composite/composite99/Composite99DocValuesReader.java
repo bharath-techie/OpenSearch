@@ -116,7 +116,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
                     // validate magic marker
                     long magicMarker = metaIn.readLong();
                     if (magicMarker == -1) {
-                        logger.info("EOF reached for composite index metadata");
+                        logger.debug("EOF reached for composite index metadata");
                         break;
                     } else if (magicMarker < 0) {
                         throw new CorruptIndexException("Unknown token encountered: " + magicMarker, metaIn);

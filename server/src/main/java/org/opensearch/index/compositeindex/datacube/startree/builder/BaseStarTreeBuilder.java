@@ -272,7 +272,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         appendDocumentsToStarTree(starTreeDocumentIterator);
         int numStarTreeDocument = numStarTreeDocs;
-        logger.debug("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
+        logger.info("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
 
         if (numStarTreeDocs == 0) {
             // serialize the star tree data
@@ -282,7 +282,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         constructStarTree(rootNode, 0, numStarTreeDocs);
         int numStarTreeDocumentUnderStarNode = numStarTreeDocs - numStarTreeDocument;
-        logger.debug(
+        logger.info(
             "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
             numStarTreeNodes,
             numStarTreeDocumentUnderStarNode
@@ -290,7 +290,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         createAggregatedDocs(rootNode);
         int numAggregatedStarTreeDocument = numStarTreeDocs - numStarTreeDocument - numStarTreeDocumentUnderStarNode;
-        logger.debug("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
+        logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
 
         // Create doc values indices in disk
         createSortedDocValuesIndices(starTreeDocValuesConsumer, fieldNumberAcrossStarTrees);
