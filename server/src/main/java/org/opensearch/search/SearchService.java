@@ -1323,7 +1323,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         }
         // Can be marked false for majority cases for which star-tree cannot be used
         // As we increment the cases where star-tree can be used, this can be set back to true
-        boolean canUseStarTree = context.mapperService().isCompositeIndexPresent();
+        boolean canUseStarTree = this.indicesService.getCompositeIndexSettings().isStarTreeIndexCreationEnabled()
+            && context.mapperService().isCompositeIndexPresent();
 
         SearchShardTarget shardTarget = context.shardTarget();
         QueryShardContext queryShardContext = context.getQueryShardContext();
@@ -1513,11 +1514,11 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
         if (canUseStarTree) {
             try {
-                setStarTreeQuery(context, queryShardContext, source);
-                logger.debug("can use star tree");
-            } catch (IOException e) {
-                logger.debug("not using star tree");
-            }
+                if (setStarTreeQuery(context, queryShardContext, source)) {
+                    logger.debug("can use star tree");
+                }
+            } catch (IOException ignored) {}
+            logger.debug("cannot use star tree");
         }
     }
 

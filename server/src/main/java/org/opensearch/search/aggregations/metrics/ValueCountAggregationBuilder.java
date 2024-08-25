@@ -57,7 +57,7 @@ import java.util.Map;
  * @opensearch.internal
  */
 public class ValueCountAggregationBuilder extends ValuesSourceAggregationBuilder.LeafOnly<ValuesSource, ValueCountAggregationBuilder> {
-    public static final String NAME = "count";
+    public static final String NAME = "value_count";
     public static final ValuesSourceRegistry.RegistryKey<MetricAggregatorSupplier> REGISTRY_KEY = new ValuesSourceRegistry.RegistryKey<>(
         NAME,
         MetricAggregatorSupplier.class

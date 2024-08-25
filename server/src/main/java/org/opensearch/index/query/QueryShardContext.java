@@ -60,6 +60,11 @@ import org.opensearch.index.codec.composite.CompositeIndexFieldInfo;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.index.compositeindex.datacube.Metric;
 import org.opensearch.index.compositeindex.datacube.MetricStat;
+import org.opensearch.index.codec.composite.CompositeIndexFieldInfo;
+import org.opensearch.index.compositeindex.datacube.Dimension;
+import org.opensearch.index.compositeindex.datacube.Metric;
+import org.opensearch.index.compositeindex.datacube.MetricStat;
+import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils;
 import org.opensearch.index.fielddata.IndexFieldData;
 import org.opensearch.index.mapper.CompositeDataCubeFieldType;
 import org.opensearch.index.mapper.ContentPath;
@@ -84,6 +89,7 @@ import org.opensearch.search.aggregations.metrics.MaxAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.MinAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.SumAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.ValueCountAggregatorFactory;
+import org.opensearch.search.aggregations.AggregatorFactory;
 import org.opensearch.search.aggregations.support.AggregationUsageService;
 import org.opensearch.search.aggregations.support.ValuesSourceAggregatorFactory;
 import org.opensearch.search.aggregations.support.ValuesSourceRegistry;
@@ -595,21 +601,7 @@ public class QueryShardContext extends QueryRewriteContext {
             .stream()
             .collect(Collectors.toMap(Metric::getField, Metric::getMetrics));
 
-        // Map to associate supported AggregatorFactory classes with their corresponding MetricStat
-        Map<Class<? extends ValuesSourceAggregatorFactory>, MetricStat> aggregatorStatMap = Map.of(
-            SumAggregatorFactory.class,
-            MetricStat.SUM,
-            MaxAggregatorFactory.class,
-            MetricStat.MAX,
-            MinAggregatorFactory.class,
-            MetricStat.MIN,
-            ValueCountAggregatorFactory.class,
-            MetricStat.VALUE_COUNT,
-            AvgAggregatorFactory.class,
-            MetricStat.AVG
-        );
-
-        MetricStat metricStat = aggregatorStatMap.get(aggregatorFactory.getClass());
+        MetricStat metricStat = StarTreeUtils.aggregatorStatMap.get(aggregatorFactory.getClass());
         if (metricStat != null) {
             field = ((ValuesSourceAggregatorFactory) aggregatorFactory).getField();
             return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(metricStat);
