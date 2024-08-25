@@ -169,7 +169,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         directory.close();
     }
 
-    private XContentBuilder getExpandedMapping() throws IOException {
+    public static XContentBuilder getExpandedMapping() throws IOException {
         return topMapping(b -> {
             b.startObject("composite");
             b.startObject("startree");
@@ -190,6 +190,8 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
             b.startArray("stats");
             b.value("sum");
             b.value("value_count");
+            b.value("max");
+            b.value("min");
             b.endArray();
             b.endObject();
             b.endArray();
@@ -210,13 +212,14 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         });
     }
 
-    private XContentBuilder topMapping(CheckedConsumer<XContentBuilder, IOException> buildFields) throws IOException {
+    private static XContentBuilder topMapping(CheckedConsumer<XContentBuilder, IOException> buildFields) throws IOException {
         XContentBuilder builder = XContentFactory.jsonBuilder().startObject().startObject("_doc");
         buildFields.accept(builder);
         return builder.endObject().endObject();
     }
 
-    private void createMapperService(XContentBuilder builder) throws IOException {
+
+    public static MapperService createMapperService(XContentBuilder builder) throws IOException {
         Settings settings = Settings.builder()
             .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
             .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
@@ -226,7 +229,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
             .build();
         IndexMetadata indexMetadata = IndexMetadata.builder("test").settings(settings).putMapping(builder.toString()).build();
         IndicesModule indicesModule = new IndicesModule(Collections.emptyList());
-        mapperService = MapperTestUtils.newMapperServiceWithHelperAnalyzer(
+        MapperService mapperService = MapperTestUtils.newMapperServiceWithHelperAnalyzer(
             new NamedXContentRegistry(ClusterModule.getNamedXWriteables()),
             createTempDir(),
             settings,
@@ -234,5 +237,6 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
             "test"
         );
         mapperService.merge(indexMetadata, MapperService.MergeReason.INDEX_TEMPLATE);
+        return mapperService;
     }
 }
