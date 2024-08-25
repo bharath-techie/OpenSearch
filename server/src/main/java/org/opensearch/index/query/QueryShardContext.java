@@ -79,10 +79,13 @@ import org.opensearch.script.ScriptContext;
 import org.opensearch.script.ScriptFactory;
 import org.opensearch.script.ScriptService;
 import org.opensearch.search.aggregations.AggregatorFactory;
+import org.opensearch.search.aggregations.metrics.AvgAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.MaxAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.MinAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.SumAggregatorFactory;
+import org.opensearch.search.aggregations.metrics.ValueCountAggregatorFactory;
 import org.opensearch.search.aggregations.support.AggregationUsageService;
+import org.opensearch.search.aggregations.support.ValuesSourceAggregatorFactory;
 import org.opensearch.search.aggregations.support.ValuesSourceRegistry;
 import org.opensearch.search.lookup.SearchLookup;
 import org.opensearch.search.startree.OriginalOrStarTreeQuery;
@@ -592,20 +595,24 @@ public class QueryShardContext extends QueryRewriteContext {
             .stream()
             .collect(Collectors.toMap(Metric::getField, Metric::getMetrics));
 
-        // Existing support only for MetricAggregators without sub-aggregations
-        if (aggregatorFactory.getSubFactories().getFactories().length != 0) {
-            return false;
-        }
+        // Map to associate supported AggregatorFactory classes with their corresponding MetricStat
+        Map<Class<? extends ValuesSourceAggregatorFactory>, MetricStat> aggregatorStatMap = Map.of(
+            SumAggregatorFactory.class,
+            MetricStat.SUM,
+            MaxAggregatorFactory.class,
+            MetricStat.MAX,
+            MinAggregatorFactory.class,
+            MetricStat.MIN,
+            ValueCountAggregatorFactory.class,
+            MetricStat.VALUE_COUNT,
+            AvgAggregatorFactory.class,
+            MetricStat.AVG
+        );
 
-        if (aggregatorFactory instanceof SumAggregatorFactory) {
-            field = ((SumAggregatorFactory) aggregatorFactory).getField();
-            return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(MetricStat.SUM);
-        } else if (aggregatorFactory instanceof MaxAggregatorFactory) {
-            field = ((MaxAggregatorFactory) aggregatorFactory).getField();
-            return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(MetricStat.MAX);
-        } else if (aggregatorFactory instanceof MinAggregatorFactory) {
-            field = ((MinAggregatorFactory) aggregatorFactory).getField();
-            return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(MetricStat.MIN);
+        MetricStat metricStat = aggregatorStatMap.get(aggregatorFactory.getClass());
+        if (metricStat != null) {
+            field = ((ValuesSourceAggregatorFactory) aggregatorFactory).getField();
+            return supportedMetrics.containsKey(field) && supportedMetrics.get(field).contains(metricStat);
         }
         return false;
     }

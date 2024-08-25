@@ -30,7 +30,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
 
-/** Query class for querying star tree data structure */
+/**
+ * Query class for querying star tree data structure.
+ *
+ * @opensearch.experimental
+ */
 public class StarTreeQuery extends Query implements Accountable {
 
     /**

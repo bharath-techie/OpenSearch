@@ -133,8 +133,7 @@ class MinAggregator extends NumericMetricsAggregator.SingleValue {
         return getDefaultLeafCollector(ctx, sub);
     }
 
-    private LeafBucketCollector getDefaultLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub)
-        throws IOException {
+    private LeafBucketCollector getDefaultLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         final BigArrays bigArrays = context.bigArrays();
         final SortedNumericDoubleValues allValues = valuesSource.doubleValues(ctx);
         final NumericDoubleValues values = MultiValueMode.MIN.select(allValues);
@@ -184,7 +183,6 @@ class MinAggregator extends NumericMetricsAggregator.SingleValue {
             }
         };
     }
-
 
     @Override
     public double metric(long owningBucketOrd) {

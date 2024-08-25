@@ -20,6 +20,8 @@ import java.io.IOException;
 /**
  * Preserves star-tree queries which can be used along with original query
  * Decides which star-tree query to use (or not) based on cost factors
+ *
+ * @opensearch.experimental
  */
 public class OriginalOrStarTreeQuery extends Query implements Accountable {
 

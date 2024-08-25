@@ -37,19 +37,21 @@ import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.NumberFieldMapper;
 import org.opensearch.search.aggregations.AggregationBuilder;
 import org.opensearch.search.aggregations.AggregatorTestCase;
-import org.junit.After;
-import org.junit.Before;
 import org.opensearch.search.aggregations.InternalAggregation;
 import org.opensearch.search.aggregations.metrics.AvgAggregationBuilder;
 import org.opensearch.search.aggregations.metrics.InternalAvg;
 import org.opensearch.search.aggregations.metrics.InternalMax;
 import org.opensearch.search.aggregations.metrics.InternalMin;
 import org.opensearch.search.aggregations.metrics.InternalSum;
+import org.opensearch.search.aggregations.metrics.InternalValueCount;
 import org.opensearch.search.aggregations.metrics.MaxAggregationBuilder;
 import org.opensearch.search.aggregations.metrics.MinAggregationBuilder;
 import org.opensearch.search.aggregations.metrics.SumAggregationBuilder;
+import org.opensearch.search.aggregations.metrics.ValueCountAggregationBuilder;
 import org.opensearch.search.startree.OriginalOrStarTreeQuery;
 import org.opensearch.search.startree.StarTreeQuery;
+import org.junit.After;
+import org.junit.Before;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -60,6 +62,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static org.opensearch.search.aggregations.AggregationBuilders.avg;
+import static org.opensearch.search.aggregations.AggregationBuilders.count;
 import static org.opensearch.search.aggregations.AggregationBuilders.max;
 import static org.opensearch.search.aggregations.AggregationBuilders.min;
 import static org.opensearch.search.aggregations.AggregationBuilders.sum;
@@ -83,7 +86,6 @@ public class MetricAggregatorTests extends AggregatorTestCase {
 
     protected Codec getCodec() {
         final Logger testLogger = LogManager.getLogger(MetricAggregatorTests.class);
-
         MapperService mapperService;
         try {
             mapperService = StarTreeDocValuesFormatTests.createMapperService(StarTreeDocValuesFormatTests.getExpandedMapping());
@@ -128,7 +130,6 @@ public class MetricAggregatorTests extends AggregatorTestCase {
         assertEquals(ir.leaves().size(), 1);
         LeafReaderContext context = ir.leaves().get(0);
 
-
         SegmentReader reader = Lucene.segmentReader(context.reader());
         IndexSearcher indexSearcher = newSearcher(reader, true, true);
         CompositeIndexReader starTreeDocValuesReader = (CompositeIndexReader) reader.getDocValuesReader();
@@ -139,6 +140,8 @@ public class MetricAggregatorTests extends AggregatorTestCase {
         SumAggregationBuilder sumAggregationBuilder = sum("_name").field(FIELD_NAME);
         MaxAggregationBuilder maxAggregationBuilder = max("_name").field(FIELD_NAME);
         MinAggregationBuilder minAggregationBuilder = min("_name").field(FIELD_NAME);
+        ValueCountAggregationBuilder valueCountAggregationBuilder = count("_name").field(FIELD_NAME);
+        AvgAggregationBuilder avgAggregationBuilder = avg("_name").field(FIELD_NAME);
 
         // match-all query
         Query defaultQeury = new MatchAllDocsQuery();
@@ -146,6 +149,15 @@ public class MetricAggregatorTests extends AggregatorTestCase {
         testCase(indexSearcher, defaultQeury, starTreeQuery, sumAggregationBuilder, verifyAggregation(InternalSum::getValue), 19);
         testCase(indexSearcher, defaultQeury, starTreeQuery, maxAggregationBuilder, verifyAggregation(InternalMax::getValue), 9);
         testCase(indexSearcher, defaultQeury, starTreeQuery, minAggregationBuilder, verifyAggregation(InternalMin::getValue), 1);
+        testCase(
+            indexSearcher,
+            defaultQeury,
+            starTreeQuery,
+            valueCountAggregationBuilder,
+            verifyAggregation(InternalValueCount::getValue),
+            4
+        );
+        testCase(indexSearcher, defaultQeury, starTreeQuery, avgAggregationBuilder, verifyAggregation(InternalAvg::getValue), 4.75);
 
         // numeric-terms query
         defaultQeury = new TermQuery(new Term("sndv", "1"));
@@ -155,20 +167,46 @@ public class MetricAggregatorTests extends AggregatorTestCase {
         testCase(indexSearcher, defaultQeury, starTreeQuery, sumAggregationBuilder, verifyAggregation(InternalSum::getValue), 4);
         testCase(indexSearcher, defaultQeury, starTreeQuery, maxAggregationBuilder, verifyAggregation(InternalMax::getValue), 3);
         testCase(indexSearcher, defaultQeury, starTreeQuery, minAggregationBuilder, verifyAggregation(InternalMin::getValue), 1);
+        testCase(
+            indexSearcher,
+            defaultQeury,
+            starTreeQuery,
+            valueCountAggregationBuilder,
+            verifyAggregation(InternalValueCount::getValue),
+            2
+        );
+        testCase(indexSearcher, defaultQeury, starTreeQuery, avgAggregationBuilder, verifyAggregation(InternalAvg::getValue), 2);
 
         ir.close();
         directory.close();
     }
 
-    private <T extends AggregationBuilder, V extends InternalAggregation> void testCase(IndexSearcher searcher,
-                Query defaultQuery, StarTreeQuery starTreeQuery, T builder, BiConsumer <V, Long> verify, long expectedValue) throws IOException {
+    private <T extends AggregationBuilder, V extends InternalAggregation, N extends Number> void testCase(
+        IndexSearcher searcher,
+        Query defaultQuery,
+        StarTreeQuery starTreeQuery,
+        T builder,
+        BiConsumer<V, N> verify,
+        N expectedValue
+    ) throws IOException {
         OriginalOrStarTreeQuery originalOrStarTreeQuery = new OriginalOrStarTreeQuery(starTreeQuery, defaultQuery);
-        V aggregation = searchAndReduceStarTree(createIndexSettings(), searcher, originalOrStarTreeQuery, builder, DEFAULT_MAX_BUCKETS, false, DEFAULT_MAPPED_FIELD);
+        V aggregation = searchAndReduceStarTree(
+            createIndexSettings(),
+            searcher,
+            originalOrStarTreeQuery,
+            builder,
+            DEFAULT_MAX_BUCKETS,
+            false,
+            DEFAULT_MAPPED_FIELD
+        );
         verify.accept(aggregation, expectedValue);
     }
 
-
-    <T> BiConsumer<T, Long> verifyAggregation(Function<T, Double> valueExtractor) {
-        return (aggregation, expectedValue) -> assertEquals(expectedValue, valueExtractor.apply(aggregation), 0f);
+    <T, R extends Number> BiConsumer<T, R> verifyAggregation(Function<T, R> valueExtractor) {
+        return (aggregation, expectedValue) -> assertEquals(
+            expectedValue.doubleValue(),
+            valueExtractor.apply(aggregation).doubleValue(),
+            0f
+        );
     }
 }

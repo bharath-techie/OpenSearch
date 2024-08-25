@@ -15,6 +15,7 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.util.DocIdSetBuilder;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNode;
+import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -32,6 +33,8 @@ import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 /**
  * Filter operator for star tree data structure.
+ *
+ *  @opensearch.experimental
  */
 public class StarTreeFilter {
     private static final Logger logger = LogManager.getLogger(StarTreeFilter.class);
@@ -198,7 +201,7 @@ public class StarTreeFilter {
             // because we cannot use star-node in such cases
             StarTreeNode starNode = null;
             if ((globalRemainingPredicateColumns == null || !globalRemainingPredicateColumns.contains(childDimension))) {
-                starNode = starTreeNode.getChildForDimensionValue(StarTreeNode.ALL, true);
+                starNode = starTreeNode.getChildForDimensionValue(StarTreeUtils.ALL, true);
             }
 
             if (remainingPredicateColumns.contains(childDimension)) {
@@ -263,7 +266,7 @@ public class StarTreeFilter {
                     Iterator<? extends StarTreeNode> childrenIterator = starTreeNode.getChildrenIterator();
                     while (childrenIterator.hasNext()) {
                         StarTreeNode childNode = childrenIterator.next();
-                        if (childNode.getDimensionValue() != StarTreeNode.ALL) {
+                        if (childNode.getDimensionValue() != StarTreeUtils.ALL) {
                             queue.add(childNode);
                             foundLeafNode |= childNode.isLeaf();
                         }

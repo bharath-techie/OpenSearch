@@ -168,6 +168,7 @@ import java.util.function.LongSupplier;
 import static org.opensearch.common.unit.TimeValue.timeValueHours;
 import static org.opensearch.common.unit.TimeValue.timeValueMillis;
 import static org.opensearch.common.unit.TimeValue.timeValueMinutes;
+import static org.opensearch.search.internal.SearchContext.TRACK_TOTAL_HITS_DISABLED;
 
 /**
  * The main search service
@@ -1365,8 +1366,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             throw new SearchException(shardTarget, "disabling [track_total_hits] is not allowed in a scroll context");
         }
         if (source.trackTotalHitsUpTo() != null) {
-            canUseStarTree = false;
             context.trackTotalHitsUpTo(source.trackTotalHitsUpTo());
+            canUseStarTree = canUseStarTree && (source.trackTotalHitsUpTo() == TRACK_TOTAL_HITS_DISABLED);
         }
         if (source.minScore() != null) {
             canUseStarTree = false;
@@ -1527,7 +1528,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             return false;
         }
 
-        // TODO: Support for multiple startrees
         // Current implementation assumes only single star-tree is supported
         CompositeDataCubeFieldType compositeMappedFieldType = (StarTreeMapper.StarTreeFieldType) context.mapperService()
             .getCompositeFieldTypes()
@@ -1543,16 +1543,16 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             return false;
         }
 
-        AggregatorFactory aggregatorFactory = context.aggregations().factories().getFactories()[0];
-        if (!(aggregatorFactory instanceof ValuesSourceAggregatorFactory
-            && aggregatorFactory.getSubFactories().getFactories().length == 0)) {
-            return false;
+        for (AggregatorFactory aggregatorFactory : context.aggregations().factories().getFactories()) {
+            if (!(aggregatorFactory instanceof ValuesSourceAggregatorFactory
+                && aggregatorFactory.getSubFactories().getFactories().length == 0)) {
+                return false;
+            }
+            if (queryShardContext.validateStarTreeMetricSuport(compositeMappedFieldType, aggregatorFactory) == false) {
+                return false;
+            }
         }
-
-        if (queryShardContext.validateStarTreeMetricSuport(compositeMappedFieldType, aggregatorFactory)) {
-            context.parsedQuery(newParsedQuery);
-        }
-
+        context.parsedQuery(newParsedQuery);
         return true;
     }
 
@@ -1713,7 +1713,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             && minMax != null
             && primarySortField != null
             && primarySortField.missing() == null
-            && Objects.equals(trackTotalHitsUpto, SearchContext.TRACK_TOTAL_HITS_DISABLED)) {
+            && Objects.equals(trackTotalHitsUpto, TRACK_TOTAL_HITS_DISABLED)) {
             final Object searchAfterPrimary = searchAfter.fields[0];
             if (primarySortField.order() == SortOrder.DESC) {
                 if (minMax.compareMin(searchAfterPrimary) > 0) {
