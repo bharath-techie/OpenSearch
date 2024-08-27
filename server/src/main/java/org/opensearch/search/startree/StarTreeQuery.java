@@ -28,7 +28,6 @@ import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValue
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Predicate;
 
 /**
  * Query class for querying star tree data structure.
@@ -44,14 +43,14 @@ public class StarTreeQuery extends Query implements Accountable {
     CompositeIndexFieldInfo starTree;
 
     /**
-     * Map of field name to a list of predicates to be applied on that field
-     * This is used to filter the data based on the predicates
+     * Map of field name to a value to be queried for that field
+     * This is used to filter the data based on the query
      */
-    Map<String, List<Predicate<Long>>> compositePredicateMap;
+    Map<String, Long> queryMap;
 
-    public StarTreeQuery(CompositeIndexFieldInfo starTree, Map<String, List<Predicate<Long>>> compositePredicateMap) {
+    public StarTreeQuery(CompositeIndexFieldInfo starTree, Map<String, Long> queryMap) {
         this.starTree = starTree;
-        this.compositePredicateMap = compositePredicateMap;
+        this.queryMap = queryMap;
     }
 
     @Override
@@ -98,7 +97,7 @@ public class StarTreeQuery extends Query implements Accountable {
                     return null;
                 }
 
-                StarTreeFilter filter = new StarTreeFilter(starTreeValues, compositePredicateMap);
+                StarTreeFilter filter = new StarTreeFilter(starTreeValues, queryMap);
                 DocIdSetIterator result = filter.getStarTreeResult();
                 return new ConstantScoreScorer(this, score(), scoreMode, result);
             }
