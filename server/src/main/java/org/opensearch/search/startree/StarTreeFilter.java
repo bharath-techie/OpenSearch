@@ -179,10 +179,8 @@ public class StarTreeFilter {
 
             if (remainingPredicateColumns.contains(childDimension)) {
                 long queryValue = _predicateEvaluators.get(childDimension); // Get the query value directly from the map
-                int matchingChildId = findFirstMatchingChild(starTreeNode, queryValue);
-
-                if (matchingChildId != -1) {
-                    StarTreeNode matchingChild = starTreeNode.getChildForDimensionValue(matchingChildId, false);
+                StarTreeNode matchingChild = starTreeNode.getChildForDimensionValue(queryValue, false);
+                if(matchingChild != null) {
                     queue.add(matchingChild);
                     foundLeafNode |= matchingChild.isLeaf();
                 }
