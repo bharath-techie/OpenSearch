@@ -107,7 +107,6 @@ import org.opensearch.search.aggregations.InternalAggregation.ReduceContext;
 import org.opensearch.search.aggregations.MultiBucketConsumerService;
 import org.opensearch.search.aggregations.SearchContextAggregations;
 import org.opensearch.search.aggregations.pipeline.PipelineAggregator.PipelineTree;
-import org.opensearch.search.aggregations.support.ValuesSourceAggregatorFactory;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.collapse.CollapseContext;
 import org.opensearch.search.deciders.ConcurrentSearchDecider;
@@ -1358,7 +1357,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         }
         // Can be marked false for majority cases for which star-tree cannot be used
         // As we increment the cases where star-tree can be used, this can be set back to true
-        boolean canUseStarTree = this.indicesService.getCompositeIndexSettings().isStarTreeIndexCreationEnabled()
+        boolean canUseStarTree = source.aggregations() != null
+            && this.indicesService.getCompositeIndexSettings().isStarTreeIndexCreationEnabled()
             && context.mapperService().isCompositeIndexPresent();
 
         SearchShardTarget shardTarget = context.shardTarget();
@@ -1562,11 +1562,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
     private boolean setStarTreeQuery(SearchContext context, QueryShardContext queryShardContext, SearchSourceBuilder source)
         throws IOException {
-
-        if (source.aggregations() == null) {
-            return false;
-        }
-
         // Current implementation assumes only single star-tree is supported
         CompositeDataCubeFieldType compositeMappedFieldType = (StarTreeMapper.StarTreeFieldType) context.mapperService()
             .getCompositeFieldTypes()
@@ -1583,10 +1578,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         }
 
         for (AggregatorFactory aggregatorFactory : context.aggregations().factories().getFactories()) {
-            if (!(aggregatorFactory instanceof ValuesSourceAggregatorFactory
-                && aggregatorFactory.getSubFactories().getFactories().length == 0)) {
-                return false;
-            }
             if (queryShardContext.validateStarTreeMetricSuport(compositeMappedFieldType, aggregatorFactory) == false) {
                 return false;
             }
