@@ -551,6 +551,10 @@ public class QueryShardContext extends QueryRewriteContext {
             return null;
         }
 
+        if (queryMap == null) {
+            return null;
+        }
+
         StarTreeQuery starTreeQuery = new StarTreeQuery(starTree, queryMap);
         OriginalOrStarTreeQuery originalOrStarTreeQuery = new OriginalOrStarTreeQuery(starTreeQuery, query);
         return new ParsedQuery(originalOrStarTreeQuery);
@@ -565,7 +569,7 @@ public class QueryShardContext extends QueryRewriteContext {
         TermQueryBuilder tq = (TermQueryBuilder) queryBuilder;
         String field = tq.fieldName();
         if (!supportedDimensions.contains(field)) {
-            throw new IllegalArgumentException("unsupported field in star-tree");
+            return null;
         }
         long inputQueryVal = Long.parseLong(tq.value().toString());
 
