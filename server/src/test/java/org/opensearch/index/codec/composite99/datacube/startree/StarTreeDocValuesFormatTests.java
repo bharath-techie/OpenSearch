@@ -46,9 +46,9 @@ import org.opensearch.index.compositeindex.datacube.startree.StarTreeDocument;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeIndexSettings;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeTestUtils;
-import org.opensearch.index.compositeindex.datacube.startree.aggregators.numerictype.StarTreeNumericType;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
 import org.opensearch.index.mapper.MapperService;
+import org.opensearch.index.mapper.NumberFieldMapper;
 import org.opensearch.indices.IndicesModule;
 import org.junit.After;
 import org.junit.AfterClass;
@@ -103,7 +103,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         final Logger testLogger = LogManager.getLogger(StarTreeDocValuesFormatTests.class);
 
         try {
-            createMapperService(getExpandedMapping());
+            mapperService = createMapperService(getExpandedMapping());
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -188,15 +188,15 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
                 StarTreeDocument[] starTreeDocuments = StarTreeTestUtils.getSegmentsStarTreeDocuments(
                     List.of(starTreeValues),
                     List.of(
-                        StarTreeNumericType.DOUBLE,
-                        StarTreeNumericType.LONG,
-                        StarTreeNumericType.DOUBLE,
-                        StarTreeNumericType.DOUBLE,
-                        StarTreeNumericType.DOUBLE,
-                        StarTreeNumericType.LONG,
-                        StarTreeNumericType.DOUBLE,
-                        StarTreeNumericType.DOUBLE,
-                        StarTreeNumericType.LONG
+                        NumberFieldMapper.NumberType.DOUBLE,
+                        NumberFieldMapper.NumberType.LONG,
+                        NumberFieldMapper.NumberType.DOUBLE,
+                        NumberFieldMapper.NumberType.DOUBLE,
+                        NumberFieldMapper.NumberType.DOUBLE,
+                        NumberFieldMapper.NumberType.LONG,
+                        NumberFieldMapper.NumberType.DOUBLE,
+                        NumberFieldMapper.NumberType.DOUBLE,
+                        NumberFieldMapper.NumberType.LONG
                     ),
                     reader.maxDoc()
                 );
@@ -207,7 +207,7 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         directory.close();
     }
 
-    private XContentBuilder getExpandedMapping() throws IOException {
+    public static XContentBuilder getExpandedMapping() throws IOException {
         return topMapping(b -> {
             b.startObject("composite");
             b.startObject("startree");
@@ -261,13 +261,14 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
         });
     }
 
-    private XContentBuilder topMapping(CheckedConsumer<XContentBuilder, IOException> buildFields) throws IOException {
+    private static XContentBuilder topMapping(CheckedConsumer<XContentBuilder, IOException> buildFields) throws IOException {
         XContentBuilder builder = XContentFactory.jsonBuilder().startObject().startObject("_doc");
         buildFields.accept(builder);
         return builder.endObject().endObject();
     }
 
-    private void createMapperService(XContentBuilder builder) throws IOException {
+    public static MapperService createMapperService(XContentBuilder builder) throws IOException {
+        MapperService mapperService;
         Settings settings = Settings.builder()
             .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
             .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
@@ -285,5 +286,6 @@ public class StarTreeDocValuesFormatTests extends BaseDocValuesFormatTestCase {
             "test"
         );
         mapperService.merge(indexMetadata, MapperService.MergeReason.INDEX_TEMPLATE);
+        return mapperService;
     }
 }
