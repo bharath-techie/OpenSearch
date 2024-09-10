@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
     private static final Logger logger = LogManager.getLogger(OffHeapStarTreeBuilder.class);
     private final StarTreeDocsFileManager starTreeDocumentFileManager;
-    private final OnHeapSegmentDocsFileManager segmentDocumentFileManager;
+    private final SegmentDocsFileManager segmentDocumentFileManager;
 
     /**
      * Builds star tree based on star tree field configuration consisting of dimensions, metrics and star tree index
@@ -61,7 +61,7 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
         MapperService mapperService
     ) throws IOException {
         super(metaOut, dataOut, starTreeField, state, mapperService);
-        segmentDocumentFileManager = new OnHeapSegmentDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
+        segmentDocumentFileManager = new SegmentDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
         try {
             starTreeDocumentFileManager = new StarTreeDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
         } catch (IOException e) {
