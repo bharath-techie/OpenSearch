@@ -286,7 +286,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         int numAggregatedStarTreeDocument = numStarTreeDocs - numStarTreeDocument - numStarTreeDocumentUnderStarNode;
         logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
 
-        logger.info("Final number of stardocs : {} to segmentdocs : {}", numStarTreeDocument, numSegmentStarTreeDocument);
+        logger.info("Final number of stardocs : {} to segmentdocs : {}", numStarTreeDocs, numSegmentStarTreeDocument);
 
         // Create doc values indices in disk
         createSortedDocValuesIndices(starTreeDocValuesConsumer, fieldNumberAcrossStarTrees);
