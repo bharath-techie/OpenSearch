@@ -55,11 +55,11 @@ public class StarTreeDocsFileManager extends AbstractDocumentsFileManager implem
     private RandomAccessInput starTreeDocsFileRandomInput;
     private IndexOutput starTreeDocsFileOutput;
     private final Map<String, Integer> fileToEndDocIdMap;
-    private final List<Integer> starTreeDocumentOffsets = new ArrayList<>();
+    private final List<Long> starTreeDocumentOffsets = new ArrayList<>();
     private int currentFileStartDocId;
     private int numReadableStarTreeDocuments;
     private int starTreeFileCount = -1;
-    private int currBytes = 0;
+    private long currBytes = 0;
     private final int fileCountMergeThreshold;
     private int numStarTreeDocs = 0;
 
@@ -268,7 +268,7 @@ public class StarTreeDocsFileManager extends AbstractDocumentsFileManager implem
      * Reset the star tree document offsets based on the merged file
      */
     private void resetStarTreeDocumentOffsets() {
-        int curr = 0;
+        long curr = 0;
         for (int i = 0; i < starTreeDocumentOffsets.size(); i++) {
             starTreeDocumentOffsets.set(i, curr);
             curr += docSizeInBytes;
