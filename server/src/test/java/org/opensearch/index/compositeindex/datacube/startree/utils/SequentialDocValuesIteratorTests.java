@@ -17,7 +17,6 @@ import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.util.BytesRef;
 import org.opensearch.test.OpenSearchTestCase;
 import org.junit.BeforeClass;
 
@@ -60,22 +59,17 @@ public class SequentialDocValuesIteratorTests extends OpenSearchTestCase {
         SortedNumericDocValues iterator = Mockito.mock(SortedNumericDocValues.class);
         when(producer.getSortedNumeric(mockFieldInfo)).thenReturn(iterator);
         SequentialDocValuesIterator result = new SequentialDocValuesIterator(producer.getSortedNumeric(mockFieldInfo));
-        assertEquals(iterator.getClass(), result.getDocIdSetIterator().getClass());
+
     }
 
     public void testCreateIterator_UnsupportedType() throws IOException {
         DocValuesProducer producer = Mockito.mock(DocValuesProducer.class);
         BinaryDocValues iterator = Mockito.mock(BinaryDocValues.class);
         when(producer.getBinary(mockFieldInfo)).thenReturn(iterator);
-        SequentialDocValuesIterator result = new SequentialDocValuesIterator(producer.getBinary(mockFieldInfo));
-        assertEquals(iterator.getClass(), result.getDocIdSetIterator().getClass());
-        when(iterator.nextDoc()).thenReturn(0);
-        when(iterator.binaryValue()).thenReturn(new BytesRef("123"));
-
-        IllegalStateException exception = expectThrows(IllegalStateException.class, () -> {
-            result.nextDoc(0);
-            result.value(0);
-        });
+        IllegalStateException exception = expectThrows(
+            IllegalStateException.class,
+            () -> new SequentialDocValuesIterator(producer.getBinary(mockFieldInfo))
+        );
         assertEquals("Unsupported Iterator requested for SequentialDocValuesIterator", exception.getMessage());
     }
 
@@ -91,9 +85,8 @@ public class SequentialDocValuesIteratorTests extends OpenSearchTestCase {
 
     public void testGetNextValue_UnsupportedIterator() {
         DocIdSetIterator iterator = Mockito.mock(DocIdSetIterator.class);
-        SequentialDocValuesIterator sequentialDocValuesIterator = new SequentialDocValuesIterator(iterator);
+        IllegalStateException exception = expectThrows(IllegalStateException.class, () -> new SequentialDocValuesIterator(iterator));
 
-        IllegalStateException exception = expectThrows(IllegalStateException.class, () -> { sequentialDocValuesIterator.value(0); });
         assertEquals("Unsupported Iterator requested for SequentialDocValuesIterator", exception.getMessage());
     }
 

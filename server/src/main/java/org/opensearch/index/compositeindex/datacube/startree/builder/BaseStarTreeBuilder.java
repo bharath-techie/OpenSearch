@@ -34,6 +34,7 @@ import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValue
 import org.opensearch.index.compositeindex.datacube.startree.node.InMemoryTreeNode;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeType;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
+import org.opensearch.index.compositeindex.datacube.startree.utils.iterator.SortedNumericStarTreeValuesIterator;
 import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.FieldMapper;
 import org.opensearch.index.mapper.FieldValueConverter;
@@ -193,7 +194,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                         metricFieldInfo = getFieldInfo(metric.getField(), DocValuesType.SORTED_NUMERIC);
                     }
                     metricReader = new SequentialDocValuesIterator(
-                        fieldProducerMap.get(metricFieldInfo.name).getSortedNumeric(metricFieldInfo)
+                        new SortedNumericStarTreeValuesIterator(
+                            fieldProducerMap.get(metricFieldInfo.name).getSortedNumeric(metricFieldInfo)
+                        )
                     );
                 }
                 metricReaders.add(metricReader);
@@ -228,7 +231,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                 dimensionFieldInfo = getFieldInfo(dimension, DocValuesType.SORTED_NUMERIC);
             }
             dimensionReaders[i] = new SequentialDocValuesIterator(
-                fieldProducerMap.get(dimensionFieldInfo.name).getSortedNumeric(dimensionFieldInfo)
+                new SortedNumericStarTreeValuesIterator(fieldProducerMap.get(dimensionFieldInfo.name).getSortedNumeric(dimensionFieldInfo))
             );
         }
         Iterator<StarTreeDocument> starTreeDocumentIterator = sortAndAggregateSegmentDocuments(dimensionReaders, metricReaders);
@@ -672,7 +675,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         SequentialDocValuesIterator sequentialDocValuesIterator;
         assert fieldProducerMap.containsKey(fieldInfo.name);
         sequentialDocValuesIterator = new SequentialDocValuesIterator(
-            DocValues.singleton(fieldProducerMap.get(fieldInfo.name).getNumeric(fieldInfo))
+            new SortedNumericStarTreeValuesIterator(DocValues.singleton(fieldProducerMap.get(fieldInfo.name).getNumeric(fieldInfo)))
         );
         return sequentialDocValuesIterator;
     }
