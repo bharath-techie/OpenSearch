@@ -27,11 +27,11 @@ import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.codec.composite.CompositeIndexFieldInfo;
 import org.opensearch.index.codec.composite.CompositeIndexReader;
-import org.opensearch.index.codec.composite.LuceneDocValuesConsumerFactory;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.builder.StarTreesBuilder;
 import org.opensearch.index.compositeindex.datacube.startree.index.CompositeIndexValues;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.MapperService;
@@ -62,7 +62,7 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
     AtomicReference<MergeState> mergeState = new AtomicReference<>();
     private final Set<CompositeMappedFieldType> compositeMappedFieldTypes;
     private final Set<String> compositeFieldSet;
-    private DocValuesConsumer composite99DocValuesConsumer;
+    private StarTree99ValuesConsumer composite99DocValuesConsumer;
 
     public IndexOutput dataOut;
     public IndexOutput metaOut;
@@ -101,7 +101,7 @@ public class Composite99DocValuesWriter extends DocValuesConsumer {
             // so that all the fields are sparse numeric doc values and not dense numeric doc values
             SegmentWriteState consumerWriteState = getSegmentWriteState(segmentWriteState);
 
-            this.composite99DocValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+            this.composite99DocValuesConsumer = new StarTree99ValuesConsumer(
                 consumerWriteState,
                 Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
                 Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,

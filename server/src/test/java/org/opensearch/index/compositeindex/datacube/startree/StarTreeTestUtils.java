@@ -19,6 +19,7 @@ import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeFactor
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNode;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeType;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
+import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialStarValuesIterator;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.index.mapper.FieldValueConverter;
 
@@ -54,7 +55,7 @@ public class StarTreeTestUtils {
 
             for (int i = 0; i < dimensionsSplitOrder.size(); i++) {
                 String dimension = dimensionsSplitOrder.get(i).getField();
-                dimensionReaders[i] = new SequentialDocValuesIterator(starTreeValues.getDimensionDocIdSetIterator(dimension));
+                dimensionReaders[i] = new SequentialStarValuesIterator(starTreeValues.getDimensionDocIdSetIterator(dimension));
             }
 
             List<SequentialDocValuesIterator> metricReaders = new ArrayList<>();
@@ -69,7 +70,7 @@ public class StarTreeTestUtils {
                         metric.getField(),
                         metricStat.getTypeName()
                     );
-                    metricReaders.add(new SequentialDocValuesIterator(starTreeValues.getMetricDocIdSetIterator(metricFullName)));
+                    metricReaders.add(new SequentialStarValuesIterator(starTreeValues.getMetricDocIdSetIterator(metricFullName)));
 
                 }
             }
@@ -92,7 +93,7 @@ public class StarTreeTestUtils {
         Long[] dims = new Long[dimensionReaders.length];
         int i = 0;
         for (SequentialDocValuesIterator dimensionDocValueIterator : dimensionReaders) {
-            dimensionDocValueIterator.nextDoc(currentDocId);
+            dimensionDocValueIterator.nextEntry(currentDocId);
             Long val = dimensionDocValueIterator.value(currentDocId);
             dims[i] = val;
             i++;
@@ -100,7 +101,7 @@ public class StarTreeTestUtils {
         i = 0;
         Object[] metrics = new Object[metricReaders.size()];
         for (SequentialDocValuesIterator metricDocValuesIterator : metricReaders) {
-            metricDocValuesIterator.nextDoc(currentDocId);
+            metricDocValuesIterator.nextEntry(currentDocId);
             metrics[i] = toAggregatorValueType(metricDocValuesIterator.value(currentDocId), fieldValueConverters.get(i));
             i++;
         }

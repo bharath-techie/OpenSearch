@@ -10,13 +10,13 @@ package org.opensearch.index.compositeindex.datacube.startree.builder;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.StarTreeMapper;
@@ -78,7 +78,7 @@ public class StarTreesBuilder implements Closeable {
         IndexOutput metaOut,
         IndexOutput dataOut,
         Map<String, DocValuesProducer> fieldProducerMap,
-        DocValuesConsumer starTreeDocValuesConsumer
+        StarTree99ValuesConsumer starTreeDocValuesConsumer
     ) throws IOException {
         if (starTreeFields.isEmpty()) {
             logger.debug("no star-tree fields found, returning from star-tree builder");
@@ -115,7 +115,7 @@ public class StarTreesBuilder implements Closeable {
         IndexOutput metaOut,
         IndexOutput dataOut,
         final Map<String, List<StarTreeValues>> starTreeValuesSubsPerField,
-        DocValuesConsumer starTreeDocValuesConsumer
+        StarTree99ValuesConsumer starTreeDocValuesConsumer
     ) throws IOException {
         logger.debug("Starting merge of {} star-trees with star-tree fields", starTreeValuesSubsPerField.size());
         long startTime = System.currentTimeMillis();

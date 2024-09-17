@@ -73,7 +73,7 @@ public class SequentialDocValuesIteratorTests extends OpenSearchTestCase {
         when(iterator.binaryValue()).thenReturn(new BytesRef("123"));
 
         IllegalStateException exception = expectThrows(IllegalStateException.class, () -> {
-            result.nextDoc(0);
+            result.nextEntry(0);
             result.value(0);
         });
         assertEquals("Unsupported Iterator requested for SequentialDocValuesIterator", exception.getMessage());
@@ -84,7 +84,7 @@ public class SequentialDocValuesIteratorTests extends OpenSearchTestCase {
         when(iterator.nextDoc()).thenReturn(0);
         when(iterator.nextValue()).thenReturn(123L);
         SequentialDocValuesIterator sequentialDocValuesIterator = new SequentialDocValuesIterator(iterator);
-        sequentialDocValuesIterator.nextDoc(0);
+        sequentialDocValuesIterator.nextEntry(0);
         long result = sequentialDocValuesIterator.value(0);
         assertEquals(123L, result);
     }
@@ -97,12 +97,12 @@ public class SequentialDocValuesIteratorTests extends OpenSearchTestCase {
         assertEquals("Unsupported Iterator requested for SequentialDocValuesIterator", exception.getMessage());
     }
 
-    public void testNextDoc() throws IOException {
+    public void testNextEntry() throws IOException {
         SortedNumericDocValues iterator = Mockito.mock(SortedNumericDocValues.class);
         SequentialDocValuesIterator sequentialDocValuesIterator = new SequentialDocValuesIterator(iterator);
         when(iterator.nextDoc()).thenReturn(5);
 
-        int result = sequentialDocValuesIterator.nextDoc(5);
+        int result = sequentialDocValuesIterator.nextEntry(5);
         assertEquals(5, result);
     }
 
@@ -119,13 +119,13 @@ public class SequentialDocValuesIteratorTests extends OpenSearchTestCase {
         when(iterator1.nextValue()).thenReturn(9L);
         when(iterator2.nextValue()).thenReturn(9L);
 
-        sequentialDocValuesIterator1.nextDoc(0);
-        sequentialDocValuesIterator2.nextDoc(0);
-        assertEquals(0, sequentialDocValuesIterator1.getDocId());
+        sequentialDocValuesIterator1.nextEntry(0);
+        sequentialDocValuesIterator2.nextEntry(0);
+        assertEquals(0, sequentialDocValuesIterator1.getEntryId());
         assertEquals(9L, (long) sequentialDocValuesIterator1.value(0));
         assertNull(sequentialDocValuesIterator2.value(0));
-        assertNotEquals(0, sequentialDocValuesIterator2.getDocId());
-        assertEquals(1, sequentialDocValuesIterator2.getDocId());
+        assertNotEquals(0, sequentialDocValuesIterator2.getEntryId());
+        assertEquals(1, sequentialDocValuesIterator2.getEntryId());
         assertEquals(9L, (long) sequentialDocValuesIterator2.value(1));
     }
 }

@@ -88,7 +88,7 @@ public class StarTreeIndexSettings {
      */
     public static final Setting<Integer> STAR_TREE_DEFAULT_MAX_LEAF_DOCS = Setting.intSetting(
         "index.composite_index.star_tree.default.max_leaf_docs",
-        10000,
+        1,
         1,
         Setting.Property.IndexScope,
         Setting.Property.Final

@@ -10,7 +10,6 @@ package org.opensearch.index.compositeindex.datacube.startree.builder;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.IndexOutput;
@@ -23,7 +22,9 @@ import org.opensearch.index.compositeindex.datacube.startree.StarTreeDocument;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
+import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialStarValuesIterator;
 import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeDocumentsSorter;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
 import org.opensearch.index.mapper.MapperService;
 
 import java.io.IOException;
@@ -92,7 +93,7 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
     public void build(
         List<StarTreeValues> starTreeValuesSubs,
         AtomicInteger fieldNumberAcrossStarTrees,
-        DocValuesConsumer starTreeDocValuesConsumer
+        StarTree99ValuesConsumer starTreeDocValuesConsumer
     ) throws IOException {
         boolean success = false;
         try {
@@ -153,7 +154,7 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
                     .size()];
                 for (int i = 0; i < dimensionsSplitOrder.size(); i++) {
                     String dimension = dimensionsSplitOrder.get(i).getField();
-                    dimensionReaders[i] = new SequentialDocValuesIterator(starTreeValues.getDimensionDocIdSetIterator(dimension));
+                    dimensionReaders[i] = new SequentialStarValuesIterator(starTreeValues.getDimensionDocIdSetIterator(dimension));
                 }
                 List<SequentialDocValuesIterator> metricReaders = new ArrayList<>();
                 // get doc id set iterators for metrics
@@ -164,7 +165,7 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
                             metric.getField(),
                             metricStat.getTypeName()
                         );
-                        metricReaders.add(new SequentialDocValuesIterator(starTreeValues.getMetricDocIdSetIterator(metricFullName)));
+                        metricReaders.add(new SequentialStarValuesIterator(starTreeValues.getMetricDocIdSetIterator(metricFullName)));
                     }
                 }
                 int currentDocId = 0;

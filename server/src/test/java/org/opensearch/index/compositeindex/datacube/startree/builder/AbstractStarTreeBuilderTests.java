@@ -8,10 +8,8 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
-import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
-import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.EmptyDocValuesProducer;
 import org.apache.lucene.index.FieldInfo;
@@ -34,7 +32,6 @@ import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.util.Version;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.codec.composite.LuceneDocValuesConsumerFactory;
 import org.opensearch.index.codec.composite.LuceneDocValuesProducerFactory;
 import org.opensearch.index.codec.composite.composite99.Composite99Codec;
 import org.opensearch.index.codec.composite.composite99.Composite99DocValuesFormat;
@@ -53,6 +50,11 @@ import org.opensearch.index.compositeindex.datacube.startree.node.InMemoryTreeNo
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeType;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
 import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeUtils;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeDocValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeSortedNumericValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeValuesIterator;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeValuesProducer;
 import org.opensearch.index.mapper.ContentPath;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.FieldValueConverter;
@@ -103,7 +105,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
     protected BaseStarTreeBuilder builder;
     protected IndexOutput dataOut;
     protected IndexOutput metaOut;
-    protected DocValuesConsumer docValuesConsumer;
+    protected StarTree99ValuesConsumer docValuesConsumer;
     protected String dataFileName;
     protected String metaFileName;
 
@@ -198,7 +200,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             null
         );
         when(documentMapper.mappers()).thenReturn(fieldMappers);
-        docValuesConsumer = mock(DocValuesConsumer.class);
+        docValuesConsumer = mock(StarTree99ValuesConsumer.class);
     }
 
     private SegmentReadState getReadState(int numDocs, List<String> dimensionFields, List<Metric> metrics) {
@@ -1099,7 +1101,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         SequentialDocValuesIterator[] dimsIterators = getDimensionIterators(segmentStarTreeDocuments);
         List<SequentialDocValuesIterator> metricsIterators = getMetricIterators(segmentStarTreeDocuments);
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -1218,7 +1220,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             dimsIterators,
             metricsIterators
         );
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -1313,7 +1315,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         SequentialDocValuesIterator[] dimsIterators = getDimensionIterators(segmentStarTreeDocuments);
         List<SequentialDocValuesIterator> metricsIterators = getMetricIterators(segmentStarTreeDocuments);
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -1521,7 +1523,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             dimsIterators2,
             metricsIterators2
         );
-        builder.build(segmentStarTreeDocumentIterator2, new AtomicInteger(), mock(DocValuesConsumer.class));
+        builder.build(segmentStarTreeDocumentIterator2, new AtomicInteger(), mock(StarTree99ValuesConsumer.class));
         InMemoryTreeNode rootNode2 = builder.getRootNode();
 
         metaOut.close();
@@ -1635,7 +1637,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             dimsIterators,
             metricsIterators
         );
-        docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -1751,7 +1753,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         }
         FieldInfos fieldInfos = new FieldInfos(fieldsInfo);
         writeState = new SegmentWriteState(InfoStream.getDefault(), segmentInfo.dir, segmentInfo, fieldInfos, null, newIOContext(random()));
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -1879,7 +1881,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             expectedStarTreeMetadata.getMetrics()
         );
 
-        DocValuesProducer compositeDocValuesProducer = LuceneDocValuesProducerFactory.getDocValuesProducerForCompositeCodec(
+        StarTreeValuesProducer compositeDocValuesProducer = LuceneDocValuesProducerFactory.getDocValuesProducerForCompositeCodec(
             Composite99Codec.COMPOSITE_INDEX_CODEC_NAME,
             readState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
@@ -2006,7 +2008,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
          [5, 5] | [50.0, 1]
          [null, 2] | [20.0, 1]
          */
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2087,7 +2089,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         SortedNumericDocValues m2sndv = getSortedNumericMock(metricsList, metricsWithField);
 
         writeState = getWriteState(6, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2189,7 +2191,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         writeState = getWriteState(100, writeState.segmentInfo.getId());
         SegmentWriteState consumerWriteState = getWriteState(DocIdSetIterator.NO_MORE_DOCS, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             consumerWriteState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2329,22 +2331,22 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.SUM);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
         writeState = getWriteState(6, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2420,22 +2422,22 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
         writeState = getWriteState(6, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2499,18 +2501,18 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
     }
 
     private StarTreeValues getStarTreeValues(
-        SortedNumericDocValues dimList,
-        SortedNumericDocValues dimList2,
-        SortedNumericDocValues metricsList,
+        StarTreeSortedNumericValues dimList,
+        StarTreeSortedNumericValues dimList2,
+        StarTreeSortedNumericValues metricsList,
         StarTreeField sf,
         String number
     ) {
-        SortedNumericDocValues d1sndv = dimList;
-        SortedNumericDocValues d2sndv = dimList2;
-        SortedNumericDocValues m1sndv = metricsList;
-        Map<String, Supplier<DocIdSetIterator>> dimDocIdSetIterators = Map.of("field1", () -> d1sndv, "field3", () -> d2sndv);
+        StarTreeSortedNumericValues d1sndv = dimList;
+        StarTreeSortedNumericValues d2sndv = dimList2;
+        StarTreeSortedNumericValues m1sndv = metricsList;
+        Map<String, Supplier<StarTreeValuesIterator>> dimDocIdSetIterators = Map.of("field1", () -> d1sndv, "field3", () -> d2sndv);
 
-        Map<String, Supplier<DocIdSetIterator>> metricDocIdSetIterators = new LinkedHashMap<>();
+        Map<String, Supplier<StarTreeValuesIterator>> metricDocIdSetIterators = new LinkedHashMap<>();
         for (Metric metric : sf.getMetrics()) {
             for (MetricStat metricStat : metric.getMetrics()) {
                 String metricFullName = fullyQualifiedFieldNameForStarTreeMetricsDocValues(
@@ -2552,22 +2554,22 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList3, docsWithField3),
-            getSortedNumericMock(dimList4, docsWithField4),
-            getSortedNumericMock(metricsList2, metricsWithField2),
+            getStarSortedNumericMock(dimList3, docsWithField3),
+            getStarSortedNumericMock(dimList4, docsWithField4),
+            getStarSortedNumericMock(metricsList2, metricsWithField2),
             compositeField,
             "4"
         );
         writeState = getWriteState(4, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2652,17 +2654,17 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         StarTreeField sf = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             sf,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList3, docsWithField3),
-            getSortedNumericMock(dimList4, docsWithField4),
-            getSortedNumericMock(metricsList2, metricsWithField2),
+            getStarSortedNumericMock(dimList3, docsWithField3),
+            getStarSortedNumericMock(dimList4, docsWithField4),
+            getStarSortedNumericMock(metricsList2, metricsWithField2),
             sf,
             "4"
         );
@@ -2712,22 +2714,22 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList3, docsWithField3),
-            getSortedNumericMock(dimList4, docsWithField4),
-            getSortedNumericMock(metricsList2, metricsWithField2),
+            getStarSortedNumericMock(dimList3, docsWithField3),
+            getStarSortedNumericMock(dimList4, docsWithField4),
+            getStarSortedNumericMock(metricsList2, metricsWithField2),
             compositeField,
             "4"
         );
         writeState = getWriteState(4, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2813,23 +2815,23 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "7"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList3, docsWithField3),
-            getSortedNumericMock(dimList4, docsWithField4),
-            getSortedNumericMock(metricsList2, metricsWithField2),
+            getStarSortedNumericMock(dimList3, docsWithField3),
+            getStarSortedNumericMock(dimList4, docsWithField4),
+            getStarSortedNumericMock(metricsList2, metricsWithField2),
             compositeField,
             "4"
         );
         writeState = getWriteState(4, writeState.segmentInfo.getId());
         SegmentWriteState consumerWriteState = getWriteState(DocIdSetIterator.NO_MORE_DOCS, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             consumerWriteState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -2916,22 +2918,22 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "9"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList3, docsWithField3),
-            getSortedNumericMock(dimList4, docsWithField4),
-            getSortedNumericMock(metricsList2, metricsWithField2),
+            getStarSortedNumericMock(dimList3, docsWithField3),
+            getStarSortedNumericMock(dimList4, docsWithField4),
+            getStarSortedNumericMock(metricsList2, metricsWithField2),
             compositeField,
             "4"
         );
         writeState = getWriteState(4, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -3022,22 +3024,22 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList3, docsWithField3),
-            getSortedNumericMock(dimList4, docsWithField4),
-            getSortedNumericMock(metricsList2, metricsWithField2),
+            getStarSortedNumericMock(dimList3, docsWithField3),
+            getStarSortedNumericMock(dimList4, docsWithField4),
+            getStarSortedNumericMock(metricsList2, metricsWithField2),
             compositeField,
             "4"
         );
         writeState = getWriteState(4, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -3124,21 +3126,21 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            getSortedNumericMock(dimList3, docsWithField3),
-            getSortedNumericMock(dimList4, docsWithField4),
-            getSortedNumericMock(metricsList2, metricsWithField2),
+            getStarSortedNumericMock(dimList3, docsWithField3),
+            getStarSortedNumericMock(dimList4, docsWithField4),
+            getStarSortedNumericMock(metricsList2, metricsWithField2),
             compositeField,
             "4"
         );
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -3216,22 +3218,22 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
 
         compositeField = getStarTreeField(MetricStat.VALUE_COUNT);
         StarTreeValues starTreeValues = getStarTreeValues(
-            getSortedNumericMock(dimList, docsWithField),
-            getSortedNumericMock(dimList2, docsWithField2),
-            getSortedNumericMock(metricsList, metricsWithField),
+            getStarSortedNumericMock(dimList, docsWithField),
+            getStarSortedNumericMock(dimList2, docsWithField2),
+            getStarSortedNumericMock(metricsList, metricsWithField),
             compositeField,
             "6"
         );
 
         StarTreeValues starTreeValues2 = getStarTreeValues(
-            DocValues.emptySortedNumeric(),
-            DocValues.emptySortedNumeric(),
-            DocValues.emptySortedNumeric(),
+            StarTreeDocValues.emptySortedNumeric(),
+            StarTreeDocValues.emptySortedNumeric(),
+            StarTreeDocValues.emptySortedNumeric(),
             compositeField,
             "0"
         );
         writeState = getWriteState(0, writeState.segmentInfo.getId());
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -3375,7 +3377,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             docCountMetricsWithField,
             compositeField
         );
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -3533,7 +3535,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             compositeField
         );
 
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -3642,13 +3644,13 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         List<Integer> metricsWithField1,
         StarTreeField sf
     ) {
-        SortedNumericDocValues d1sndv = getSortedNumericMock(dimList1, docsWithField1);
-        SortedNumericDocValues d2sndv = getSortedNumericMock(dimList2, docsWithField2);
-        SortedNumericDocValues d3sndv = getSortedNumericMock(dimList3, docsWithField3);
-        SortedNumericDocValues d4sndv = getSortedNumericMock(dimList4, docsWithField4);
-        SortedNumericDocValues m1sndv = getSortedNumericMock(metricsList, metricsWithField);
-        SortedNumericDocValues m2sndv = getSortedNumericMock(metricsList1, metricsWithField1);
-        Map<String, Supplier<DocIdSetIterator>> dimDocIdSetIterators = Map.of(
+        StarTreeSortedNumericValues d1sndv = getStarSortedNumericMock(dimList1, docsWithField1);
+        StarTreeSortedNumericValues d2sndv = getStarSortedNumericMock(dimList2, docsWithField2);
+        StarTreeSortedNumericValues d3sndv = getStarSortedNumericMock(dimList3, docsWithField3);
+        StarTreeSortedNumericValues d4sndv = getStarSortedNumericMock(dimList4, docsWithField4);
+        StarTreeSortedNumericValues m1sndv = getStarSortedNumericMock(metricsList, metricsWithField);
+        StarTreeSortedNumericValues m2sndv = getStarSortedNumericMock(metricsList1, metricsWithField1);
+        Map<String, Supplier<StarTreeValuesIterator>> dimDocIdSetIterators = Map.of(
             "field1",
             () -> d1sndv,
             "field3",
@@ -3659,7 +3661,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             () -> d4sndv
         );
 
-        Map<String, Supplier<DocIdSetIterator>> metricDocIdSetIterators = new LinkedHashMap<>();
+        Map<String, Supplier<StarTreeValuesIterator>> metricDocIdSetIterators = new LinkedHashMap<>();
 
         metricDocIdSetIterators.put(
             fullyQualifiedFieldNameForStarTreeMetricsDocValues(
@@ -3776,7 +3778,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             docCountMetricsWithField,
             compositeField
         );
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -3919,7 +3921,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             metricsWithField1,
             compositeField
         );
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -4086,14 +4088,14 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
         List<Metric> metrics = List.of(m1, m2);
         StarTreeFieldConfiguration c = new StarTreeFieldConfiguration(1, new HashSet<>(), getBuildMode());
         compositeField = new StarTreeField("sf", dims, metrics, c);
-        SortedNumericDocValues d1sndv = getSortedNumericMock(dimList1, docsWithField1);
-        SortedNumericDocValues d2sndv = getSortedNumericMock(dimList2, docsWithField2);
-        SortedNumericDocValues d3sndv = getSortedNumericMock(dimList3, docsWithField3);
-        SortedNumericDocValues d4sndv = getSortedNumericMock(dimList4, docsWithField4);
-        SortedNumericDocValues m1sndv = getSortedNumericMock(metricsList, metricsWithField);
-        SortedNumericDocValues valucountsndv = getSortedNumericMock(metricsListValueCount, metricsWithFieldValueCount);
-        SortedNumericDocValues m2sndv = DocValues.emptySortedNumeric();
-        Map<String, Supplier<DocIdSetIterator>> dimDocIdSetIterators = Map.of(
+        StarTreeSortedNumericValues d1sndv = getStarSortedNumericMock(dimList1, docsWithField1);
+        StarTreeSortedNumericValues d2sndv = getStarSortedNumericMock(dimList2, docsWithField2);
+        StarTreeSortedNumericValues d3sndv = getStarSortedNumericMock(dimList3, docsWithField3);
+        StarTreeSortedNumericValues d4sndv = getStarSortedNumericMock(dimList4, docsWithField4);
+        StarTreeSortedNumericValues m1sndv = getStarSortedNumericMock(metricsList, metricsWithField);
+        StarTreeSortedNumericValues valucountsndv = getStarSortedNumericMock(metricsListValueCount, metricsWithFieldValueCount);
+        StarTreeSortedNumericValues m2sndv = StarTreeDocValues.emptySortedNumeric();
+        Map<String, Supplier<StarTreeValuesIterator>> dimDocIdSetIterators = Map.of(
             "field1",
             () -> d1sndv,
             "field3",
@@ -4104,7 +4106,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             () -> d4sndv
         );
 
-        Map<String, Supplier<DocIdSetIterator>> metricDocIdSetIterators = Map.of(
+        Map<String, Supplier<StarTreeValuesIterator>> metricDocIdSetIterators = Map.of(
             "sf_field2_sum_metric",
             () -> m1sndv,
             "sf_field2_value_count_metric",
@@ -4122,14 +4124,14 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             null
         );
 
-        SortedNumericDocValues f2d1sndv = getSortedNumericMock(dimList1, docsWithField1);
-        SortedNumericDocValues f2d2sndv = getSortedNumericMock(dimList2, docsWithField2);
-        SortedNumericDocValues f2d3sndv = getSortedNumericMock(dimList3, docsWithField3);
-        SortedNumericDocValues f2d4sndv = getSortedNumericMock(dimList4, docsWithField4);
-        SortedNumericDocValues f2m1sndv = getSortedNumericMock(metricsList, metricsWithField);
-        SortedNumericDocValues f2valucountsndv = getSortedNumericMock(metricsListValueCount, metricsWithFieldValueCount);
-        SortedNumericDocValues f2m2sndv = DocValues.emptySortedNumeric();
-        Map<String, Supplier<DocIdSetIterator>> f2dimDocIdSetIterators = Map.of(
+        StarTreeSortedNumericValues f2d1sndv = getStarSortedNumericMock(dimList1, docsWithField1);
+        StarTreeSortedNumericValues f2d2sndv = getStarSortedNumericMock(dimList2, docsWithField2);
+        StarTreeSortedNumericValues f2d3sndv = getStarSortedNumericMock(dimList3, docsWithField3);
+        StarTreeSortedNumericValues f2d4sndv = getStarSortedNumericMock(dimList4, docsWithField4);
+        StarTreeSortedNumericValues f2m1sndv = getStarSortedNumericMock(metricsList, metricsWithField);
+        StarTreeSortedNumericValues f2valucountsndv = getStarSortedNumericMock(metricsListValueCount, metricsWithFieldValueCount);
+        StarTreeSortedNumericValues f2m2sndv = StarTreeDocValues.emptySortedNumeric();
+        Map<String, Supplier<StarTreeValuesIterator>> f2dimDocIdSetIterators = Map.of(
             "field1",
             () -> f2d1sndv,
             "field3",
@@ -4140,7 +4142,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             () -> f2d4sndv
         );
 
-        Map<String, Supplier<DocIdSetIterator>> f2metricDocIdSetIterators = Map.of(
+        Map<String, Supplier<StarTreeValuesIterator>> f2metricDocIdSetIterators = Map.of(
             "sf_field2_sum_metric",
             () -> f2m1sndv,
             "sf_field2_value_count_metric",
@@ -4157,7 +4159,7 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             null
         );
 
-        this.docValuesConsumer = LuceneDocValuesConsumerFactory.getDocValuesConsumerForCompositeCodec(
+        this.docValuesConsumer = new StarTree99ValuesConsumer(
             writeState,
             Composite99DocValuesFormat.DATA_DOC_VALUES_CODEC,
             Composite99DocValuesFormat.DATA_DOC_VALUES_EXTENSION,
@@ -4432,6 +4434,51 @@ public abstract class AbstractStarTreeBuilderTests extends OpenSearchTestCase {
             public int nextDoc() {
                 if (index == docsWithField.size() - 1) {
                     return NO_MORE_DOCS;
+                }
+                index++;
+                return docsWithField.get(index);
+            }
+
+            @Override
+            public int advance(int target) {
+                return 0;
+            }
+
+            @Override
+            public long cost() {
+                return 0;
+            }
+        };
+    }
+
+    StarTreeSortedNumericValues getStarSortedNumericMock(List<Long> dimList, List<Integer> docsWithField) {
+        return new StarTreeSortedNumericValues() {
+            int index = -1;
+
+            @Override
+            public long nextValue() {
+                return dimList.get(index);
+            }
+
+            @Override
+            public int docValueCount() {
+                return 0;
+            }
+
+            @Override
+            public boolean advanceExact(int target) {
+                return false;
+            }
+
+            @Override
+            public int entryId() {
+                return index;
+            }
+
+            @Override
+            public int nextEntry() {
+                if (index == docsWithField.size() - 1) {
+                    return NO_MORE_ENTRIES;
                 }
                 index++;
                 return docsWithField.get(index);

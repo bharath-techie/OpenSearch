@@ -14,7 +14,6 @@ import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.CorruptIndexException;
-import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.IndexFileNames;
@@ -36,6 +35,9 @@ import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.startree.fileformats.meta.StarTreeMetadata;
 import org.opensearch.index.compositeindex.datacube.startree.index.CompositeIndexValues;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeDocValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeSortedNumericValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeValuesProducer;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 
 import java.io.IOException;
@@ -65,7 +67,7 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
     private final Map<String, IndexInput> compositeIndexInputMap = new LinkedHashMap<>();
     private final Map<String, CompositeIndexMetadata> compositeIndexMetadataMap = new LinkedHashMap<>();
     private final List<String> fields;
-    private DocValuesProducer compositeDocValuesProducer;
+    private StarTreeValuesProducer compositeDocValuesProducer;
     private final List<CompositeIndexFieldInfo> compositeFieldInfos = new ArrayList<>();
     private SegmentReadState readState;
 
@@ -294,8 +296,8 @@ public class Composite99DocValuesReader extends DocValuesProducer implements Com
      * @param sortedNumeric the sorted numeric doc values for a field
      * @return empty sorted numeric values if the field is not present, else sortedNumeric
      */
-    public static SortedNumericDocValues getSortedNumericDocValues(SortedNumericDocValues sortedNumeric) {
-        return sortedNumeric == null ? DocValues.emptySortedNumeric() : sortedNumeric;
+    public static StarTreeSortedNumericValues getSortedNumericDocValues(StarTreeSortedNumericValues sortedNumeric) {
+        return sortedNumeric == null ? StarTreeDocValues.emptySortedNumeric() : sortedNumeric;
     }
 
 }

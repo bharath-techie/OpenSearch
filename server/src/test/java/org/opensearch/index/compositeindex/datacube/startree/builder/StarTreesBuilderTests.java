@@ -8,7 +8,6 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
-import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
 import org.apache.lucene.index.FieldInfo;
@@ -21,6 +20,7 @@ import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.Version;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfiguration;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.StarTreeMapper;
 import org.opensearch.test.OpenSearchTestCase;
@@ -96,7 +96,7 @@ public class StarTreesBuilderTests extends OpenSearchTestCase {
         when(mapperService.getCompositeFieldTypes()).thenReturn(new HashSet<>());
 
         StarTreesBuilder starTreesBuilder = new StarTreesBuilder(segmentWriteState, mapperService, new AtomicInteger());
-        starTreesBuilder.build(metaOut, dataOut, fieldProducerMap, mock(DocValuesConsumer.class));
+        starTreesBuilder.build(metaOut, dataOut, fieldProducerMap, mock(StarTree99ValuesConsumer.class));
 
         verifyNoInteractions(docValuesProducer);
     }

@@ -9,15 +9,11 @@ package org.opensearch.index.compositeindex.datacube.startree.builder;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.DocValuesType;
-import org.apache.lucene.index.EmptyDocValuesProducer;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.SegmentWriteState;
-import org.apache.lucene.index.SortedNumericDocValues;
-import org.apache.lucene.index.SortedNumericDocValuesWriterWrapper;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
@@ -34,6 +30,10 @@ import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValue
 import org.opensearch.index.compositeindex.datacube.startree.node.InMemoryTreeNode;
 import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeType;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
+import org.opensearch.index.compositeindex.datacube.startree.values.EmptyStarTreeValuesProducer;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeSortedNumericValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeSortedNumericValuesWriter;
 import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.FieldMapper;
 import org.opensearch.index.mapper.FieldValueConverter;
@@ -213,7 +213,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
     public void build(
         Map<String, DocValuesProducer> fieldProducerMap,
         AtomicInteger fieldNumberAcrossStarTrees,
-        DocValuesConsumer starTreeDocValuesConsumer
+        StarTree99ValuesConsumer starTreeDocValuesConsumer
     ) throws IOException {
         long startTime = System.currentTimeMillis();
         logger.debug("Star-tree build is a go with star tree field {}", starTreeField.getName());
@@ -232,9 +232,9 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             );
         }
         Iterator<StarTreeDocument> starTreeDocumentIterator = sortAndAggregateSegmentDocuments(dimensionReaders, metricReaders);
-        logger.debug("Sorting and aggregating star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        logger.info("Sorting and aggregating star-tree in ms : {}", (System.currentTimeMillis() - startTime));
         build(starTreeDocumentIterator, fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
-        logger.debug("Finished Building star-tree in ms : {}", (System.currentTimeMillis() - startTime));
+        logger.info("Finished Building star-tree in ms : {}", (System.currentTimeMillis() - startTime));
     }
 
     /**
@@ -248,13 +248,13 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
     public void build(
         Iterator<StarTreeDocument> starTreeDocumentIterator,
         AtomicInteger fieldNumberAcrossStarTrees,
-        DocValuesConsumer starTreeDocValuesConsumer
+        StarTree99ValuesConsumer starTreeDocValuesConsumer
     ) throws IOException {
         int numSegmentStarTreeDocument = totalSegmentDocs;
 
         appendDocumentsToStarTree(starTreeDocumentIterator);
         int numStarTreeDocument = numStarTreeDocs;
-        logger.debug("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
+        logger.info("Generated star tree docs : [{}] from segment docs : [{}]", numStarTreeDocument, numSegmentStarTreeDocument);
 
         if (numStarTreeDocs == 0) {
             // serialize the star tree data
@@ -264,7 +264,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         constructStarTree(rootNode, 0, numStarTreeDocs);
         int numStarTreeDocumentUnderStarNode = numStarTreeDocs - numStarTreeDocument;
-        logger.debug(
+        logger.info(
             "Finished constructing star-tree, got [ {} ] tree nodes and [ {} ] starTreeDocument under star-node",
             numStarTreeNodes,
             numStarTreeDocumentUnderStarNode
@@ -272,7 +272,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
 
         createAggregatedDocs(rootNode);
         int numAggregatedStarTreeDocument = numStarTreeDocs - numStarTreeDocument - numStarTreeDocumentUnderStarNode;
-        logger.debug("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
+        logger.info("Finished creating aggregated documents : {}", numAggregatedStarTreeDocument);
 
         // Create doc values indices in disk
         createSortedDocValuesIndices(starTreeDocValuesConsumer, fieldNumberAcrossStarTrees);
@@ -306,10 +306,10 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         );
     }
 
-    private void createSortedDocValuesIndices(DocValuesConsumer docValuesConsumer, AtomicInteger fieldNumberAcrossStarTrees)
+    private void createSortedDocValuesIndices(StarTree99ValuesConsumer docValuesConsumer, AtomicInteger fieldNumberAcrossStarTrees)
         throws IOException {
-        List<SortedNumericDocValuesWriterWrapper> dimensionWriters = new ArrayList<>();
-        List<SortedNumericDocValuesWriterWrapper> metricWriters = new ArrayList<>();
+        List<StarTreeSortedNumericValuesWriter> dimensionWriters = new ArrayList<>();
+        List<StarTreeSortedNumericValuesWriter> metricWriters = new ArrayList<>();
         FieldInfo[] dimensionFieldInfoList = new FieldInfo[starTreeField.getDimensionsOrder().size()];
         FieldInfo[] metricFieldInfoList = new FieldInfo[metricAggregatorInfos.size()];
         for (int i = 0; i < dimensionFieldInfoList.length; i++) {
@@ -322,7 +322,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
                 fieldNumberAcrossStarTrees.getAndIncrement()
             );
             dimensionFieldInfoList[i] = fi;
-            dimensionWriters.add(new SortedNumericDocValuesWriterWrapper(fi, Counter.newCounter()));
+            dimensionWriters.add(new StarTreeSortedNumericValuesWriter(fi, Counter.newCounter()));
         }
         for (int i = 0; i < metricAggregatorInfos.size(); i++) {
 
@@ -337,7 +337,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             );
 
             metricFieldInfoList[i] = fi;
-            metricWriters.add(new SortedNumericDocValuesWriterWrapper(fi, Counter.newCounter()));
+            metricWriters.add(new StarTreeSortedNumericValuesWriter(fi, Counter.newCounter()));
         }
 
         for (int docId = 0; docId < numStarTreeDocs; docId++) {
@@ -373,16 +373,16 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
     }
 
     private void addStarTreeDocValueFields(
-        DocValuesConsumer docValuesConsumer,
-        List<SortedNumericDocValuesWriterWrapper> docValuesWriters,
+        StarTree99ValuesConsumer docValuesConsumer,
+        List<StarTreeSortedNumericValuesWriter> docValuesWriters,
         FieldInfo[] fieldInfoList,
         int fieldCount
     ) throws IOException {
         for (int i = 0; i < fieldCount; i++) {
             final int writerIndex = i;
-            DocValuesProducer docValuesProducer = new EmptyDocValuesProducer() {
+            EmptyStarTreeValuesProducer docValuesProducer = new EmptyStarTreeValuesProducer() {
                 @Override
-                public SortedNumericDocValues getSortedNumeric(FieldInfo field) {
+                public StarTreeSortedNumericValues getStarTreeSortedNumericValues(FieldInfo field) {
                     return docValuesWriters.get(writerIndex).getDocValues();
                 }
             };
@@ -401,7 +401,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         Long[] dims = new Long[numDimensions];
         int i = 0;
         for (SequentialDocValuesIterator dimensionDocValueIterator : dimensionReaders) {
-            dimensionDocValueIterator.nextDoc(currentDocId);
+            dimensionDocValueIterator.nextEntry(currentDocId);
             Long val = dimensionDocValueIterator.value(currentDocId);
             dims[i] = val;
             i++;
@@ -409,7 +409,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         i = 0;
         Object[] metrics = new Object[metricReaders.size()];
         for (SequentialDocValuesIterator metricDocValuesIterator : metricReaders) {
-            metricDocValuesIterator.nextDoc(currentDocId);
+            metricDocValuesIterator.nextEntry(currentDocId);
             // As part of merge, we traverse the star tree doc values
             // The type of data stored in metric fields is different from the
             // actual indexing field they're based on
@@ -502,7 +502,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         for (int i = 0; i < numDimensions; i++) {
             if (dimensionReaders[i] != null) {
                 try {
-                    dimensionReaders[i].nextDoc(currentDocId);
+                    dimensionReaders[i].nextEntry(currentDocId);
                 } catch (IOException e) {
                     logger.error("unable to iterate to next doc", e);
                     throw new RuntimeException("unable to iterate to next doc", e);
@@ -530,7 +530,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             SequentialDocValuesIterator metricStatReader = metricsReaders.get(i);
             if (metricStatReader != null) {
                 try {
-                    metricStatReader.nextDoc(currentDocId);
+                    metricStatReader.nextEntry(currentDocId);
                 } catch (IOException e) {
                     logger.error("unable to iterate to next doc", e);
                     throw new RuntimeException("unable to iterate to next doc", e);

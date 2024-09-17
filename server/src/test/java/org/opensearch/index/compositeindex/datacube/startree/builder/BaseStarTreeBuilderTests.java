@@ -8,7 +8,6 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
-import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
 import org.apache.lucene.index.DocValuesType;
@@ -36,6 +35,7 @@ import org.opensearch.index.compositeindex.datacube.startree.StarTreeFieldConfig
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
 import org.opensearch.index.mapper.ContentPath;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.Mapper;
@@ -183,7 +183,7 @@ public class BaseStarTreeBuilderTests extends OpenSearchTestCase {
             public void build(
                 List<StarTreeValues> starTreeValuesSubs,
                 AtomicInteger fieldNumberAcrossStarTrees,
-                DocValuesConsumer starTreeDocValuesConsumer
+                StarTree99ValuesConsumer starTreeDocValuesConsumer
             ) throws IOException {}
 
             @Override

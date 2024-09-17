@@ -9,9 +9,10 @@
 package org.opensearch.index.codec.composite;
 
 import org.apache.lucene.codecs.DocValuesProducer;
-import org.apache.lucene.codecs.lucene90.Lucene90DocValuesProducerWrapper;
 import org.apache.lucene.index.SegmentReadState;
 import org.opensearch.index.codec.composite.composite99.Composite99Codec;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesProducer;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeValuesProducer;
 
 import java.io.IOException;
 
@@ -29,7 +30,7 @@ import java.io.IOException;
  */
 public class LuceneDocValuesProducerFactory {
 
-    public static DocValuesProducer getDocValuesProducerForCompositeCodec(
+    public static StarTreeValuesProducer getDocValuesProducerForCompositeCodec(
         String compositeCodec,
         SegmentReadState state,
         String dataCodec,
@@ -40,14 +41,7 @@ public class LuceneDocValuesProducerFactory {
 
         switch (compositeCodec) {
             case Composite99Codec.COMPOSITE_INDEX_CODEC_NAME:
-                Lucene90DocValuesProducerWrapper lucene90DocValuesProducerWrapper = new Lucene90DocValuesProducerWrapper(
-                    state,
-                    dataCodec,
-                    dataExtension,
-                    metaCodec,
-                    metaExtension
-                );
-                return lucene90DocValuesProducerWrapper.getLucene90DocValuesProducer();
+                return new StarTree99ValuesProducer(state, dataCodec, dataExtension, metaCodec, metaExtension);
             default:
                 throw new IllegalStateException("Invalid composite codec " + "[" + compositeCodec + "]");
         }

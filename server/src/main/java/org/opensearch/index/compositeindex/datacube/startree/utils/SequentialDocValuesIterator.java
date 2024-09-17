@@ -47,12 +47,16 @@ public class SequentialDocValuesIterator {
         this.docIdSetIterator = docIdSetIterator;
     }
 
+    public SequentialDocValuesIterator() {
+        this.docIdSetIterator = null;
+    }
+
     /**
      * Returns the id of the latest document.
      *
      * @return the id of the latest document
      */
-    public int getDocId() {
+    public int getEntryId() {
         return docId;
     }
 
@@ -74,7 +78,7 @@ public class SequentialDocValuesIterator {
         return docIdSetIterator;
     }
 
-    public int nextDoc(int currentDocId) throws IOException {
+    public int nextEntry(int currentDocId) throws IOException {
         // if doc id stored is less than or equal to the requested doc id , return the stored doc id
         if (docId >= currentDocId) {
             return docId;

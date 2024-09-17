@@ -9,7 +9,6 @@
 package org.opensearch.index.codec.composite;
 
 import org.apache.lucene.codecs.DocValuesConsumer;
-import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
@@ -20,6 +19,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.InfoStream;
 import org.apache.lucene.util.Version;
 import org.opensearch.index.codec.composite.composite99.Composite99Codec;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTreeValuesProducer;
 import org.opensearch.test.OpenSearchTestCase;
 import org.junit.After;
 import org.junit.Before;
@@ -84,7 +84,7 @@ public class LuceneDocValuesProducerFactoryTests extends OpenSearchTestCase {
             new FieldInfos(new FieldInfo[0]),
             newIOContext(random())
         );
-        DocValuesProducer producer = LuceneDocValuesProducerFactory.getDocValuesProducerForCompositeCodec(
+        StarTreeValuesProducer producer = LuceneDocValuesProducerFactory.getDocValuesProducerForCompositeCodec(
             Composite99Codec.COMPOSITE_INDEX_CODEC_NAME,
             segmentReadState,
             dataCodec,
@@ -94,7 +94,10 @@ public class LuceneDocValuesProducerFactoryTests extends OpenSearchTestCase {
         );
 
         assertNotNull(producer);
-        assertEquals("org.apache.lucene.codecs.lucene90.Lucene90DocValuesProducer", producer.getClass().getName());
+        assertEquals(
+            "org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesProducer",
+            producer.getClass().getName()
+        );
         producer.close();
     }
 

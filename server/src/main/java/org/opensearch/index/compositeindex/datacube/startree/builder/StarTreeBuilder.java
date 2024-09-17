@@ -8,10 +8,10 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
-import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
+import org.opensearch.index.compositeindex.datacube.startree.values.StarTree99ValuesConsumer;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -38,7 +38,7 @@ public interface StarTreeBuilder extends Closeable {
     void build(
         Map<String, DocValuesProducer> fieldProducerMap,
         AtomicInteger fieldNumberAcrossStarTrees,
-        DocValuesConsumer starTreeDocValuesConsumer
+        StarTree99ValuesConsumer starTreeDocValuesConsumer
     ) throws IOException;
 
     /**
@@ -52,6 +52,6 @@ public interface StarTreeBuilder extends Closeable {
     void build(
         List<StarTreeValues> starTreeValuesSubs,
         AtomicInteger fieldNumberAcrossStarTrees,
-        DocValuesConsumer starTreeDocValuesConsumer
+        StarTree99ValuesConsumer starTreeDocValuesConsumer
     ) throws IOException;
 }
