@@ -26,6 +26,8 @@ import org.opensearch.index.mapper.FieldValueConverter;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.List;
 
 import static org.opensearch.index.mapper.NumberFieldMapper.NumberType.DOUBLE;
@@ -69,14 +71,96 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
     }
 
     /**
-     * Write the star tree document to file associated with dimensions and metrics
+     * Write the star tree document to a byte buffer
      */
     protected int writeStarTreeDocument(StarTreeDocument starTreeDocument, IndexOutput output, boolean isAggregatedDoc) throws IOException {
-        int numBytes = writeDimensions(starTreeDocument, output);
-        if(isAggregatedDoc == false) {
+        int numBytes = calculateDocumentSize(starTreeDocument, isAggregatedDoc);
+        byte[] bytes = new byte[numBytes];
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder());
+        writeDimensions(starTreeDocument, buffer);
+        if (isAggregatedDoc == false) {
+            writeFlushMetricsBuffer(starTreeDocument, buffer);
+        } else {
+            writeMetrics(starTreeDocument, buffer, isAggregatedDoc);
+        }
+        output.writeBytes(bytes, bytes.length);
+        setDocSizeInBytes(numBytes);
+        return bytes.length;
+    }
+
+    /**
+     * Write dimensions to the byte buffer
+     */
+    protected void writeDimensions(StarTreeDocument starTreeDocument, ByteBuffer buffer) throws IOException {
+        for (Long dimension : starTreeDocument.dimensions) {
+            buffer.putLong(dimension == null ? 0L : dimension);
+        }
+        StarTreeDocumentBitSetUtil.writeBitSet(starTreeDocument.dimensions, buffer);
+    }
+
+    /**
+     * Write star tree document metrics to file
+     */
+    protected void writeFlushMetricsBuffer(StarTreeDocument starTreeDocument, ByteBuffer buffer) throws IOException {
+        for (int i = 0; i < starTreeDocument.metrics.length; i++) {
+            buffer.putLong(starTreeDocument.metrics[i] == null ? 0L : (Long) starTreeDocument.metrics[i]);
+        }
+        StarTreeDocumentBitSetUtil.writeBitSet(starTreeDocument.metrics, buffer);
+    }
+
+    /**
+     * Write star tree document metrics to the byte buffer
+     */
+    protected void writeMetrics(StarTreeDocument starTreeDocument, ByteBuffer buffer, boolean isAggregatedDoc) throws IOException {
+        for (int i = 0; i < starTreeDocument.metrics.length; i++) {
+            FieldValueConverter aggregatedValueType = metricAggregatorInfos.get(i).getValueAggregators().getAggregatedValueType();
+            if (aggregatedValueType.equals(LONG)) {
+                buffer.putLong(starTreeDocument.metrics[i] == null ? 0L : (Long) starTreeDocument.metrics[i]);
+            } else if (aggregatedValueType.equals(DOUBLE)) {
+                if (isAggregatedDoc) {
+                    long val = NumericUtils.doubleToSortableLong(
+                        starTreeDocument.metrics[i] == null ? 0.0 : (Double) starTreeDocument.metrics[i]
+                    );
+                    buffer.putLong(val);
+                } else {
+                    buffer.putLong(starTreeDocument.metrics[i] == null ? 0L : (Long) starTreeDocument.metrics[i]);
+                }
+            } else {
+                throw new IllegalStateException("Unsupported metric type");
+            }
+        }
+        StarTreeDocumentBitSetUtil.writeBitSet(starTreeDocument.metrics, buffer);
+    }
+
+    /**
+     * Calculate the size of the serialized StarTreeDocument
+     */
+    private int calculateDocumentSize(StarTreeDocument starTreeDocument, boolean isAggregatedDoc) {
+        int size = starTreeDocument.dimensions.length * Long.BYTES;
+        size += getLength(starTreeDocument.dimensions);
+
+        for (int i = 0; i < starTreeDocument.metrics.length; i++) {
+            size += Long.BYTES;
+        }
+        size += getLength(starTreeDocument.metrics);
+
+        return size;
+    }
+
+    private static int getLength(Object[] array) {
+        return (array.length / 8) + (array.length % 8 == 0 ? 0 : 1);
+    }
+
+    /**
+     * Write the star tree document to file associated with dimensions and metrics
+     */
+    protected int writeStarTreeDocument1(StarTreeDocument starTreeDocument, IndexOutput output, boolean isAggregatedDoc)
+        throws IOException {
+        int numBytes = writeDimensions1(starTreeDocument, output);
+        if (isAggregatedDoc == false) {
             numBytes += writeFlushMetrics(starTreeDocument, output);
         } else {
-            numBytes += writeMetrics(starTreeDocument, output, isAggregatedDoc);
+            numBytes += writeMetrics1(starTreeDocument, output, isAggregatedDoc);
         }
         setDocSizeInBytes(numBytes);
         return numBytes;
@@ -85,7 +169,7 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
     /**
      * Write dimensions to file
      */
-    protected int writeDimensions(StarTreeDocument starTreeDocument, IndexOutput output) throws IOException {
+    protected int writeDimensions1(StarTreeDocument starTreeDocument, IndexOutput output) throws IOException {
         int numBytes = 0;
         for (int i = 0; i < starTreeDocument.dimensions.length; i++) {
             output.writeLong(starTreeDocument.dimensions[i] == null ? 0L : starTreeDocument.dimensions[i]);
@@ -111,7 +195,7 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
     /**
      * Write star tree document metrics to file
      */
-    protected int writeMetrics(StarTreeDocument starTreeDocument, IndexOutput output, boolean isAggregatedDoc) throws IOException {
+    protected int writeMetrics1(StarTreeDocument starTreeDocument, IndexOutput output, boolean isAggregatedDoc) throws IOException {
         int numBytes = 0;
         for (int i = 0; i < starTreeDocument.metrics.length; i++) {
             FieldValueConverter aggregatedValueType = metricAggregatorInfos.get(i).getValueAggregators().getAggregatedValueType();
@@ -177,8 +261,7 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
         return offset;
     }
 
-    protected long readFlushMetrics(RandomAccessInput input, long offset, Object[] metrics)
-        throws IOException {
+    protected long readFlushMetrics(RandomAccessInput input, long offset, Object[] metrics) throws IOException {
         int numMetrics = 0;
         Object[] fieldMetrics = new Object[starTreeField.getMetrics().size()];
         for (int i = 0; i < starTreeField.getMetrics().size(); i++) {
@@ -187,8 +270,8 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
         }
         offset += StarTreeDocumentBitSetUtil.readBitSet(input, offset, fieldMetrics, index -> null);
         int fieldIndex = 0;
-        for(Metric metric : starTreeField.getMetrics()) {
-            for(MetricStat stat : metric.getBaseMetrics()) {
+        for (Metric metric : starTreeField.getMetrics()) {
+            for (MetricStat stat : metric.getBaseMetrics()) {
                 metrics[numMetrics++] = fieldMetrics[fieldIndex];
             }
             fieldIndex++;

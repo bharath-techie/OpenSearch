@@ -220,7 +220,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
             if (metric.getField().equals(DocCountFieldMapper.NAME)) {
                 metricReader = getIteratorForNumericField(fieldProducerMap, metricFieldInfo, DocCountFieldMapper.NAME);
             } else {
-                if(metric.getBaseMetrics().size() == 0) continue;
+                if (metric.getBaseMetrics().size() == 0) continue;
                 if (metricFieldInfo == null) {
                     metricFieldInfo = getFieldInfo(metric.getField(), DocValuesType.SORTED_NUMERIC);
                 }
@@ -620,7 +620,7 @@ public abstract class BaseStarTreeBuilder implements StarTreeBuilder {
         int metricIndex = 0;
         for (int i = 0; i < starTreeField.getMetrics().size(); i++) {
             Metric metric = starTreeField.getMetrics().get(i);
-            if(metric.getBaseMetrics().size() == 0) continue;
+            if (metric.getBaseMetrics().size() == 0) continue;
             SequentialDocValuesIterator metricReader = metricsReaders.get(i);
             if (metricReader != null) {
                 try {

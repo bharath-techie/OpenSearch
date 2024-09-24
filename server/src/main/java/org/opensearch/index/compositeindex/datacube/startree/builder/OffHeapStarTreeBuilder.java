@@ -140,10 +140,11 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
         return new StarTreeDocument(dimensions, metricValues);
     }
 
-    private Object[] getStarTreeMetricValuesFromSegment(int currentDocId, List<SequentialDocValuesIterator> metricReaders) throws IOException {
+    private Object[] getStarTreeMetricValuesFromSegment(int currentDocId, List<SequentialDocValuesIterator> metricReaders)
+        throws IOException {
         Object[] metricValues = new Object[starTreeField.getMetrics().size()];
         for (int i = 0; i < starTreeField.getMetrics().size(); i++) {
-            if(starTreeField.getMetrics().get(i).getBaseMetrics().size() == 0) continue;
+            if (starTreeField.getMetrics().get(i).getBaseMetrics().size() == 0) continue;
             SequentialDocValuesIterator metricReader = metricReaders.get(i);
             if (metricReader != null) {
                 try {

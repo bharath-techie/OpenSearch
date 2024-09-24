@@ -13,6 +13,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.RandomAccessInput;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 /**
  * A bitset backed by a byte array. This will initialize and set bits in the byte array based on the index.
@@ -65,6 +66,15 @@ public class ByteArrayBackedBitset {
         int numBytes = 0;
         for (Byte bitSet : byteArray) {
             output.writeByte(bitSet);
+            numBytes += Byte.BYTES;
+        }
+        return numBytes;
+    }
+
+    public int write(ByteBuffer output) throws IOException {
+        int numBytes = 0;
+        for (Byte bitSet : byteArray) {
+            output.put(bitSet);
             numBytes += Byte.BYTES;
         }
         return numBytes;

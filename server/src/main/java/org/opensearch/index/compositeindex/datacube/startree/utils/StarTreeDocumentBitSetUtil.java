@@ -13,6 +13,7 @@ import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.common.util.ByteArrayBackedBitset;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.function.Function;
 
 /**
@@ -49,6 +50,19 @@ public class StarTreeDocumentBitSetUtil {
             }
         }
         return bitset.getCurrBytesRead();
+    }
+
+    /**
+     * Write the bitset for the given array to the ByteBuffer
+     */
+    public static void writeBitSet(Object[] array, ByteBuffer buffer) throws IOException {
+        ByteArrayBackedBitset bitset = new ByteArrayBackedBitset(getLength(array));
+        for (int i = 0; i < array.length; i++) {
+            if (array[i] == null) {
+                bitset.set(i);
+            }
+        }
+        bitset.write(buffer);
     }
 
     private static int getLength(Object[] array) {
