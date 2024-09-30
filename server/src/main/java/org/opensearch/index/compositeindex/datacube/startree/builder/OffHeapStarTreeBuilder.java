@@ -41,7 +41,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
     private static final Logger logger = LogManager.getLogger(OffHeapStarTreeBuilder.class);
     private final StarTreeDocsFileManager starTreeDocumentFileManager;
-    private final SegmentDocsFileManager segmentDocumentFileManager;
+    private final SegmentDocsFileManager offHeapSegmentDocumentFileManager;
+    private final OnHeapSegmentDocsFileManager onHeapSegmentDocsFileManager;
+    private AbstractDocumentsFileManager segmentDocumentFileManager;
 
     /**
      * Builds star tree based on star tree field configuration consisting of dimensions, metrics and star tree index
@@ -61,11 +63,12 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
         MapperService mapperService
     ) throws IOException {
         super(metaOut, dataOut, starTreeField, state, mapperService);
-        segmentDocumentFileManager = new SegmentDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
+        offHeapSegmentDocumentFileManager = new SegmentDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
+        onHeapSegmentDocsFileManager = new OnHeapSegmentDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
         try {
             starTreeDocumentFileManager = new StarTreeDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
         } catch (IOException e) {
-            IOUtils.closeWhileHandlingException(segmentDocumentFileManager);
+            IOUtils.closeWhileHandlingException(offHeapSegmentDocumentFileManager, onHeapSegmentDocsFileManager);
             throw e;
         }
 
@@ -90,12 +93,14 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
         boolean success = false;
         try {
             long starTime = System.currentTimeMillis();
+            segmentDocumentFileManager = this.offHeapSegmentDocumentFileManager;
             build(mergeStarTrees(starTreeValuesSubs), fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
             logger.info("Finished Merging star-tree in ms : {}", (System.currentTimeMillis() - starTime));
             success = true;
         } finally {
             starTreeDocumentFileManager.deleteFiles(success);
-            segmentDocumentFileManager.deleteFiles(success);
+            onHeapSegmentDocsFileManager.deleteFiles(success);
+            offHeapSegmentDocumentFileManager.deleteFiles(success);
         }
     }
 
@@ -116,6 +121,11 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
         int[] sortedDocIds = new int[totalSegmentDocs];
         for (int i = 0; i < totalSegmentDocs; i++) {
             sortedDocIds[i] = i;
+        }
+        if(totalSegmentDocs < 100000) {
+            segmentDocumentFileManager = this.onHeapSegmentDocsFileManager;
+        } else {
+            segmentDocumentFileManager = this.offHeapSegmentDocumentFileManager;
         }
         try {
             for (int i = 0; i < totalSegmentDocs; i++) {
@@ -370,7 +380,8 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
 
     @Override
     public void close() throws IOException {
-        IOUtils.closeWhileHandlingException(starTreeDocumentFileManager, segmentDocumentFileManager);
+        IOUtils.closeWhileHandlingException(starTreeDocumentFileManager,offHeapSegmentDocumentFileManager, onHeapSegmentDocsFileManager);
+        segmentDocumentFileManager = null;
         super.close();
     }
 }

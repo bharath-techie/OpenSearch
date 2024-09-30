@@ -16,6 +16,8 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.util.io.IOUtils;
+import org.opensearch.index.compositeindex.datacube.Metric;
+import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeDocument;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
 import org.opensearch.index.compositeindex.datacube.startree.aggregators.MetricAggregatorInfo;
@@ -24,6 +26,12 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeDocumentBitSetUtil;
+import org.opensearch.index.mapper.FieldValueConverter;
+
+import static org.opensearch.index.mapper.NumberFieldMapper.NumberType.DOUBLE;
+import static org.opensearch.index.mapper.NumberFieldMapper.NumberType.LONG;
+
 
 /**
  * Class for managing segment documents file.
@@ -36,12 +44,7 @@ import java.util.List;
 public class OnHeapSegmentDocsFileManager extends AbstractDocumentsFileManager implements Closeable {
 
     private static final Logger logger = LogManager.getLogger(OnHeapSegmentDocsFileManager.class);
-    private static final String SEGMENT_DOC_FILE_NAME = "segment.documents";
-    private IndexInput segmentDocsFileInput;
-    private RandomAccessInput segmentRandomInput;
-    final IndexOutput segmentDocsFileOutput;
     List<StarTreeDocument> starTreeDocArr;
-    int numStarTreeDoc = 0;
 
     public OnHeapSegmentDocsFileManager(
         SegmentWriteState state,
@@ -50,12 +53,6 @@ public class OnHeapSegmentDocsFileManager extends AbstractDocumentsFileManager i
         int numDimensions
     ) throws IOException {
         super(state, starTreeField, metricAggregatorInfos, numDimensions);
-        try {
-            segmentDocsFileOutput = tmpDirectory.createTempOutput(SEGMENT_DOC_FILE_NAME, state.segmentSuffix, state.context);
-        } catch (IOException e) {
-            IOUtils.closeWhileHandlingException(this);
-            throw e;
-        }
         starTreeDocArr = new ArrayList<>();
     }
 
@@ -64,22 +61,34 @@ public class OnHeapSegmentDocsFileManager extends AbstractDocumentsFileManager i
         starTreeDocArr.add(starTreeDocument);
     }
 
-    private void maybeInitializeSegmentInput() throws IOException {
-        try {
-            if (segmentDocsFileInput == null) {
-                IOUtils.closeWhileHandlingException(segmentDocsFileOutput);
-                segmentDocsFileInput = tmpDirectory.openInput(segmentDocsFileOutput.getName(), state.context);
-                segmentRandomInput = segmentDocsFileInput.randomAccessSlice(0, segmentDocsFileInput.length());
+    @Override
+    public StarTreeDocument readStarTreeDocument(int docId, boolean isAggregatedDoc) throws IOException {
+        Object[] metrics = new Object[numMetrics];
+        if (isAggregatedDoc == false) {
+           readFlushMetrics(metrics, docId);
+        } else {
+            readMetrics(numMetrics, metrics, isAggregatedDoc, docId);
+        }
+        return new StarTreeDocument(starTreeDocArr.get(docId).dimensions, metrics);
+    }
+
+    protected void readFlushMetrics(Object[] metrics, int docId) throws IOException {
+        int numMetrics = 0;
+        int fieldIndex = 0;
+        for (Metric metric : starTreeField.getMetrics()) {
+            for (MetricStat stat : metric.getBaseMetrics()) {
+                metrics[numMetrics++] = starTreeDocArr.get(docId).metrics[fieldIndex];
             }
-        } catch (IOException e) {
-            IOUtils.closeWhileHandlingException(this);
-            throw e;
+            fieldIndex++;
         }
     }
 
-    @Override
-    public StarTreeDocument readStarTreeDocument(int docId, boolean isAggregatedDoc) throws IOException {
-        return starTreeDocArr.get(docId);
+    /**
+     * Read star tree metrics from file
+     */
+    protected void readMetrics(int numMetrics, Object[] metrics, boolean isAggregatedDoc, int docId)
+        throws IOException {
+        metrics = starTreeDocArr.get(docId).metrics;
     }
 
     @Override
@@ -96,13 +105,5 @@ public class OnHeapSegmentDocsFileManager extends AbstractDocumentsFileManager i
     @Override
     public void close() throws IOException {
         starTreeDocArr = null;
-        try {
-            if (this.segmentDocsFileOutput != null) {
-                IOUtils.closeWhileHandlingException(segmentDocsFileOutput);
-                tmpDirectory.deleteFile(segmentDocsFileOutput.getName());
-            }
-        } finally {
-            IOUtils.closeWhileHandlingException(segmentDocsFileInput, segmentDocsFileOutput);
-        }
     }
 }
