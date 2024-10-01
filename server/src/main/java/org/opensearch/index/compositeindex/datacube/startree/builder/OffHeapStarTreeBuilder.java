@@ -198,7 +198,6 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
             segmentDocumentFileManager.close();
             throw ex;
         }
-
         if (numDocs == 0) {
             return Collections.emptyIterator();
         }

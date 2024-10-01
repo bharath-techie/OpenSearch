@@ -205,6 +205,7 @@ public class StarTreeDocsFileManager extends AbstractDocumentsFileManager implem
     private void closeAndMaybeCreateNewFile(boolean shouldCreateFileForAppend, int numStarTreeDocs) throws IOException {
         if (starTreeDocsFileOutput != null) {
             fileToEndDocIdMap.put(starTreeDocsFileOutput.getName(), numStarTreeDocs);
+            super.close();
             IOUtils.close(starTreeDocsFileOutput);
         }
         if (shouldCreateFileForAppend) {
@@ -262,7 +263,9 @@ public class StarTreeDocsFileManager extends AbstractDocumentsFileManager implem
     }
 
     @Override
-    public void close() {
+    public void close()
+        throws IOException {
+        super.close();
         try {
             if (starTreeDocsFileOutput != null) {
                 IOUtils.closeWhileHandlingException(starTreeDocsFileOutput);

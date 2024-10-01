@@ -8,6 +8,7 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import java.io.EOFException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.SegmentWriteState;
@@ -49,6 +50,11 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
     protected int docSizeInBytes = -1;
     protected final int numDimensions;
 
+    private static final int DEFAULT_BUFFER_SIZE = 10 * 1024 * 1024; // 10 MB default buffer size
+    private final int bufferSize;
+    private ByteBuffer buffer;
+    private IndexOutput currentOutput;
+
     public AbstractDocumentsFileManager(
         SegmentWriteState state,
         StarTreeField starTreeField,
@@ -61,6 +67,8 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
         this.state = state;
         numMetrics = metricAggregatorInfos.size();
         this.numDimensions = numDimensions;
+        this.bufferSize = DEFAULT_BUFFER_SIZE;
+        this.buffer = ByteBuffer.allocate(bufferSize).order(ByteOrder.nativeOrder());
     }
 
     private void setDocSizeInBytes(int numBytes) {
@@ -74,18 +82,31 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
      * Write the star tree document to a byte buffer
      */
     protected int writeStarTreeDocument(StarTreeDocument starTreeDocument, IndexOutput output, boolean isAggregatedDoc) throws IOException {
+        currentOutput = output;
+
         int numBytes = calculateDocumentSize(starTreeDocument, isAggregatedDoc);
-        byte[] bytes = new byte[numBytes];
-        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder());
+
+        if (buffer.remaining() < numBytes) {
+            flushBuffer();
+        }
         writeDimensions(starTreeDocument, buffer);
         if (isAggregatedDoc == false) {
             writeFlushMetricsBuffer(starTreeDocument, buffer);
         } else {
             writeMetrics(starTreeDocument, buffer, isAggregatedDoc);
         }
-        output.writeBytes(bytes, bytes.length);
+
         setDocSizeInBytes(numBytes);
-        return bytes.length;
+        return numBytes;
+    }
+
+    private void flushBuffer() throws IOException {
+        if (buffer.position() > 0) {
+            buffer.flip();
+            currentOutput.writeBytes(buffer.array(), buffer.position(), buffer.limit());
+
+            buffer.clear();
+        }
     }
 
     /**
@@ -152,75 +173,6 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
     }
 
     /**
-     * Write the star tree document to file associated with dimensions and metrics
-     */
-    protected int writeStarTreeDocument1(StarTreeDocument starTreeDocument, IndexOutput output, boolean isAggregatedDoc)
-        throws IOException {
-        int numBytes = writeDimensions1(starTreeDocument, output);
-        if (isAggregatedDoc == false) {
-            numBytes += writeFlushMetrics(starTreeDocument, output);
-        } else {
-            numBytes += writeMetrics1(starTreeDocument, output, isAggregatedDoc);
-        }
-        setDocSizeInBytes(numBytes);
-        return numBytes;
-    }
-
-    /**
-     * Write dimensions to file
-     */
-    protected int writeDimensions1(StarTreeDocument starTreeDocument, IndexOutput output) throws IOException {
-        int numBytes = 0;
-        for (int i = 0; i < starTreeDocument.dimensions.length; i++) {
-            output.writeLong(starTreeDocument.dimensions[i] == null ? 0L : starTreeDocument.dimensions[i]);
-            numBytes += Long.BYTES;
-        }
-        numBytes += StarTreeDocumentBitSetUtil.writeBitSet(starTreeDocument.dimensions, output);
-        return numBytes;
-    }
-
-    /**
-     * Write star tree document metrics to file
-     */
-    protected int writeFlushMetrics(StarTreeDocument starTreeDocument, IndexOutput output) throws IOException {
-        int numBytes = 0;
-        for (int i = 0; i < starTreeDocument.metrics.length; i++) {
-            output.writeLong(starTreeDocument.metrics[i] == null ? 0L : (Long) starTreeDocument.metrics[i]);
-            numBytes += Long.BYTES;
-        }
-        numBytes += StarTreeDocumentBitSetUtil.writeBitSet(starTreeDocument.metrics, output);
-        return numBytes;
-    }
-
-    /**
-     * Write star tree document metrics to file
-     */
-    protected int writeMetrics1(StarTreeDocument starTreeDocument, IndexOutput output, boolean isAggregatedDoc) throws IOException {
-        int numBytes = 0;
-        for (int i = 0; i < starTreeDocument.metrics.length; i++) {
-            FieldValueConverter aggregatedValueType = metricAggregatorInfos.get(i).getValueAggregators().getAggregatedValueType();
-            if (aggregatedValueType.equals(LONG)) {
-                output.writeLong(starTreeDocument.metrics[i] == null ? 0L : (Long) starTreeDocument.metrics[i]);
-                numBytes += Long.BYTES;
-            } else if (aggregatedValueType.equals(DOUBLE)) {
-                if (isAggregatedDoc) {
-                    long val = NumericUtils.doubleToSortableLong(
-                        starTreeDocument.metrics[i] == null ? 0.0 : (Double) starTreeDocument.metrics[i]
-                    );
-                    output.writeLong(val);
-                } else {
-                    output.writeLong(starTreeDocument.metrics[i] == null ? 0L : (Long) starTreeDocument.metrics[i]);
-                }
-                numBytes += Long.BYTES;
-            } else {
-                throw new IllegalStateException("Unsupported metric type");
-            }
-        }
-        numBytes += StarTreeDocumentBitSetUtil.writeBitSet(starTreeDocument.metrics, output);
-        return numBytes;
-    }
-
-    /**
      * Reads the star tree document from file with given offset
      *
      * @param input   RandomAccessInput
@@ -230,6 +182,9 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
      * @throws IOException IOException in case of I/O errors
      */
     protected StarTreeDocument readStarTreeDocument(RandomAccessInput input, long offset, boolean isAggregatedDoc) throws IOException {
+//        if (offset >= totalBytesWritten) {
+//            throw new EOFException("Attempted to read past end of file. Offset: " + offset + ", Total bytes: " + totalBytesWritten);
+//        }
         Long[] dimensions = new Long[numDimensions];
         long initialOffset = offset;
         offset = readDimensions(dimensions, input, offset);
@@ -336,7 +291,6 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
         } else {
             deleteFilesIgnoringException();
         }
-
     }
 
     /**
@@ -347,6 +301,14 @@ public abstract class AbstractDocumentsFileManager implements Closeable {
             try {
                 tmpDirectory.deleteFile(file);
             } catch (final IOException ignored) {} // similar to IOUtils.deleteFilesWhileIgnoringExceptions
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        flushBuffer();
+        if (currentOutput != null) {
+            currentOutput.close();
         }
     }
 }

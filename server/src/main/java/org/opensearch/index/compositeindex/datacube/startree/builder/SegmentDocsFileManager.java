@@ -63,6 +63,7 @@ public class SegmentDocsFileManager extends AbstractDocumentsFileManager impleme
     private void maybeInitializeSegmentInput() throws IOException {
         try {
             if (segmentDocsFileInput == null) {
+                super.close();
                 IOUtils.closeWhileHandlingException(segmentDocsFileOutput);
                 segmentDocsFileInput = tmpDirectory.openInput(segmentDocsFileOutput.getName(), state.context);
                 segmentRandomInput = segmentDocsFileInput.randomAccessSlice(0, segmentDocsFileInput.length());
@@ -95,6 +96,7 @@ public class SegmentDocsFileManager extends AbstractDocumentsFileManager impleme
 
     @Override
     public void close() throws IOException {
+        super.close();
         try {
             if (this.segmentDocsFileOutput != null) {
                 IOUtils.closeWhileHandlingException(segmentDocsFileOutput);
