@@ -49,7 +49,7 @@ import org.opensearch.action.search.SearchType;
 import org.opensearch.action.search.UpdatePitContextRequest;
 import org.opensearch.action.search.UpdatePitContextResponse;
 import org.opensearch.action.support.TransportActions;
-import org.opensearch.arrow.FlightService;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.CheckedSupplier;
@@ -405,7 +405,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     private final String sessionId = UUIDs.randomBase64UUID();
     private final Executor indexSearcherExecutor;
     private final TaskResourceTrackingService taskResourceTrackingService;
-    private final FlightService flightService;
+    private final StreamManager streamManager;
 
     public SearchService(
         ClusterService clusterService,
@@ -421,7 +421,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         Executor indexSearcherExecutor,
         TaskResourceTrackingService taskResourceTrackingService,
         Collection<ConcurrentSearchRequestDecider.Factory> concurrentSearchDeciderFactories,
-        FlightService flightService
+        StreamManager streamManager
     ) {
         Settings settings = clusterService.getSettings();
         this.threadPool = threadPool;
@@ -450,7 +450,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 this::setPitKeepAlives,
                 this::validatePitKeepAlives
             );
-        this.flightService = flightService;
+        this.streamManager = streamManager;
         clusterService.getClusterSettings()
             .addSettingsUpdateConsumer(DEFAULT_KEEPALIVE_SETTING, MAX_KEEPALIVE_SETTING, this::setKeepAlives, this::validateKeepAlives);
 
@@ -588,16 +588,13 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     @Override
-    protected void doStart() {
-        flightService.start();
-    }
+    protected void doStart() { }
 
     @Override
     protected void doStop() {
         for (final ReaderContext context : activeReaders.values()) {
             freeReaderContext(context.id());
         }
-        flightService.stop();
     }
 
     @Override
@@ -1297,7 +1294,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 indexSearcherExecutor,
                 this::aggReduceContextBuilder,
                 concurrentSearchDeciderFactories,
-                flightService
+                streamManager
             );
             // we clone the query shard context here just for rewriting otherwise we
             // might end up with incorrect state since we are using now() or script services

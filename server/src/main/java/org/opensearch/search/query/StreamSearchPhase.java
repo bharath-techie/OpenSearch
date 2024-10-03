@@ -8,27 +8,34 @@
 
 package org.opensearch.search.query;
 
-import org.apache.arrow.flight.Ticket;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.Query;
+import org.opensearch.arrow.ArrowStreamProvider;
+import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.StreamTicket;
+import org.opensearch.arrow.query.ArrowDocIdCollector;
 import org.opensearch.search.SearchContextSourcePrinter;
 import org.opensearch.search.aggregations.AggregationProcessor;
 import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.profile.ProfileShardResult;
 import org.opensearch.search.profile.SearchProfileShardResults;
-import org.opensearch.search.profile.query.ArrowCollector;
-import org.opensearch.search.profile.query.StreamResultFlightProducer;
 import org.opensearch.search.stream.OSTicket;
 import org.opensearch.search.stream.StreamSearchResult;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 
 public class StreamSearchPhase extends QueryPhase {
+
     private static final Logger LOGGER = LogManager.getLogger(StreamSearchPhase.class);
     public static final QueryPhaseSearcher DEFAULT_QUERY_PHASE_SEARCHER = new DefaultStreamSearchPhaseSearcher();
 
@@ -63,7 +70,7 @@ public class StreamSearchPhase extends QueryPhase {
             LinkedList<QueryCollectorContext> collectors,
             boolean hasFilterCollector,
             boolean hasTimeout
-        ) throws IOException {
+        ) {
             return searchWithCollector(searchContext, searcher, query, collectors, hasFilterCollector, hasTimeout);
         }
 
@@ -89,7 +96,7 @@ public class StreamSearchPhase extends QueryPhase {
             LinkedList<QueryCollectorContext> collectors,
             boolean hasFilterCollector,
             boolean hasTimeout
-        ) throws IOException {
+        ) {
             return searchWithCollector(searchContext, searcher, query, collectors, hasTimeout);
         }
 
@@ -99,44 +106,59 @@ public class StreamSearchPhase extends QueryPhase {
             Query query,
             LinkedList<QueryCollectorContext> collectors,
             boolean timeoutSet
-        ) throws IOException {
-            final ArrowCollector collector = createQueryCollector(collectors);
+        ) {
+
             QuerySearchResult queryResult = searchContext.queryResult();
-            StreamResultFlightProducer.CollectorCallback collectorCallback = new StreamResultFlightProducer.CollectorCallback() {
+            StreamManager streamManager = searchContext.streamManager();
+            if (streamManager == null) {
+                throw new RuntimeException("StreamManager not setup");
+            }
+            StreamTicket ticket = streamManager.registerStream((allocator -> new ArrowStreamProvider.Task() {
                 @Override
-                public void collect(Collector queryCollector) throws IOException {
+                public VectorSchemaRoot init(BufferAllocator allocator) {
+                    IntVector docIDVector = new IntVector("docID", allocator);
+                    FieldVector[] vectors = new FieldVector[]{
+                        docIDVector
+                    };
+                    VectorSchemaRoot root = new VectorSchemaRoot(Arrays.asList(vectors));
+                    return root;
+                }
+
+                @Override
+                public void run(VectorSchemaRoot root, ArrowStreamProvider.FlushSignal flushSignal) {
                     try {
-                        searcher.search(query, queryCollector);
-                    } catch (EarlyTerminatingCollector.EarlyTerminationException e) {
-                        // EarlyTerminationException is not caught in ContextIndexSearcher to allow force termination of collection. Postcollection
-                        // still needs to be processed for Aggregations when early termination takes place.
-                        searchContext.bucketCollectorProcessor().processPostCollection(queryCollector);
-                        queryResult.terminatedEarly(true);
-                    }
-                    if (searchContext.isSearchTimedOut()) {
-                        assert timeoutSet : "TimeExceededException thrown even though timeout wasn't set";
-                        if (searchContext.request().allowPartialSearchResults() == false) {
-                            throw new QueryPhaseExecutionException(searchContext.shardTarget(), "Time exceeded");
+                        Collector collector = QueryCollectorContext.createQueryCollector(collectors);
+                        final ArrowDocIdCollector arrowDocIdCollector = new ArrowDocIdCollector(collector, root, flushSignal, 1000);
+                        try {
+                            searcher.search(query, arrowDocIdCollector);
+                        } catch (EarlyTerminatingCollector.EarlyTerminationException e) {
+                            // EarlyTerminationException is not caught in ContextIndexSearcher to allow force termination of collection. Postcollection
+                            // still needs to be processed for Aggregations when early termination takes place.
+                            searchContext.bucketCollectorProcessor().processPostCollection(arrowDocIdCollector);
+                            queryResult.terminatedEarly(true);
                         }
-                        queryResult.searchTimedOut(true);
-                    }
-                    if (searchContext.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER && queryResult.terminatedEarly() == null) {
-                        queryResult.terminatedEarly(false);
-                    }
-                    for (QueryCollectorContext ctx : collectors) {
-                        ctx.postProcess(queryResult);
+                        if (searchContext.isSearchTimedOut()) {
+                            assert timeoutSet : "TimeExceededException thrown even though timeout wasn't set";
+                            if (searchContext.request().allowPartialSearchResults() == false) {
+                                throw new QueryPhaseExecutionException(searchContext.shardTarget(), "Time exceeded");
+                            }
+                            queryResult.searchTimedOut(true);
+                        }
+                        if (searchContext.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER && queryResult.terminatedEarly() == null) {
+                            queryResult.terminatedEarly(false);
+                        }
+
+                        for (QueryCollectorContext ctx : collectors) {
+                            ctx.postProcess(queryResult);
+                        }
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
                     }
                 }
-            };
-            Ticket ticket = searchContext.flightService().getFlightProducer().createStream(collector, collectorCallback);
+            }));
             StreamSearchResult streamSearchResult = searchContext.streamSearchResult();
             streamSearchResult.flights(List.of(new OSTicket(ticket.getBytes())));
             return false;
-        }
-
-        public static ArrowCollector createQueryCollector(List<QueryCollectorContext> collectors) throws IOException {
-            Collector collector = QueryCollectorContext.createQueryCollector(collectors);
-            return new ArrowCollector(collector, null, 1000);
         }
     }
 }

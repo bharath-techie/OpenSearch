@@ -45,7 +45,7 @@ import org.apache.lucene.search.Query;
 import org.opensearch.Version;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
-import org.opensearch.arrow.FlightService;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.SetOnce;
@@ -146,7 +146,7 @@ final class DefaultSearchContext extends SearchContext {
     private final IndexShard indexShard;
     private final ClusterService clusterService;
     private final IndexService indexService;
-    private final FlightService flightService;
+    private final StreamManager  streamManager;
     private final ContextIndexSearcher searcher;
     private final DfsSearchResult dfsResult;
     private final QuerySearchResult queryResult;
@@ -229,7 +229,7 @@ final class DefaultSearchContext extends SearchContext {
         Executor executor,
         Function<SearchSourceBuilder, InternalAggregation.ReduceContextBuilder> requestToAggReduceContextBuilder,
         Collection<ConcurrentSearchRequestDecider.Factory> concurrentSearchDeciderFactories,
-        FlightService flightService
+        StreamManager streamManager
     ) throws IOException {
         this.readerContext = readerContext;
         this.request = request;
@@ -276,7 +276,7 @@ final class DefaultSearchContext extends SearchContext {
         this.cardinalityAggregationPruningThreshold = evaluateCardinalityAggregationPruningThreshold();
         this.concurrentSearchDeciderFactories = concurrentSearchDeciderFactories;
         this.keywordIndexOrDocValuesEnabled = evaluateKeywordIndexOrDocValuesEnabled();
-        this.flightService = flightService;
+        this.streamManager = streamManager;
     }
 
     @Override
@@ -612,8 +612,8 @@ final class DefaultSearchContext extends SearchContext {
     }
 
     @Override
-    public FlightService flightService() {
-        return flightService;
+    public StreamManager streamManager() {
+        return streamManager;
     }
 
     @Override

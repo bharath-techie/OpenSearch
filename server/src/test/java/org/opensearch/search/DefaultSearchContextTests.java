@@ -923,7 +923,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 executor,
                 null,
-                Collections.emptyList()
+                Collections.emptyList(),
+                null
             );
 
             // Case1: if there is no agg in the query, non-concurrent path is used
@@ -951,7 +952,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 executor,
                 null,
-                Collections.emptyList()
+                Collections.emptyList(),
+                null
             );
 
             // add un-supported agg operation
@@ -983,7 +985,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 executor,
                 null,
-                Collections.emptyList()
+                Collections.emptyList(),
+                null
             );
             // create a supported agg operation
             context.aggregations(mockAggregations);
@@ -1041,7 +1044,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 executor,
                 null,
-                concurrentSearchRequestDeciders
+                concurrentSearchRequestDeciders,
+                null
             );
             // create a supported agg operation
             context.aggregations(mockAggregations);
@@ -1079,7 +1083,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 executor,
                 null,
-                concurrentSearchRequestDeciders
+                concurrentSearchRequestDeciders,
+                null
             );
 
             // create a supported agg operation
@@ -1121,7 +1126,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 executor,
                 null,
-                concurrentSearchRequestDeciders
+                concurrentSearchRequestDeciders,
+                null
             );
 
             // create a supported agg operation
@@ -1164,7 +1170,8 @@ public class DefaultSearchContextTests extends OpenSearchTestCase {
                 false,
                 executor,
                 null,
-                concurrentSearchRequestDeciders
+                concurrentSearchRequestDeciders,
+                null
             );
 
             // create a supported agg operation

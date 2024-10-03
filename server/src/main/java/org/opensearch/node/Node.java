@@ -56,7 +56,7 @@ import org.opensearch.action.search.SearchTaskRequestOperationsListener;
 import org.opensearch.action.search.SearchTransportService;
 import org.opensearch.action.support.TransportAction;
 import org.opensearch.action.update.UpdateHelper;
-import org.opensearch.arrow.FlightService;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.bootstrap.BootstrapCheck;
 import org.opensearch.bootstrap.BootstrapContext;
 import org.opensearch.client.Client;
@@ -219,6 +219,7 @@ import org.opensearch.plugins.ScriptPlugin;
 import org.opensearch.plugins.SearchPipelinePlugin;
 import org.opensearch.plugins.SearchPlugin;
 import org.opensearch.plugins.SecureSettingsFactory;
+import org.opensearch.plugins.StreamManagerPlugin;
 import org.opensearch.plugins.SystemIndexPlugin;
 import org.opensearch.plugins.TaskManagerClientPlugin;
 import org.opensearch.plugins.TelemetryAwarePlugin;
@@ -314,8 +315,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.toList;
-import static org.opensearch.common.util.FeatureFlags.BACKGROUND_TASK_EXECUTION_EXPERIMENTAL;
-import static org.opensearch.common.util.FeatureFlags.TELEMETRY;
+import static org.opensearch.common.util.FeatureFlags.*;
 import static org.opensearch.env.NodeEnvironment.collectFileCacheDataPath;
 import static org.opensearch.index.ShardIndexingPressureSettings.SHARD_INDEXING_PRESSURE_ENABLED_ATTRIBUTE_KEY;
 import static org.opensearch.indices.RemoteStoreSettings.CLUSTER_REMOTE_STORE_PINNED_TIMESTAMP_ENABLED;
@@ -911,8 +911,6 @@ public class Node implements Closeable {
                 threadPool
             );
 
-            final FlightService flightService = new FlightService();
-
             final SearchRequestStats searchRequestStats = new SearchRequestStats(clusterService.getClusterSettings());
             final SearchRequestSlowLog searchRequestSlowLog = new SearchRequestSlowLog(clusterService);
             final SearchTaskRequestOperationsListener searchTaskRequestOperationsListener = new SearchTaskRequestOperationsListener(
@@ -1378,7 +1376,23 @@ public class Node implements Closeable {
                 admissionControlService,
                 cacheService
             );
+            StreamManager streamManager = null;
+            if (FeatureFlags.isEnabled(ARROW_STREAMS_SETTING)) {
+                List<StreamManagerPlugin> streamManagerPlugins = pluginsService.filterPlugins(StreamManagerPlugin.class);
+                if (streamManagerPlugins.size() > 1) {
+                    throw new IllegalStateException(
+                        String.format(
+                            Locale.ROOT,
+                            "Only one StreamManagerPlugin can be installed. Found: %d", streamManagerPlugins.size()
 
+                        )
+                    );
+                }
+                if(!streamManagerPlugins.isEmpty()) {
+                    streamManager = streamManagerPlugins.get(0).getStreamManager();
+                    logger.info("StreamManager initialized");
+                }
+            }
             final SearchService searchService = newSearchService(
                 clusterService,
                 indicesService,
@@ -1393,7 +1407,7 @@ public class Node implements Closeable {
                 searchModule.getIndexSearcherExecutor(threadPool),
                 taskResourceTrackingService,
                 searchModule.getConcurrentSearchRequestDeciderFactories(),
-                flightService
+                streamManager
             );
 
             final List<PersistentTasksExecutor<?>> tasksExecutors = pluginsService.filterPlugins(PersistentTaskPlugin.class)
@@ -1448,7 +1462,6 @@ public class Node implements Closeable {
                 b.bind(SearchPipelineService.class).toInstance(searchPipelineService);
                 b.bind(IndexingPressureService.class).toInstance(indexingPressureService);
                 b.bind(TaskResourceTrackingService.class).toInstance(taskResourceTrackingService);
-                b.bind(FlightService.class).toInstance(flightService);
                 b.bind(SearchBackpressureService.class).toInstance(searchBackpressureService);
                 b.bind(QueryGroupService.class).toInstance(queryGroupService);
                 b.bind(AdmissionControlService.class).toInstance(admissionControlService);
@@ -2062,7 +2075,7 @@ public class Node implements Closeable {
         Executor indexSearcherExecutor,
         TaskResourceTrackingService taskResourceTrackingService,
         Collection<ConcurrentSearchRequestDecider.Factory> concurrentSearchDeciderFactories,
-        FlightService flightService
+        StreamManager streamManager
     ) {
         return new SearchService(
             clusterService,
@@ -2078,7 +2091,7 @@ public class Node implements Closeable {
             indexSearcherExecutor,
             taskResourceTrackingService,
             concurrentSearchDeciderFactories,
-            flightService
+            streamManager
         );
     }
 

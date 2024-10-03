@@ -37,7 +37,7 @@ import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Query;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
-import org.opensearch.arrow.FlightService;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.lease.Releasable;
@@ -282,7 +282,7 @@ public abstract class SearchContext implements Releasable {
 
     public abstract SimilarityService similarityService();
 
-    public abstract FlightService flightService();
+    public abstract StreamManager streamManager();
 
     public abstract BigArrays bigArrays();
 

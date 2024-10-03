@@ -32,7 +32,7 @@
 
 package org.opensearch.node;
 
-import org.opensearch.arrow.FlightService;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterInfoService;
 import org.opensearch.cluster.MockInternalClusterInfoService;
@@ -162,7 +162,7 @@ public class MockNode extends Node {
         Executor indexSearcherExecutor,
         TaskResourceTrackingService taskResourceTrackingService,
         Collection<ConcurrentSearchRequestDecider.Factory> concurrentSearchDeciderFactories,
-        FlightService flightService
+        StreamManager streamManager
     ) {
         if (getPluginsService().filterPlugins(MockSearchService.TestPlugin.class).isEmpty()) {
             return super.newSearchService(
@@ -179,7 +179,7 @@ public class MockNode extends Node {
                 indexSearcherExecutor,
                 taskResourceTrackingService,
                 concurrentSearchDeciderFactories,
-                flightService
+                streamManager
             );
         }
         return new MockSearchService(
@@ -193,7 +193,7 @@ public class MockNode extends Node {
             circuitBreakerService,
             indexSearcherExecutor,
             taskResourceTrackingService,
-            flightService
+            streamManager
         );
     }
 

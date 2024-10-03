@@ -32,7 +32,7 @@
 
 package org.opensearch.search;
 
-import org.opensearch.arrow.FlightService;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.util.BigArrays;
 import org.opensearch.core.indices.breaker.CircuitBreakerService;
@@ -102,7 +102,7 @@ public class MockSearchService extends SearchService {
         CircuitBreakerService circuitBreakerService,
         Executor indexSearcherExecutor,
         TaskResourceTrackingService taskResourceTrackingService,
-        FlightService flightService
+        StreamManager streamManager
     ) {
         super(
             clusterService,
@@ -118,7 +118,7 @@ public class MockSearchService extends SearchService {
             indexSearcherExecutor,
             taskResourceTrackingService,
             Collections.emptyList(),
-            flightService
+            streamManager
         );
     }
 

@@ -8,7 +8,7 @@
 
 package org.opensearch.search.stream;
 
-import org.apache.arrow.flight.Ticket;
+import org.opensearch.arrow.StreamTicket;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
@@ -20,13 +20,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 @ExperimentalApi
-public class OSTicket extends Ticket implements Writeable, ToXContentFragment {
-    public OSTicket(byte[] cmd) {
-        super(cmd);
+public class OSTicket extends StreamTicket implements Writeable, ToXContentFragment {
+
+    public OSTicket(byte[] bytes) {
+        super(bytes);
     }
 
     public OSTicket(StreamInput in) throws IOException {
-        super(in.readByteArray());
+        this(in.readByteArray());
     }
 
     @Override

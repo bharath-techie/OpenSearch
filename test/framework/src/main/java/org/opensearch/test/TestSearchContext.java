@@ -38,7 +38,7 @@ import org.apache.lucene.search.Query;
 import org.opensearch.action.OriginalIndices;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
-import org.opensearch.arrow.FlightService;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.BigArrays;
 import org.opensearch.core.index.shard.ShardId;
@@ -125,7 +125,7 @@ public class TestSearchContext extends SearchContext {
     private BucketCollectorProcessor bucketCollectorProcessor = NO_OP_BUCKET_COLLECTOR_PROCESSOR;
     private int maxSliceCount;
 
-    private FlightService flightService;
+    private StreamManager streamManager;
 
     /**
      * Sets the concurrent segment search enabled field
@@ -178,7 +178,7 @@ public class TestSearchContext extends SearchContext {
         IndexShard indexShard,
         ContextIndexSearcher searcher,
         ScrollContext scrollContext,
-        FlightService flightService
+        StreamManager streamManager
     ) {
         this.bigArrays = null;
         this.indexService = null;
@@ -189,7 +189,7 @@ public class TestSearchContext extends SearchContext {
         this.concurrentSegmentSearchEnabled = searcher != null && (searcher.getExecutor() != null);
         this.maxSliceCount = randomIntBetween(0, 2);
         this.scrollContext = scrollContext;
-        this.flightService = flightService;
+        this.streamManager = streamManager;
     }
 
     public void setSearcher(ContextIndexSearcher searcher) {
@@ -360,8 +360,8 @@ public class TestSearchContext extends SearchContext {
     }
 
     @Override
-    public FlightService flightService() {
-        return flightService;
+    public StreamManager streamManager() {
+        return streamManager;
     }
 
     @Override
