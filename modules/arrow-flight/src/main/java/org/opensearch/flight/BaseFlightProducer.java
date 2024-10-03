@@ -47,10 +47,10 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                 if (result.equals(BackpressureStrategy.WaitResult.READY)) {
                     listener.putNext();
                 } else if (result.equals(BackpressureStrategy.WaitResult.TIMEOUT)) {
-                    listener.error(new RuntimeException("Timeout waiting for listener"));
+                    listener.error(CallStatus.TIMED_OUT.cause());
                     throw new RuntimeException("Timeout waiting for listener" + result);
                 } else {
-                    listener.error(new RuntimeException("Error while waiting for client: " + result));
+                    listener.error(CallStatus.INTERNAL.toRuntimeException());
                     throw new RuntimeException("Error while waiting for client: " + result);
                 }
             };
@@ -60,7 +60,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                 root.close();
             }
         } catch (Exception e) {
-            listener.error(e);
+            listener.error(CallStatus.INTERNAL.toRuntimeException().initCause(e));
             throw e;
         } finally {
             listener.completed();

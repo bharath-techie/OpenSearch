@@ -28,6 +28,7 @@ public class FlightStreamManager extends StreamManager {
 
     @Override
     public VectorSchemaRoot getVectorSchemaRoot(StreamTicket ticket) {
+        // TODO: for remote streams
         FlightStream stream = flightClient.getStream(new Ticket(ticket.getBytes()));
         return stream.getRoot();
     }
