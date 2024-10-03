@@ -18,6 +18,9 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.arrow.StreamManager;
+import org.opensearch.common.settings.Setting;
+import org.opensearch.common.settings.Setting.Property;
+import org.opensearch.common.settings.Settings;
 
 import java.io.IOException;
 
@@ -29,8 +32,76 @@ public class FlightService extends AbstractLifecycleComponent {
     private static BufferAllocator allocator;
     private static StreamManager streamManager;
     private static final Logger logger = LogManager.getLogger(FlightService.class);
+    private static String host;
+    private static int port;
 
-    FlightService() {
+    public static final Setting<String> FLIGHT_HOST = Setting.simpleString(
+            "opensearch.flight.host",
+            "localhost",
+            Property.NodeScope
+    );
+
+    public static final Setting<Integer> FLIGHT_PORT = Setting.intSetting(
+            "opensearch.flight.port",
+            8815,
+            1024,
+            65535,
+            Property.NodeScope
+    );
+
+    public static final Setting<String> ARROW_ALLOCATION_MANAGER_TYPE = Setting.simpleString(
+            "arrow.allocation.manager.type",
+            "Netty",
+            Property.NodeScope
+    );
+
+    public static final Setting<Boolean> ARROW_ENABLE_NULL_CHECK_FOR_GET = Setting.boolSetting(
+            "arrow.enable_null_check_for_get",
+            false,
+            Property.NodeScope
+    );
+
+    public static final Setting<Boolean> NETTY_TRY_REFLECTION_SET_ACCESSIBLE = Setting.boolSetting(
+            "io.netty.tryReflectionSetAccessible",
+            true,
+            Property.NodeScope
+    );
+
+    public static final Setting<Boolean> ARROW_ENABLE_UNSAFE_MEMORY_ACCESS = Setting.boolSetting(
+            "arrow.enable_unsafe_memory_access",
+            true,
+            Property.NodeScope
+    );
+
+    public static final Setting<Integer> NETTY_ALLOCATOR_NUM_DIRECT_ARENAS = Setting.intSetting(
+            "io.netty.allocator.numDirectArenas",
+            1,
+            1,
+            Property.NodeScope
+    );
+
+    public static final Setting<Boolean> NETTY_NO_UNSAFE = Setting.boolSetting(
+            "io.netty.noUnsafe",
+            false,
+            Setting.Property.NodeScope
+    );
+
+    public static final Setting<Boolean> NETTY_TRY_UNSAFE = Setting.boolSetting(
+            "io.netty.tryUnsafe",
+            true,
+            Property.NodeScope
+    );
+
+    FlightService(Settings settings) {
+        System.setProperty("arrow.allocation.manager.type", ARROW_ALLOCATION_MANAGER_TYPE.get(settings));
+        System.setProperty("arrow.enable_null_check_for_get", Boolean.toString(ARROW_ENABLE_NULL_CHECK_FOR_GET.get(settings)));
+        System.setProperty("io.netty.tryReflectionSetAccessible", Boolean.toString(NETTY_TRY_REFLECTION_SET_ACCESSIBLE.get(settings)));
+        System.setProperty("arrow.enable_unsafe_memory_access", Boolean.toString(ARROW_ENABLE_UNSAFE_MEMORY_ACCESS.get(settings)));
+        System.setProperty("io.netty.allocator.numDirectArenas", Integer.toString(NETTY_ALLOCATOR_NUM_DIRECT_ARENAS.get(settings)));
+        System.setProperty("io.netty.noUnsafe", Boolean.toString(NETTY_NO_UNSAFE.get(settings)));
+        System.setProperty("io.netty.tryUnsafe", Boolean.toString(NETTY_TRY_UNSAFE.get(settings)));
+        host = FLIGHT_HOST.get(settings);
+        port = FLIGHT_PORT.get(settings);
         streamManager = new FlightStreamManager(client);
     }
 
@@ -39,9 +110,6 @@ public class FlightService extends AbstractLifecycleComponent {
         try {
             allocator = new RootAllocator(Integer.MAX_VALUE);
             BaseFlightProducer producer = new BaseFlightProducer(streamManager, allocator);
-            // TODO: Load these settings from OpenSearch configuration
-            String host = "localhost";
-            int port = 8815;
             final Location location = Location.forGrpcInsecure(host, port);
             server = FlightServer.builder(allocator, location, producer).build();
             client = FlightClient.builder(allocator, location).build();

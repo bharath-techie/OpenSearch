@@ -12,6 +12,8 @@ import org.opensearch.arrow.StreamManager;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.settings.Setting;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
@@ -23,13 +25,20 @@ import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.watcher.ResourceWatcherService;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.function.Supplier;
 
+import static org.opensearch.flight.FlightService.*;
+
 public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
 
     private  FlightService flightService;
+
+    public FlightStreamPlugin(Settings settings) {
+        this.flightService = new FlightService(settings);
+    }
 
     @Override
     public Collection<Object> createComponents(
@@ -45,13 +54,25 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
-        this.flightService = new FlightService();
         return List.of(flightService);
     }
 
     @Override
     public StreamManager getStreamManager() {
         return flightService.getStreamManager();
+    }
+
+    @Override
+    public List<Setting<?>> getSettings() {
+        return Arrays.asList(
+                ARROW_ALLOCATION_MANAGER_TYPE,
+                ARROW_ENABLE_NULL_CHECK_FOR_GET,
+                NETTY_TRY_REFLECTION_SET_ACCESSIBLE,
+                FlightService.ARROW_ENABLE_UNSAFE_MEMORY_ACCESS,
+                FlightService.NETTY_ALLOCATOR_NUM_DIRECT_ARENAS,
+                FlightService.NETTY_NO_UNSAFE,
+                FlightService.NETTY_TRY_UNSAFE
+        );
     }
 }
 

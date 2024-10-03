@@ -165,14 +165,6 @@ public class RunTask extends DefaultTestClustersTask {
             httpPort++;
             firstNode.setTransportPort(String.valueOf(transportPort));
             transportPort++;
-            firstNode.systemProperty("arrow.allocation.manager.type", "Netty");
-            // firstNode.systemProperty("arrow.memory.debug.allocator", "true");
-            firstNode.systemProperty("arrow.enable_null_check_for_get", "false");
-            firstNode.systemProperty("io.netty.tryReflectionSetAccessible", "true");
-            firstNode.systemProperty("arrow.enable_unsafe_memory_access", "true");
-            firstNode.systemProperty("io.netty.allocator.numDirectArenas", "2");
-            firstNode.systemProperty("io.netty.noUnsafe", "false");
-            firstNode.systemProperty("io.netty.tryUnsafe", "true");
             firstNode.setting("discovery.seed_hosts", LOCALHOST_ADDRESS_PREFIX + DEFAULT_TRANSPORT_PORT);
 
             cluster.setPreserveDataDir(preserveData);
@@ -206,8 +198,6 @@ public class RunTask extends DefaultTestClustersTask {
                     node.keystorePassword(keystorePassword);
                 }
                 node.jvmArgs("--add-opens=java.base/java.nio=ALL-UNNAMED");
-                node.jvmArgs("--enable-native-access=ALL-UNNAMED");
-                node.jvmArgs("--add-opens=jdk.unsupported/sun.misc=ALL-UNNAMED");
             }
         }
     }
