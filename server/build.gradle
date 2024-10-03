@@ -419,14 +419,6 @@ tasks.test {
         jvmArgs += ["--add-opens", "java.base/java.nio.file=ALL-UNNAMED"]
     }
 }
-
-tasks.test {
-  //if (BuildParams.runtimeJavaVersion > JavaVersion.VERSION_1_8) {
-    jvmArgs += ["--add-opens", "java.base/java.nio.channels=ALL-UNNAMED"]
-    jvmArgs += ["--add-opens", "java.base/java.net=ALL-UNNAMED"]
-  //}
-}
-
 tasks.named("sourcesJar").configure {
   // Ignore duplicates for protobuf generated code (main and generatedSources).
   filesMatching("**/proto/*") {

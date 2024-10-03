@@ -166,10 +166,8 @@ public class RunTask extends DefaultTestClustersTask {
             firstNode.setTransportPort(String.valueOf(transportPort));
             transportPort++;
             firstNode.setting("discovery.seed_hosts", LOCALHOST_ADDRESS_PREFIX + DEFAULT_TRANSPORT_PORT);
-
             cluster.setPreserveDataDir(preserveData);
             for (OpenSearchNode node : cluster.getNodes()) {
-
                 if (node != firstNode) {
                     node.setHttpPort(String.valueOf(httpPort));
                     httpPort++;
@@ -197,7 +195,6 @@ public class RunTask extends DefaultTestClustersTask {
                 if (keystorePassword.length() > 0) {
                     node.keystorePassword(keystorePassword);
                 }
-                node.jvmArgs("--add-opens=java.base/java.nio=ALL-UNNAMED");
             }
         }
     }
