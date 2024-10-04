@@ -10,7 +10,7 @@ package org.opensearch.arrow;
 
 import java.util.Arrays;
 
-public abstract class StreamTicket {
+public class StreamTicket {
     private final byte[] bytes;
     public StreamTicket(byte[] bytes) {
         this.bytes = bytes;

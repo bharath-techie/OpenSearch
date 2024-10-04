@@ -12,10 +12,10 @@
 dependencies {
   api project(':libs:opensearch-common')
   implementation 'org.slf4j:slf4j-api:1.7.36'
-  api group: 'org.apache.arrow', name: 'arrow-vector', version: '17.0.0'
+  api 'org.apache.arrow:arrow-vector:17.0.0'
   api 'org.apache.arrow:arrow-memory-core:17.0.0'
   api 'org.apache.arrow:arrow-format:17.0.0'
-  api group: 'org.apache.arrow', name: 'arrow-memory-netty-buffer-patch', version: '17.0.0'
+  api 'org.apache.arrow:arrow-memory-netty-buffer-patch:17.0.0'
   api 'org.apache.arrow:arrow-memory-netty:17.0.0'
   api("io.netty:netty-common:${versions.netty}") {
     exclude group: 'io.netty', module: 'netty-common'
@@ -34,8 +34,4 @@ dependencies {
   testImplementation "junit:junit:${versions.junit}"
   testImplementation "org.hamcrest:hamcrest:${versions.hamcrest}"
   testImplementation(project(":test:framework"))
-}
-
-tasks.named('forbiddenApisMain').configure {
-  replaceSignatureFiles 'jdk-signatures'
 }

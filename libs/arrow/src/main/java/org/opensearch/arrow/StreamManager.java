@@ -37,6 +37,10 @@ public abstract class StreamManager implements AutoCloseable {
         streams.remove(ticket);
     }
 
+    public ConcurrentHashMap<StreamTicket, ArrowStreamProvider> getStreams() {
+        return streams;
+    }
+
     public abstract StreamTicket generateUniqueTicket();
 
     public void close() {
