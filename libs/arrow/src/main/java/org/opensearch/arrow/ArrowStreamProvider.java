@@ -11,16 +11,50 @@ package org.opensearch.arrow;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 
+/**
+ * Functional interface for providing Arrow streams.
+ * This interface defines the contract for creating and managing Arrow stream tasks.
+ */
 @FunctionalInterface
 public interface ArrowStreamProvider {
+    /**
+     * Creates a new Arrow stream task with the given buffer allocator.
+     *
+     * @param allocator The buffer allocator to use for the task.
+     * @return A new Task instance.
+     */
     Task create(BufferAllocator allocator);
+
+    /**
+     * Represents a task for managing an Arrow stream.
+     */
     interface Task {
+        /**
+         * Initializes the task with a given buffer allocator.
+         *
+         * @param allocator The buffer allocator to use for initialization.
+         * @return A new VectorSchemaRoot instance.
+         */
         VectorSchemaRoot init(BufferAllocator allocator);
+
+        /**
+         * Runs the task with the given VectorSchemaRoot and FlushSignal.
+         *
+         * @param root The VectorSchemaRoot to use for the task.
+         * @param flushSignal The FlushSignal to use for managing consumption.
+         */
         void run(VectorSchemaRoot root, FlushSignal flushSignal);
+
     }
 
+    /**
+     * Functional interface for managing stream consumption signals.
+     */
     @FunctionalInterface
     interface FlushSignal {
+        /**
+         * Waits for the consumption of the current data to complete.
+         */
         void awaitConsumption();
     }
 }

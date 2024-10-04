@@ -9,11 +9,14 @@
 package org.opensearch.arrow;
 
 import org.apache.arrow.memory.BufferAllocator;
-import org.mockito.Mock;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.test.OpenSearchTestCase;
 
-import static org.mockito.Mockito.*;
+import java.nio.charset.StandardCharsets;
+
+import org.mockito.Mock;
+
+import static org.mockito.Mockito.mock;
 
 public class StreamManagerTests extends OpenSearchTestCase {
 
@@ -35,7 +38,7 @@ public class StreamManagerTests extends OpenSearchTestCase {
 
             @Override
             public StreamTicket generateUniqueTicket() {
-                return new StreamTicket(("ticket" + (getStreams().size()+1)).getBytes());
+                return new StreamTicket(("ticket" + (getStreams().size() + 1)).getBytes(StandardCharsets.UTF_8));
             }
         };
         mockProvider = allocator -> new ArrowStreamProvider.Task() {
@@ -54,7 +57,7 @@ public class StreamManagerTests extends OpenSearchTestCase {
     public void testRegisterStream() {
         StreamTicket ticket = streamManager.registerStream(mockProvider);
         assertNotNull(ticket);
-        assertEquals(new StreamTicket("ticket1".getBytes()), ticket);
+        assertEquals(new StreamTicket("ticket1".getBytes(StandardCharsets.UTF_8)), ticket);
     }
 
     public void testGetStream() {
@@ -91,7 +94,7 @@ public class StreamManagerTests extends OpenSearchTestCase {
     }
 
     public void testInvalidTicket() {
-        StreamTicket invalidTicket = new StreamTicket("invalid-ticket".getBytes());
+        StreamTicket invalidTicket = new StreamTicket("invalid-ticket".getBytes(StandardCharsets.UTF_8));
         assertNull(streamManager.getStream(invalidTicket));
     }
 }
