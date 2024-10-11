@@ -41,10 +41,6 @@ dependencies {
   implementation "org.yaml:snakeyaml:${versions.snakeyaml}"
   implementation "io.projectreactor.tools:blockhound:1.0.9.RELEASE"
 
-  // implementation 'net.sf.jopt-simple:jopt-simple:5.0.4'
-  // implementation "org.apache.logging.log4j:log4j-api:${versions.log4j}"
-  // implementation "org.apache.logging.log4j:log4j-core:${versions.log4j}"
-
   testImplementation "com.carrotsearch.randomizedtesting:randomizedtesting-runner:${versions.randomizedrunner}"
   testImplementation "junit:junit:${versions.junit}"
   testImplementation "org.hamcrest:hamcrest:${versions.hamcrest}"

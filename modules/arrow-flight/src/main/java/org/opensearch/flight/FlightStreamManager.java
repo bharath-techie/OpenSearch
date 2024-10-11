@@ -17,18 +17,35 @@ import org.opensearch.arrow.StreamTicket;
 
 import java.util.UUID;
 
+/**
+ * FlightStreamManager is a concrete implementation of StreamManager that provides
+ * an abstraction layer for managing Arrow Flight streams in OpenSearch.
+ * It encapsulates the details of Flight client operations, allowing consumers to
+ * work with streams without direct exposure to Flight internals.
+ */
 public class FlightStreamManager extends StreamManager {
 
     private final FlightClient flightClient;
 
+    /**
+     * Constructs a new FlightStreamManager.
+     *
+     * @param flightClient The FlightClient instance used for stream operations.
+     */
     public FlightStreamManager(FlightClient flightClient) {
         super();
         this.flightClient = flightClient;
     }
 
+    /**
+     * Retrieves a VectorSchemaRoot for a given stream ticket.
+     * @param ticket The StreamTicket identifying the desired stream.
+     * @return The VectorSchemaRoot associated with the given ticket.
+     */
     @Override
     public VectorSchemaRoot getVectorSchemaRoot(StreamTicket ticket) {
-        // TODO: for remote streams
+        // TODO: for remote streams, register streams in cluster state with node details
+        // maintain flightClient for all nodes in the cluster to serve the stream
         FlightStream stream = flightClient.getStream(new Ticket(ticket.getBytes()));
         return stream.getRoot();
     }

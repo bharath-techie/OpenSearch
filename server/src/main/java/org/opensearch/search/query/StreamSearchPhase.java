@@ -155,6 +155,11 @@ public class StreamSearchPhase extends QueryPhase {
                         throw new RuntimeException(e);
                     }
                 }
+
+                @Override
+                public void onCancel() {
+
+                }
             }));
             StreamSearchResult streamSearchResult = searchContext.streamSearchResult();
             streamSearchResult.flights(List.of(new OSTicket(ticket.getBytes())));

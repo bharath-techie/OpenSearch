@@ -45,6 +45,14 @@ public interface ArrowStreamProvider {
          */
         void run(VectorSchemaRoot root, FlushSignal flushSignal);
 
+        /**
+         * Called when the task is canceled.
+         * This method is used to clean up resources or cancel ongoing operations.
+         * This maybe called from a different thread than the one used for run(). It might be possible that run()
+         * thread is busy when onCancel() is called and wakes up later. In such cases, ensure that run() terminates early
+         * and should clean up resources.
+         */
+        void onCancel();
     }
 
     /**
@@ -54,7 +62,10 @@ public interface ArrowStreamProvider {
     interface FlushSignal {
         /**
          * Waits for the consumption of the current data to complete.
+         * This method blocks until the consumption is complete or a timeout occurs.
+         *
+         * @param timeout The maximum time to wait for consumption (in milliseconds).
          */
-        void awaitConsumption();
+        void awaitConsumption(int timeout);
     }
 }

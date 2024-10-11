@@ -30,11 +30,18 @@ import java.util.Collection;
 import java.util.List;
 import java.util.function.Supplier;
 
-import static org.opensearch.flight.FlightService.*;
+import static org.opensearch.flight.FlightService.ARROW_ALLOCATION_MANAGER_TYPE;
+import static org.opensearch.flight.FlightService.ARROW_ENABLE_NULL_CHECK_FOR_GET;
+import static org.opensearch.flight.FlightService.ARROW_ENABLE_UNSAFE_MEMORY_ACCESS;
+import static org.opensearch.flight.FlightService.NETTY_ALLOCATOR_NUM_DIRECT_ARENAS;
+import static org.opensearch.flight.FlightService.NETTY_NO_UNSAFE;
+import static org.opensearch.flight.FlightService.NETTY_TRY_REFLECTION_SET_ACCESSIBLE;
+import static org.opensearch.flight.FlightService.NETTY_TRY_UNSAFE;
+
 
 public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
 
-    private  FlightService flightService;
+    private final FlightService flightService;
 
     public FlightStreamPlugin(Settings settings) {
         this.flightService = new FlightService(settings);
@@ -68,10 +75,10 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
                 ARROW_ALLOCATION_MANAGER_TYPE,
                 ARROW_ENABLE_NULL_CHECK_FOR_GET,
                 NETTY_TRY_REFLECTION_SET_ACCESSIBLE,
-                FlightService.ARROW_ENABLE_UNSAFE_MEMORY_ACCESS,
-                FlightService.NETTY_ALLOCATOR_NUM_DIRECT_ARENAS,
-                FlightService.NETTY_NO_UNSAFE,
-                FlightService.NETTY_TRY_UNSAFE
+                ARROW_ENABLE_UNSAFE_MEMORY_ACCESS,
+                NETTY_ALLOCATOR_NUM_DIRECT_ARENAS,
+                NETTY_NO_UNSAFE,
+                NETTY_TRY_UNSAFE
         );
     }
 }

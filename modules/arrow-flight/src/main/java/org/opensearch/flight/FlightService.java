@@ -23,7 +23,11 @@ import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
 
 import java.io.IOException;
-
+/**
+ * FlightService manages the Arrow Flight server and client for OpenSearch.
+ * It handles the initialization, startup, and shutdown of the Flight server and client,
+ * as well as managing the stream operations through a FlightStreamManager.
+ */
 @ExperimentalApi
 public class FlightService extends AbstractLifecycleComponent {
 
@@ -75,7 +79,7 @@ public class FlightService extends AbstractLifecycleComponent {
 
     public static final Setting<Integer> NETTY_ALLOCATOR_NUM_DIRECT_ARENAS = Setting.intSetting(
             "io.netty.allocator.numDirectArenas",
-            1,
+            1, // TODO - 2 * the number of available processors
             1,
             Property.NodeScope
     );

@@ -68,7 +68,7 @@ public class ArrowDocIdCollector extends FilterCollector {
                 currentRow++;
                 if (currentRow >= batchSize) {
                     root.setRowCount(batchSize);
-                    flushSignal.awaitConsumption();
+                    flushSignal.awaitConsumption(1000);
                     currentRow = 0;
                 }
             }
@@ -77,7 +77,7 @@ public class ArrowDocIdCollector extends FilterCollector {
             public void finish() throws IOException {
                 if (currentRow > 0) {
                     root.setRowCount(currentRow);
-                    flushSignal.awaitConsumption();
+                    flushSignal.awaitConsumption(1000);
                     currentRow = 0;
                 }
             }
