@@ -15,6 +15,11 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.cluster.ClusterChangedEvent;
+import org.opensearch.cluster.ClusterStateListener;
+import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.SetOnce;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.arrow.StreamManager;
@@ -23,13 +28,19 @@ import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
 
 import java.io.IOException;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+
 /**
  * FlightService manages the Arrow Flight server and client for OpenSearch.
  * It handles the initialization, startup, and shutdown of the Flight server and client,
  * as well as managing the stream operations through a FlightStreamManager.
  */
 @ExperimentalApi
-public class FlightService extends AbstractLifecycleComponent {
+public class FlightService extends AbstractLifecycleComponent implements ClusterStateListener {
 
     private static FlightServer server;
     private static FlightClient client;
@@ -42,14 +53,6 @@ public class FlightService extends AbstractLifecycleComponent {
     public static final Setting<String> FLIGHT_HOST = Setting.simpleString(
             "opensearch.flight.host",
             "localhost",
-            Property.NodeScope
-    );
-
-    public static final Setting<Integer> FLIGHT_PORT = Setting.intSetting(
-            "opensearch.flight.port",
-            8815,
-            1024,
-            65535,
             Property.NodeScope
     );
 
@@ -96,6 +99,10 @@ public class FlightService extends AbstractLifecycleComponent {
             Property.NodeScope
     );
 
+    private final Map<String, FlightClientHolder> flightClients;
+
+    private final SetOnce<ClusterService> clusterService = new SetOnce<>();
+
     FlightService(Settings settings) {
         System.setProperty("arrow.allocation.manager.type", ARROW_ALLOCATION_MANAGER_TYPE.get(settings));
         System.setProperty("arrow.enable_null_check_for_get", Boolean.toString(ARROW_ENABLE_NULL_CHECK_FOR_GET.get(settings)));
@@ -105,20 +112,30 @@ public class FlightService extends AbstractLifecycleComponent {
         System.setProperty("io.netty.noUnsafe", Boolean.toString(NETTY_NO_UNSAFE.get(settings)));
         System.setProperty("io.netty.tryUnsafe", Boolean.toString(NETTY_TRY_UNSAFE.get(settings)));
         host = FLIGHT_HOST.get(settings);
-        port = FLIGHT_PORT.get(settings);
-        streamManager = new FlightStreamManager(client);
+        this.flightClients = new ConcurrentHashMap<>();
+        port = Integer.parseInt(settings.get("node.attr.transport.stream.port"));
+    }
+
+    public void initialize(ClusterService clusterService) {
+        this.clusterService.trySet(clusterService);
+        clusterService.addListener(this);
+        streamManager = new FlightStreamManager(this::getAllocator, this);
+    }
+
+    private BufferAllocator getAllocator() {
+        return allocator;
     }
 
     @Override
     protected void doStart() {
         try {
             allocator = new RootAllocator(Integer.MAX_VALUE);
-            BaseFlightProducer producer = new BaseFlightProducer(streamManager, allocator);
+            BaseFlightProducer producer = new BaseFlightProducer(this, streamManager, allocator);
             final Location location = Location.forGrpcInsecure(host, port);
             server = FlightServer.builder(allocator, location, producer).build();
             client = FlightClient.builder(allocator, location).build();
             server.start();
-            logger.info("Arrow Flight server started successfully");
+            logger.info("Arrow Flight server started successfully:{}", location.getUri().toString());
         } catch (IOException e) {
             logger.error("Failed to start Arrow Flight server", e);
             throw new RuntimeException("Failed to start Arrow Flight server", e);
@@ -131,8 +148,10 @@ public class FlightService extends AbstractLifecycleComponent {
             server.shutdown();
             streamManager.close();
             client.close();
+            for (FlightClientHolder clientHolder : flightClients.values()) {
+                clientHolder.flightClient.close();
+            }
             server.close();
-            allocator.close();
             logger.info("Arrow Flight service closed successfully");
         } catch (Exception e) {
             logger.error("Error while closing Arrow Flight service", e);
@@ -142,9 +161,62 @@ public class FlightService extends AbstractLifecycleComponent {
     @Override
     protected void doClose() {
         doStop();
+        allocator.close();
     }
 
     public StreamManager getStreamManager() {
         return streamManager;
+    }
+
+    public FlightClient getFlightClient(String nodeId) {
+        return flightClients.computeIfAbsent(nodeId, this::createFlightClient).flightClient;
+    }
+
+    public Location getFlightClientLocation(String nodeId) {
+        return flightClients.computeIfAbsent(nodeId, this::createFlightClient).location;
+    }
+
+    private FlightClientHolder createFlightClient(String nodeId) {
+        DiscoveryNode node = Objects.requireNonNull(clusterService.get()).state().nodes().get(nodeId);
+        if (node == null) {
+            throw new IllegalArgumentException("Node with id " + nodeId + " not found in cluster");
+        }
+        String clientPort = node.getAttributes().get("transport.stream.port");
+        Location location = Location.forGrpcInsecure(node.getHostAddress(), Integer.parseInt(clientPort));
+        return new FlightClientHolder(FlightClient.builder(allocator, location).build(), location);
+    }
+
+    private void initializeFlightClients() {
+        for (DiscoveryNode node : Objects.requireNonNull(clusterService.get()).state().nodes()) {
+            String nodeId = node.getId();
+            if (!flightClients.containsKey(nodeId)) {
+                getFlightClient(nodeId);
+            }
+        }
+    }
+
+    public void updateFlightClients() {
+        Set<String> currentNodes = Objects.requireNonNull(clusterService.get()).state().nodes().getNodes().keySet();
+        flightClients.keySet().removeIf(nodeId -> !currentNodes.contains(nodeId));
+        initializeFlightClients();
+    }
+
+    @Override
+    public void clusterChanged(ClusterChangedEvent event) {
+        if (event.nodesChanged()) {
+            updateFlightClients();
+        }
+    }
+
+    public String getLocalNodeId() {
+        return Objects.requireNonNull(clusterService.get()).state().nodes().getLocalNodeId();
+    }
+    private static class FlightClientHolder {
+        final FlightClient flightClient;
+        final Location  location;
+        FlightClientHolder(FlightClient flightClient, Location location) {
+            this.flightClient = flightClient;
+            this.location = location;
+        }
     }
 }

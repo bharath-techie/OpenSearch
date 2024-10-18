@@ -20,24 +20,35 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 @ExperimentalApi
-public class OSTicket extends StreamTicket implements Writeable, ToXContentFragment {
+public class OSTicket implements Writeable, ToXContentFragment {
 
-    public OSTicket(byte[] bytes) {
-        super(bytes);
+    private final StreamTicket streamTicket;
+
+    public OSTicket(String ticketID, String nodeID) {
+        this.streamTicket = new StreamTicket(ticketID, nodeID);
     }
 
     public OSTicket(StreamInput in) throws IOException {
-        this(in.readByteArray());
+        byte[] bytes = in.readByteArray();
+        this.streamTicket = StreamTicket.fromBytes(bytes);
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        builder.value(new String(this.getBytes(), StandardCharsets.UTF_8));
-        return builder;
+        byte[] bytes = streamTicket.toBytes();
+        return builder.value(new String(bytes, StandardCharsets.UTF_8));
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeByteArray(this.getBytes());
+        out.writeByteArray(streamTicket.toBytes());
+    }
+
+    @Override
+    public String toString() {
+        return "OSTicket{" +
+            "ticketID='" + streamTicket.getTicketID() + '\'' +
+            ", nodeID='" + streamTicket.getNodeID() + '\'' +
+            '}';
     }
 }

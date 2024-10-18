@@ -25,6 +25,10 @@ public interface ArrowStreamProvider {
      */
     Task create(BufferAllocator allocator);
 
+    default int estimatedRowCount() {
+        return -1;
+    }
+
     /**
      * Represents a task for managing an Arrow stream.
      */

@@ -61,6 +61,7 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
+        flightService.initialize(clusterService);
         return List.of(flightService);
     }
 

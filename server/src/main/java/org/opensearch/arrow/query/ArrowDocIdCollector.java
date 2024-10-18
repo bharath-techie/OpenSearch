@@ -23,7 +23,7 @@ public class ArrowDocIdCollector extends FilterCollector {
     private final VectorSchemaRoot root;
     private final ArrowStreamProvider.FlushSignal flushSignal;
     private final int batchSize;
-    private IntVector docIDVector;
+    private final IntVector docIDVector;
     private int currentRow;
 
     public ArrowDocIdCollector(Collector in, VectorSchemaRoot root, ArrowStreamProvider.FlushSignal flushSignal, int batchSize) {

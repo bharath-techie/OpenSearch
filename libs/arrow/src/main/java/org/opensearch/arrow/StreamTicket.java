@@ -8,64 +8,99 @@
 
 package org.opensearch.arrow;
 
-import java.util.Arrays;
-
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Objects;
 /**
  * Represents a ticket for identifying and managing Arrow streams.
  * This class encapsulates a byte array that serves as a unique identifier for a stream.
  */
+
+
 public class StreamTicket {
-    private final byte[] bytes;
+    private final String ticketID;
+    private final String nodeID;
 
-    /**
-     * Constructs a new StreamTicket with the given byte array.
-     *
-     * @param bytes The byte array to use as the ticket identifier.
-     */
-    public StreamTicket(byte[] bytes) {
-        this.bytes = bytes;
+    public StreamTicket(String ticketID, String nodeID) {
+        this.ticketID = ticketID;
+        this.nodeID = nodeID;
     }
 
-    /**
-     * Retrieves the byte array representing this ticket.
-     *
-     * @return The byte array identifier of this ticket.
-     */
-    public byte[] getBytes() {
-        return bytes;
+    public String getTicketID() {
+        return ticketID;
     }
 
-    /**
-     * Computes the hash code for this StreamTicket.
-     *
-     * @return The hash code value for this object.
-     */
+    public String getNodeID() {
+        return nodeID;
+    }
+
+    public byte[] toBytes() {
+        byte[] ticketIDBytes = ticketID.getBytes(StandardCharsets.UTF_8);
+        byte[] nodeIDBytes = nodeID.getBytes(StandardCharsets.UTF_8);
+
+        if (ticketIDBytes.length > Short.MAX_VALUE || nodeIDBytes.length > Short.MAX_VALUE) {
+            throw new IllegalArgumentException("Field lengths exceed the maximum allowed size.");
+        }
+
+        ByteBuffer buffer = ByteBuffer.allocate(2 + ticketIDBytes.length + 2 + nodeIDBytes.length); // 2 bytes for length
+        buffer.putShort((short) ticketIDBytes.length);
+        buffer.put(ticketIDBytes);
+        buffer.putShort((short) nodeIDBytes.length);
+        buffer.put(nodeIDBytes);
+        return Base64.getEncoder().encode(buffer.array());
+    }
+
+    public static StreamTicket fromBytes(byte[] bytes) {
+        if (bytes == null || bytes.length < 4) {
+            throw new IllegalArgumentException("Invalid byte array input.");
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(Base64.getDecoder().decode(bytes));
+
+        short ticketIDLength = buffer.getShort();
+        if (ticketIDLength < 0) {
+            throw new IllegalArgumentException("Invalid ticketID length.");
+        }
+
+        byte[] ticketIDBytes = new byte[ticketIDLength];
+        if (buffer.remaining() < ticketIDLength) {
+            throw new IllegalArgumentException("Malformed byte array. Not enough data for ticketID.");
+        }
+        buffer.get(ticketIDBytes);
+
+        short nodeIDLength = buffer.getShort();
+        if (nodeIDLength < 0) {
+            throw new IllegalArgumentException("Invalid nodeID length.");
+        }
+
+        byte[] nodeIDBytes = new byte[nodeIDLength];
+        if (buffer.remaining() < nodeIDLength) {
+            throw new IllegalArgumentException("Malformed byte array.");
+        }
+        buffer.get(nodeIDBytes);
+
+        String ticketID = new String(ticketIDBytes, StandardCharsets.UTF_8);
+        String nodeID = new String(nodeIDBytes, StandardCharsets.UTF_8);
+
+        return new StreamTicket(ticketID, nodeID);
+    }
+
     @Override
     public int hashCode() {
-        final int prime = 31;
-        int result = 1;
-        result = prime * result + Arrays.hashCode(bytes);
-        return result;
+        return Objects.hash(ticketID, nodeID);
     }
 
-    /**
-     * Compares this StreamTicket to the specified object for equality.
-     *
-     * @param obj The object to compare this StreamTicket against.
-     * @return true if the given object represents a StreamTicket equivalent to this ticket, false otherwise.
-     */
     @Override
     public boolean equals(Object obj) {
-        if (this == obj) {
-            return true;
-        }
-        if (obj == null) {
-            return false;
-        }
-        if (!(obj instanceof StreamTicket)) {
-            return false;
-        }
-        StreamTicket other = (StreamTicket) obj;
-        return Arrays.equals(bytes, other.getBytes());
+        if (this == obj) return true;
+        if (obj == null || getClass() != obj.getClass()) return false;
+        StreamTicket that = (StreamTicket) obj;
+        return Objects.equals(ticketID, that.ticketID) && Objects.equals(nodeID, that.nodeID);
+    }
+
+    @Override
+    public String toString() {
+        return "StreamTicket{ticketID='" + ticketID + "', nodeID='" + nodeID + "'}";
     }
 }
+

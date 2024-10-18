@@ -8,14 +8,15 @@
 
 package org.opensearch.flight;
 
-import org.apache.arrow.flight.FlightClient;
 import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.flight.Ticket;
+import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamTicket;
 
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * FlightStreamManager is a concrete implementation of StreamManager that provides
@@ -25,16 +26,15 @@ import java.util.UUID;
  */
 public class FlightStreamManager extends StreamManager {
 
-    private final FlightClient flightClient;
+    private final FlightService flightService;
 
     /**
      * Constructs a new FlightStreamManager.
-     *
-     * @param flightClient The FlightClient instance used for stream operations.
+     * @param flightService The FlightService instance to use for Flight client operations.
      */
-    public FlightStreamManager(FlightClient flightClient) {
-        super();
-        this.flightClient = flightClient;
+    public FlightStreamManager(Supplier<BufferAllocator> allocatorSupplier, FlightService flightService) {
+        super(allocatorSupplier);
+        this.flightService = flightService;
     }
 
     /**
@@ -44,14 +44,17 @@ public class FlightStreamManager extends StreamManager {
      */
     @Override
     public VectorSchemaRoot getVectorSchemaRoot(StreamTicket ticket) {
-        // TODO: for remote streams, register streams in cluster state with node details
-        // maintain flightClient for all nodes in the cluster to serve the stream
-        FlightStream stream = flightClient.getStream(new Ticket(ticket.getBytes()));
+        FlightStream stream = flightService.getFlightClient(ticket.getNodeID()).getStream(new Ticket(ticket.toBytes()));
         return stream.getRoot();
     }
 
     @Override
-    public StreamTicket generateUniqueTicket() {
-        return new StreamTicket(UUID.randomUUID().toString().getBytes()) {};
+    public String generateUniqueTicket() {
+        return UUID.randomUUID().toString();
+    }
+
+    @Override
+    public String getNodeId() {
+        return flightService.getLocalNodeId();
     }
 }

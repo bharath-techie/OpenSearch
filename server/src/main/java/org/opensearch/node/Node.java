@@ -2160,7 +2160,6 @@ public class Node implements Closeable {
             if (isRemoteStoreAttributePresent(settings)) {
                 remoteStoreNodeService.createAndVerifyRepositories(discoveryNode);
             }
-
             localNode.set(discoveryNode);
             return localNode.get();
         }

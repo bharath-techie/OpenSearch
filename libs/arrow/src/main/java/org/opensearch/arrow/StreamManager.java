@@ -8,10 +8,12 @@
 
 package org.opensearch.arrow;
 
+import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.common.annotation.ExperimentalApi;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Abstract class for managing Arrow streams.
@@ -20,25 +22,27 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @ExperimentalApi
 public abstract class StreamManager implements AutoCloseable {
-    private final ConcurrentHashMap<StreamTicket, ArrowStreamProvider> streams;
-
+    private final ConcurrentHashMap<String, StreamHolder> streamProviders;
+    private final Supplier<BufferAllocator> allocatorSupplier;
     /**
      * Constructs a new StreamManager with an empty stream map.
      */
-    public StreamManager() {
-        this.streams = new ConcurrentHashMap<>();
+        public StreamManager(Supplier<BufferAllocator> allocatorSupplier) {
+        this.allocatorSupplier = allocatorSupplier;
+        this.streamProviders = new ConcurrentHashMap<>();
     }
 
     /**
      * Registers a new stream with the given ArrowStreamProvider.
      *
-     * @param factory The ArrowStreamProvider to register.
+     * @param provider The ArrowStreamProvider to register.
      * @return A new StreamTicket for the registered stream.
      */
-    public StreamTicket registerStream(ArrowStreamProvider factory) {
-        StreamTicket ticket = generateUniqueTicket();
-        streams.put(ticket, factory);
-        return ticket;
+    public StreamTicket registerStream(ArrowStreamProvider provider) {
+        String ticket = generateUniqueTicket();
+        VectorSchemaRoot root = provider.create(allocatorSupplier.get()).init(allocatorSupplier.get());
+        streamProviders.put(ticket, new StreamHolder(provider, root));
+        return new StreamTicket(ticket, getNodeId());
     }
 
     /**
@@ -47,8 +51,8 @@ public abstract class StreamManager implements AutoCloseable {
      * @param ticket The StreamTicket of the desired stream.
      * @return The ArrowStreamProvider associated with the ticket, or null if not found.
      */
-    public ArrowStreamProvider getStream(StreamTicket ticket) {
-        return streams.get(ticket);
+    public StreamHolder getStreamProvider(StreamTicket ticket) {
+        return streamProviders.get(ticket.getTicketID());
     }
 
     /**
@@ -64,8 +68,8 @@ public abstract class StreamManager implements AutoCloseable {
      *
      * @param ticket The StreamTicket of the stream to remove.
      */
-    public void removeStream(StreamTicket ticket) {
-        streams.remove(ticket);
+    public void removeStreamProvider(StreamTicket ticket) {
+        streamProviders.remove(ticket.getTicketID());
     }
 
     /**
@@ -73,8 +77,8 @@ public abstract class StreamManager implements AutoCloseable {
      *
      * @return A ConcurrentHashMap of all registered streams.
      */
-    public ConcurrentHashMap<StreamTicket, ArrowStreamProvider> getStreams() {
-        return streams;
+    public ConcurrentHashMap<String, StreamHolder> getStreamProviders() {
+        return streamProviders;
     }
 
     /**
@@ -82,7 +86,9 @@ public abstract class StreamManager implements AutoCloseable {
      *
      * @return A new, unique StreamTicket.
      */
-    public abstract StreamTicket generateUniqueTicket();
+    public abstract String generateUniqueTicket();
+
+    public abstract String getNodeId();
 
     /**
      * Closes the StreamManager and cancels all associated streams.
@@ -91,6 +97,24 @@ public abstract class StreamManager implements AutoCloseable {
      */
     public void close() {
         // TODO: logic to cancel all threads and clear the streamManager queue
-        streams.clear();
+        streamProviders.clear();
+    }
+
+    public static class StreamHolder {
+        private final ArrowStreamProvider provider;
+        private final VectorSchemaRoot root;
+
+        public StreamHolder(ArrowStreamProvider provider, VectorSchemaRoot root) {
+            this.provider = provider;
+            this.root = root;
+        }
+
+        public ArrowStreamProvider getProvider() {
+            return provider;
+        }
+
+        public VectorSchemaRoot getRoot() {
+            return root;
+        }
     }
 }
