@@ -10,8 +10,8 @@ package org.opensearch.flight;
 
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.common.settings.Setting;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.Collection;
 import java.util.List;
@@ -30,7 +30,19 @@ public class FlightStreamPluginTests extends OpenSearchTestCase {
     }
 
     public void testCreateComponents() {
-        Collection<Object> components = flightStreamPlugin.createComponents(null, null, null,null, null,null, null, null, null, null, null);
+        Collection<Object> components = flightStreamPlugin.createComponents(
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+        );
         assertNotNull(components);
         assertTrue(components.stream().anyMatch(component -> component instanceof FlightService));
     }
@@ -50,7 +62,19 @@ public class FlightStreamPluginTests extends OpenSearchTestCase {
     }
 
     public void testCreateComponentsWithNullArguments() {
-        Collection<Object> components = flightStreamPlugin.createComponents(null, null, null,null, null,null, null, null, null, null, null);
+        Collection<Object> components = flightStreamPlugin.createComponents(
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+        );
         assertNotNull(components);
         assertFalse(components.isEmpty());
     }

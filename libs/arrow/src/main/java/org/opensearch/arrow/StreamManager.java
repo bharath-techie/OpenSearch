@@ -24,10 +24,11 @@ import java.util.function.Supplier;
 public abstract class StreamManager implements AutoCloseable {
     private final ConcurrentHashMap<String, StreamHolder> streamProviders;
     private final Supplier<BufferAllocator> allocatorSupplier;
+
     /**
      * Constructs a new StreamManager with an empty stream map.
      */
-        public StreamManager(Supplier<BufferAllocator> allocatorSupplier) {
+    public StreamManager(Supplier<BufferAllocator> allocatorSupplier) {
         this.allocatorSupplier = allocatorSupplier;
         this.streamProviders = new ConcurrentHashMap<>();
     }
@@ -38,9 +39,9 @@ public abstract class StreamManager implements AutoCloseable {
      * @param provider The ArrowStreamProvider to register.
      * @return A new StreamTicket for the registered stream.
      */
-    public StreamTicket registerStream(ArrowStreamProvider provider) {
+    public StreamTicket registerStream(StreamProvider provider) {
         String ticket = generateUniqueTicket();
-        VectorSchemaRoot root = provider.create(allocatorSupplier.get()).init(allocatorSupplier.get());
+        VectorSchemaRoot root = provider.createRoot(allocatorSupplier.get());
         streamProviders.put(ticket, new StreamHolder(provider, root));
         return new StreamTicket(ticket, getNodeId());
     }
@@ -101,15 +102,15 @@ public abstract class StreamManager implements AutoCloseable {
     }
 
     public static class StreamHolder {
-        private final ArrowStreamProvider provider;
+        private final StreamProvider provider;
         private final VectorSchemaRoot root;
 
-        public StreamHolder(ArrowStreamProvider provider, VectorSchemaRoot root) {
+        public StreamHolder(StreamProvider provider, VectorSchemaRoot root) {
             this.provider = provider;
             this.root = root;
         }
 
-        public ArrowStreamProvider getProvider() {
+        public StreamProvider getProvider() {
             return provider;
         }
 

@@ -9,12 +9,9 @@
 package org.opensearch.flight;
 
 import org.opensearch.test.OpenSearchTestCase;
-import org.opensearch.arrow.StreamManager;
-import org.opensearch.common.settings.Settings;
-import org.apache.arrow.flight.FlightClient;
 
 public class FlightServiceTests extends OpenSearchTestCase {
-/*
+    /*
     private FlightService flightService;
 
     @Override
@@ -71,5 +68,5 @@ public class FlightServiceTests extends OpenSearchTestCase {
         // Add more specific assertions based on the expected configuration of the FlightClient
     }
 
- */
+     */
 }

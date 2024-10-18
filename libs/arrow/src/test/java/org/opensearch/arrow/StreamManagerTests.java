@@ -8,15 +8,7 @@
 
 package org.opensearch.arrow;
 
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.test.OpenSearchTestCase;
-
-import java.nio.charset.StandardCharsets;
-
-import org.mockito.Mock;
-
-import static org.mockito.Mockito.mock;
 
 public class StreamManagerTests extends OpenSearchTestCase {
 
@@ -103,6 +95,6 @@ public class StreamManagerTests extends OpenSearchTestCase {
         StreamTicket invalidTicket = new StreamTicket("invalid-ticket".getBytes(StandardCharsets.UTF_8));
         assertNull(streamManager.getStreamProvider(invalidTicket));
     }
-    
+
      */
 }

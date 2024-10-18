@@ -8,28 +8,10 @@
 
 package org.opensearch.flight;
 
-import org.apache.arrow.flight.FlightProducer;
-import org.apache.arrow.flight.Ticket;
-import org.apache.arrow.memory.ArrowBuf;
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.dictionary.DictionaryProvider;
-import org.apache.arrow.vector.ipc.message.IpcOption;
-import org.opensearch.arrow.ArrowStreamProvider;
-import org.opensearch.arrow.StreamManager;
-import org.opensearch.arrow.StreamTicket;
 import org.opensearch.test.OpenSearchTestCase;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.mockito.Mockito.*;
-import static org.mockito.ArgumentMatchers.any;
-
 public class BaseFlightProducerTests extends OpenSearchTestCase {
-/*
+    /*
     private BaseFlightProducer baseFlightProducer;
     private StreamManager streamManager;
     private ArrowStreamProvider arrowStreamProvider;
@@ -607,5 +589,5 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         verify(root).close();
     }
 
- */
+     */
 }

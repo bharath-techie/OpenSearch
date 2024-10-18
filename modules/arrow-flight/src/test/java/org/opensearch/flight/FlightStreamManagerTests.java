@@ -8,21 +8,10 @@
 
 package org.opensearch.flight;
 
-import org.apache.arrow.flight.FlightClient;
-import org.apache.arrow.flight.FlightDescriptor;
-import org.apache.arrow.flight.FlightStream;
-import org.apache.arrow.flight.Ticket;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.types.pojo.Schema;
-import org.opensearch.arrow.StreamTicket;
 import org.opensearch.test.OpenSearchTestCase;
 
-import java.util.Collections;
-
-import static org.mockito.Mockito.*;
-
 public class FlightStreamManagerTests extends OpenSearchTestCase {
-/*
+    /*
     private FlightClient flightClient;
     private FlightStreamManager flightStreamManager;
 
@@ -77,5 +66,5 @@ public class FlightStreamManagerTests extends OpenSearchTestCase {
         expectThrows(NullPointerException.class, () -> flightStreamManager.getVectorSchemaRoot(null));
     }
 
- */
+     */
 }

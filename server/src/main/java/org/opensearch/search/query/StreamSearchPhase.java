@@ -16,7 +16,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.Query;
-import org.opensearch.arrow.ArrowStreamProvider;
+import org.opensearch.arrow.StreamProvider;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamTicket;
 import org.opensearch.arrow.query.ArrowDocIdCollector;
@@ -113,21 +113,13 @@ public class StreamSearchPhase extends QueryPhase {
             if (streamManager == null) {
                 throw new RuntimeException("StreamManager not setup");
             }
-            StreamTicket ticket = streamManager.registerStream(new ArrowStreamProvider() {
+            StreamTicket ticket = streamManager.registerStream(new StreamProvider() {
                 @Override
-                public Task create(BufferAllocator allocator) {
-                    return new ArrowStreamProvider.Task() {
-                        @Override
-                        public VectorSchemaRoot init(BufferAllocator allocator) {
-                            IntVector docIDVector = new IntVector("docID", allocator);
-                            FieldVector[] vectors = new FieldVector[]{
-                                docIDVector
-                            };
-                            return new VectorSchemaRoot(Arrays.asList(vectors));
-                        }
+                public BatchedJob createJob(BufferAllocator allocator) {
+                    return new BatchedJob() {
 
                         @Override
-                        public void run(VectorSchemaRoot root, ArrowStreamProvider.FlushSignal flushSignal) {
+                        public void run(VectorSchemaRoot root, StreamProvider.FlushSignal flushSignal) {
                             try {
                                 Collector collector = QueryCollectorContext.createQueryCollector(collectors);
                                 final ArrowDocIdCollector arrowDocIdCollector = new ArrowDocIdCollector(collector, root, flushSignal, 1000);
@@ -163,6 +155,15 @@ public class StreamSearchPhase extends QueryPhase {
 
                         }
                     };
+                }
+
+                @Override
+                public VectorSchemaRoot createRoot(BufferAllocator allocator) {
+                    IntVector docIDVector = new IntVector("docID", allocator);
+                    FieldVector[] vectors = new FieldVector[]{
+                        docIDVector
+                    };
+                    return new VectorSchemaRoot(Arrays.asList(vectors));
                 }
 
                 @Override

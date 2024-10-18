@@ -11,9 +11,9 @@ package org.opensearch.flight;
 import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.opensearch.arrow.ArrowStreamProvider;
+import org.opensearch.arrow.StreamProvider;
 
-public class ProxyStreamProvider implements ArrowStreamProvider {
+public class ProxyStreamProvider implements StreamProvider {
 
     private final FlightStream remoteStream;
 
@@ -22,26 +22,26 @@ public class ProxyStreamProvider implements ArrowStreamProvider {
     }
 
     @Override
-    public Task create(BufferAllocator allocator) {
-        return new ProxyTask(remoteStream);
+    public VectorSchemaRoot createRoot(BufferAllocator allocator) {
+        return remoteStream.getRoot();
     }
 
-    private static class ProxyTask implements ArrowStreamProvider.Task {
+    @Override
+    public BatchedJob createJob(BufferAllocator allocator) {
+        return new ProxyBatchedJob(remoteStream);
+    }
+
+    private static class ProxyBatchedJob implements BatchedJob {
 
         private final FlightStream remoteStream;
 
-        ProxyTask(FlightStream remoteStream) {
+        ProxyBatchedJob(FlightStream remoteStream) {
             this.remoteStream = remoteStream;
         }
 
         @Override
-        public VectorSchemaRoot init(BufferAllocator allocator) {
-            return remoteStream.getRoot();
-        }
-
-        @Override
         public void run(VectorSchemaRoot root, FlushSignal flushSignal) {
-            while(remoteStream.next()) {
+            while (remoteStream.next()) {
                 flushSignal.awaitConsumption(1000);
             }
             try {

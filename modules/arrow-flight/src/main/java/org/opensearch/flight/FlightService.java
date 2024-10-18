@@ -15,6 +15,7 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -22,7 +23,6 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SetOnce;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
-import org.opensearch.arrow.StreamManager;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
@@ -32,7 +32,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
 
 /**
  * FlightService manages the Arrow Flight server and client for OpenSearch.
@@ -50,54 +49,42 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
     private static String host;
     private static int port;
 
-    public static final Setting<String> FLIGHT_HOST = Setting.simpleString(
-            "opensearch.flight.host",
-            "localhost",
-            Property.NodeScope
-    );
+    public static final Setting<String> FLIGHT_HOST = Setting.simpleString("opensearch.flight.host", "localhost", Property.NodeScope);
 
     public static final Setting<String> ARROW_ALLOCATION_MANAGER_TYPE = Setting.simpleString(
-            "arrow.allocation.manager.type",
-            "Netty",
-            Property.NodeScope
+        "arrow.allocation.manager.type",
+        "Netty",
+        Property.NodeScope
     );
 
     public static final Setting<Boolean> ARROW_ENABLE_NULL_CHECK_FOR_GET = Setting.boolSetting(
-            "arrow.enable_null_check_for_get",
-            false,
-            Property.NodeScope
+        "arrow.enable_null_check_for_get",
+        false,
+        Property.NodeScope
     );
 
     public static final Setting<Boolean> NETTY_TRY_REFLECTION_SET_ACCESSIBLE = Setting.boolSetting(
-            "io.netty.tryReflectionSetAccessible",
-            true,
-            Property.NodeScope
+        "io.netty.tryReflectionSetAccessible",
+        true,
+        Property.NodeScope
     );
 
     public static final Setting<Boolean> ARROW_ENABLE_UNSAFE_MEMORY_ACCESS = Setting.boolSetting(
-            "arrow.enable_unsafe_memory_access",
-            true,
-            Property.NodeScope
+        "arrow.enable_unsafe_memory_access",
+        true,
+        Property.NodeScope
     );
 
     public static final Setting<Integer> NETTY_ALLOCATOR_NUM_DIRECT_ARENAS = Setting.intSetting(
-            "io.netty.allocator.numDirectArenas",
-            1, // TODO - 2 * the number of available processors
-            1,
-            Property.NodeScope
+        "io.netty.allocator.numDirectArenas",
+        1, // TODO - 2 * the number of available processors
+        1,
+        Property.NodeScope
     );
 
-    public static final Setting<Boolean> NETTY_NO_UNSAFE = Setting.boolSetting(
-            "io.netty.noUnsafe",
-            false,
-            Setting.Property.NodeScope
-    );
+    public static final Setting<Boolean> NETTY_NO_UNSAFE = Setting.boolSetting("io.netty.noUnsafe", false, Setting.Property.NodeScope);
 
-    public static final Setting<Boolean> NETTY_TRY_UNSAFE = Setting.boolSetting(
-            "io.netty.tryUnsafe",
-            true,
-            Property.NodeScope
-    );
+    public static final Setting<Boolean> NETTY_TRY_UNSAFE = Setting.boolSetting("io.netty.tryUnsafe", true, Property.NodeScope);
 
     private final Map<String, FlightClientHolder> flightClients;
 
@@ -211,9 +198,11 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
     public String getLocalNodeId() {
         return Objects.requireNonNull(clusterService.get()).state().nodes().getLocalNodeId();
     }
+
     private static class FlightClientHolder {
         final FlightClient flightClient;
-        final Location  location;
+        final Location location;
+
         FlightClientHolder(FlightClient flightClient, Location location) {
             this.flightClient = flightClient;
             this.location = location;

@@ -15,15 +15,23 @@ import org.apache.arrow.vector.VectorSchemaRoot;
  * Functional interface for providing Arrow streams.
  * This interface defines the contract for creating and managing Arrow stream tasks.
  */
-@FunctionalInterface
-public interface ArrowStreamProvider {
+public interface StreamProvider {
+
+    /**
+     * Initializes the task with a given buffer allocator.
+     *
+     * @param allocator The buffer allocator to use for initialization.
+     * @return A new VectorSchemaRoot instance.
+     */
+    VectorSchemaRoot createRoot(BufferAllocator allocator);
+
     /**
      * Creates a new Arrow stream task with the given buffer allocator.
      *
      * @param allocator The buffer allocator to use for the task.
      * @return A new Task instance.
      */
-    Task create(BufferAllocator allocator);
+    BatchedJob createJob(BufferAllocator allocator);
 
     default int estimatedRowCount() {
         return -1;
@@ -32,14 +40,7 @@ public interface ArrowStreamProvider {
     /**
      * Represents a task for managing an Arrow stream.
      */
-    interface Task {
-        /**
-         * Initializes the task with a given buffer allocator.
-         *
-         * @param allocator The buffer allocator to use for initialization.
-         * @return A new VectorSchemaRoot instance.
-         */
-        VectorSchemaRoot init(BufferAllocator allocator);
+    interface BatchedJob {
 
         /**
          * Runs the task with the given VectorSchemaRoot and FlushSignal.

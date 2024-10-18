@@ -19,12 +19,11 @@ import org.apache.arrow.flight.NoOpFlightProducer;
 import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.opensearch.arrow.ArrowStreamProvider;
 import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.StreamProvider;
 import org.opensearch.arrow.StreamTicket;
 
 import java.util.Collections;
-import java.util.List;
 
 /**
  * BaseFlightProducer extends NoOpFlightProducer to provide stream management functionality
@@ -67,25 +66,25 @@ public class BaseFlightProducer extends NoOpFlightProducer {
             if (streamTicket.getNodeID().equals(flightService.getLocalNodeId())) {
                 streamHolder = streamManager.getStreamProvider(streamTicket);
             } else {
-                FlightClient remoteClient =  flightService.getFlightClient(streamTicket.getNodeID());
-                ArrowStreamProvider proxyProvider = new ProxyStreamProvider(remoteClient.getStream(ticket));
-                VectorSchemaRoot remoteRoot = proxyProvider.create(allocator).init(allocator);
+                FlightClient remoteClient = flightService.getFlightClient(streamTicket.getNodeID());
+                StreamProvider proxyProvider = new ProxyStreamProvider(remoteClient.getStream(ticket));
+                VectorSchemaRoot remoteRoot = proxyProvider.createRoot(allocator);
                 streamHolder = new StreamManager.StreamHolder(proxyProvider, remoteRoot);
             }
             if (streamHolder == null) {
                 listener.error(CallStatus.NOT_FOUND.withDescription("Stream not found").toRuntimeException());
                 return;
             }
-            ArrowStreamProvider.Task task = streamHolder.getProvider().create(allocator);
+            StreamProvider.BatchedJob batchedJob = streamHolder.getProvider().createJob(allocator);
             if (context.isCancelled()) {
-                task.onCancel();
+                batchedJob.onCancel();
                 listener.error(CallStatus.CANCELLED.cause());
                 return;
             }
-            listener.setOnCancelHandler(task::onCancel);
-            BackpressureStrategy backpressureStrategy = new BaseBackpressureStrategy(null, task::onCancel);
+            listener.setOnCancelHandler(batchedJob::onCancel);
+            BackpressureStrategy backpressureStrategy = new BaseBackpressureStrategy(null, batchedJob::onCancel);
             backpressureStrategy.register(listener);
-            ArrowStreamProvider.FlushSignal flushSignal = (timeout) -> {
+            StreamProvider.FlushSignal flushSignal = (timeout) -> {
                 BackpressureStrategy.WaitResult result = backpressureStrategy.waitForListener(timeout);
                 if (result.equals(BackpressureStrategy.WaitResult.READY)) {
                     listener.putNext();
@@ -93,7 +92,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                     listener.error(CallStatus.TIMED_OUT.cause());
                     throw new RuntimeException("Stream deadline exceeded for consumption");
                 } else if (result.equals(BackpressureStrategy.WaitResult.CANCELLED)) {
-                    task.onCancel();
+                    batchedJob.onCancel();
                     listener.error(CallStatus.CANCELLED.cause());
                     throw new RuntimeException("Stream cancelled by client");
                 } else {
@@ -101,9 +100,9 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                     throw new RuntimeException("Error while waiting for client: " + result);
                 }
             };
-            try(VectorSchemaRoot root = streamHolder.getRoot()) {
+            try (VectorSchemaRoot root = streamHolder.getRoot()) {
                 listener.start(root);
-                task.run(root, flushSignal);
+                batchedJob.run(root, flushSignal);
             }
         } catch (Exception e) {
             listener.error(CallStatus.INTERNAL.withDescription(e.getMessage()).withCause(e).cause());
@@ -124,11 +123,15 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                 throw CallStatus.NOT_FOUND.withDescription("FlightInfo not found").toRuntimeException();
             }
             Location location = flightService.getFlightClientLocation(streamTicket.getNodeID());
-            FlightEndpoint  endpoint = new FlightEndpoint(new Ticket(descriptor.getCommand()), location);
-            FlightInfo.Builder infoBuilder = FlightInfo.builder(streamHolder.getRoot().getSchema(), descriptor, Collections.singletonList(endpoint)).setRecords(streamHolder.getProvider().estimatedRowCount());
+            FlightEndpoint endpoint = new FlightEndpoint(new Ticket(descriptor.getCommand()), location);
+            FlightInfo.Builder infoBuilder = FlightInfo.builder(
+                streamHolder.getRoot().getSchema(),
+                descriptor,
+                Collections.singletonList(endpoint)
+            ).setRecords(streamHolder.getProvider().estimatedRowCount());
             return infoBuilder.build();
         } else {
-            FlightClient remoteClient =  flightService.getFlightClient(streamTicket.getNodeID());
+            FlightClient remoteClient = flightService.getFlightClient(streamTicket.getNodeID());
             return remoteClient.getInfo(descriptor);
         }
     }

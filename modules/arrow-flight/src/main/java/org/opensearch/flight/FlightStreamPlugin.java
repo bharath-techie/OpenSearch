@@ -38,7 +38,6 @@ import static org.opensearch.flight.FlightService.NETTY_NO_UNSAFE;
 import static org.opensearch.flight.FlightService.NETTY_TRY_REFLECTION_SET_ACCESSIBLE;
 import static org.opensearch.flight.FlightService.NETTY_TRY_UNSAFE;
 
-
 public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
 
     private final FlightService flightService;
@@ -73,14 +72,13 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
     @Override
     public List<Setting<?>> getSettings() {
         return Arrays.asList(
-                ARROW_ALLOCATION_MANAGER_TYPE,
-                ARROW_ENABLE_NULL_CHECK_FOR_GET,
-                NETTY_TRY_REFLECTION_SET_ACCESSIBLE,
-                ARROW_ENABLE_UNSAFE_MEMORY_ACCESS,
-                NETTY_ALLOCATOR_NUM_DIRECT_ARENAS,
-                NETTY_NO_UNSAFE,
-                NETTY_TRY_UNSAFE
+            ARROW_ALLOCATION_MANAGER_TYPE,
+            ARROW_ENABLE_NULL_CHECK_FOR_GET,
+            NETTY_TRY_REFLECTION_SET_ACCESSIBLE,
+            ARROW_ENABLE_UNSAFE_MEMORY_ACCESS,
+            NETTY_ALLOCATOR_NUM_DIRECT_ARENAS,
+            NETTY_NO_UNSAFE,
+            NETTY_TRY_UNSAFE
         );
     }
 }
-

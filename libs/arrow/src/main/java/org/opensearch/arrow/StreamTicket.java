@@ -12,12 +12,11 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Objects;
+
 /**
  * Represents a ticket for identifying and managing Arrow streams.
  * This class encapsulates a byte array that serves as a unique identifier for a stream.
  */
-
-
 public class StreamTicket {
     private final String ticketID;
     private final String nodeID;
@@ -103,4 +102,3 @@ public class StreamTicket {
         return "StreamTicket{ticketID='" + ticketID + "', nodeID='" + nodeID + "'}";
     }
 }
-
