@@ -15,18 +15,18 @@ import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Scorable;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Weight;
-import org.opensearch.arrow.StreamProvider;
+import org.opensearch.arrow.StreamProducer;
 
 import java.io.IOException;
 
 public class ArrowDocIdCollector extends FilterCollector {
     private final VectorSchemaRoot root;
-    private final StreamProvider.FlushSignal flushSignal;
+    private final StreamProducer.FlushSignal flushSignal;
     private final int batchSize;
     private final IntVector docIDVector;
     private int currentRow;
 
-    public ArrowDocIdCollector(Collector in, VectorSchemaRoot root, StreamProvider.FlushSignal flushSignal, int batchSize) {
+    public ArrowDocIdCollector(Collector in, VectorSchemaRoot root, StreamProducer.FlushSignal flushSignal, int batchSize) {
         super(in);
         this.root = root;
         this.docIDVector = (IntVector) root.getVector("docID");

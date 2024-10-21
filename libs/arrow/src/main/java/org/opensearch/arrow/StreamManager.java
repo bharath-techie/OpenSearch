@@ -39,11 +39,11 @@ public abstract class StreamManager implements AutoCloseable {
      * @param provider The ArrowStreamProvider to register.
      * @return A new StreamTicket for the registered stream.
      */
-    public StreamTicket registerStream(StreamProvider provider) {
+    public StreamTicket registerStream(StreamProducer provider) {
         String ticket = generateUniqueTicket();
         VectorSchemaRoot root = provider.createRoot(allocatorSupplier.get());
         streamProviders.put(ticket, new StreamHolder(provider, root));
-        return new StreamTicket(ticket, getNodeId());
+        return new StreamTicket(ticket, getLocalNodeId());
     }
 
     /**
@@ -57,12 +57,12 @@ public abstract class StreamManager implements AutoCloseable {
     }
 
     /**
-     * Retrieves the VectorSchemaRoot for the stream associated with the given StreamTicket.
+     * Retrieves the StreamIterator for the given StreamTicket.
      *
      * @param ticket The StreamTicket of the desired stream.
-     * @return The VectorSchemaRoot for the associated stream.
+     * @return The StreamIterator for the associated stream.
      */
-    public abstract VectorSchemaRoot getVectorSchemaRoot(StreamTicket ticket);
+    public abstract StreamIterator getStreamIterator(StreamTicket ticket);
 
     /**
      * Removes the stream associated with the given StreamTicket.
@@ -74,22 +74,18 @@ public abstract class StreamManager implements AutoCloseable {
     }
 
     /**
-     * Returns the map of all registered streams.
-     *
-     * @return A ConcurrentHashMap of all registered streams.
-     */
-    public ConcurrentHashMap<String, StreamHolder> getStreamProviders() {
-        return streamProviders;
-    }
-
-    /**
      * Generates a unique StreamTicket.
      *
      * @return A new, unique StreamTicket.
      */
     public abstract String generateUniqueTicket();
 
-    public abstract String getNodeId();
+    /**
+     * Returns the ID of the local node.
+     *
+     * @return The ID of the local node.
+     */
+    public abstract String getLocalNodeId();
 
     /**
      * Closes the StreamManager and cancels all associated streams.
@@ -101,16 +97,19 @@ public abstract class StreamManager implements AutoCloseable {
         streamProviders.clear();
     }
 
+    /**
+     * Holds a StreamProvider and its associated VectorSchemaRoot.
+     */
     public static class StreamHolder {
-        private final StreamProvider provider;
+        private final StreamProducer provider;
         private final VectorSchemaRoot root;
 
-        public StreamHolder(StreamProvider provider, VectorSchemaRoot root) {
+        public StreamHolder(StreamProducer provider, VectorSchemaRoot root) {
             this.provider = provider;
             this.root = root;
         }
 
-        public StreamProvider getProvider() {
+        public StreamProducer getProvider() {
             return provider;
         }
 

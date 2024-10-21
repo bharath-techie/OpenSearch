@@ -16,6 +16,7 @@ import java.util.Objects;
 /**
  * Represents a ticket for identifying and managing Arrow streams.
  * This class encapsulates a byte array that serves as a unique identifier for a stream.
+ * The byte array is constructed by concatenating the ticket ID and node ID strings.
  */
 public class StreamTicket {
     private final String ticketID;

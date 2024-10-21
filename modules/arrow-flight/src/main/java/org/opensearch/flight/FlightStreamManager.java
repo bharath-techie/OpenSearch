@@ -11,7 +11,7 @@ package org.opensearch.flight;
 import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.vector.VectorSchemaRoot;
+import org.opensearch.arrow.StreamIterator;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamTicket;
 
@@ -38,14 +38,14 @@ public class FlightStreamManager extends StreamManager {
     }
 
     /**
-     * Retrieves a VectorSchemaRoot for a given stream ticket.
-     * @param ticket The StreamTicket identifying the desired stream.
-     * @return The VectorSchemaRoot associated with the given ticket.
+     * Retrieves a StreamIterator for the given StreamTicket.
+     * @param ticket The StreamTicket representing the stream to retrieve.
+     * @return A StreamIterator instance for the specified stream.
      */
     @Override
-    public VectorSchemaRoot getVectorSchemaRoot(StreamTicket ticket) {
+    public StreamIterator getStreamIterator(StreamTicket ticket) {
         FlightStream stream = flightService.getFlightClient(ticket.getNodeID()).getStream(new Ticket(ticket.toBytes()));
-        return stream.getRoot();
+        return new FlightStreamIterator(stream);
     }
 
     @Override
@@ -54,7 +54,7 @@ public class FlightStreamManager extends StreamManager {
     }
 
     @Override
-    public String getNodeId() {
+    public String getLocalNodeId() {
         return flightService.getLocalNodeId();
     }
 }

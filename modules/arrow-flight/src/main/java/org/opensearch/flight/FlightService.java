@@ -46,11 +46,16 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
     private static BufferAllocator allocator;
     private static StreamManager streamManager;
     private static final Logger logger = LogManager.getLogger(FlightService.class);
-    private static String host;
+    private static final String host = "localhost";
     private static int port;
 
-    public static final Setting<String> FLIGHT_HOST = Setting.simpleString("opensearch.flight.host", "localhost", Property.NodeScope);
-
+    public static final Setting<Integer> STREAM_PORT = Setting.intSetting(
+        "node.attr.transport.stream.port",
+        8815,
+        1024,
+        65535,
+        Property.NodeScope
+    );
     public static final Setting<String> ARROW_ALLOCATION_MANAGER_TYPE = Setting.simpleString(
         "arrow.allocation.manager.type",
         "Netty",
@@ -98,9 +103,8 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         System.setProperty("io.netty.allocator.numDirectArenas", Integer.toString(NETTY_ALLOCATOR_NUM_DIRECT_ARENAS.get(settings)));
         System.setProperty("io.netty.noUnsafe", Boolean.toString(NETTY_NO_UNSAFE.get(settings)));
         System.setProperty("io.netty.tryUnsafe", Boolean.toString(NETTY_TRY_UNSAFE.get(settings)));
-        host = FLIGHT_HOST.get(settings);
         this.flightClients = new ConcurrentHashMap<>();
-        port = Integer.parseInt(settings.get("node.attr.transport.stream.port"));
+        port = STREAM_PORT.get(settings);
     }
 
     public void initialize(ClusterService clusterService) {

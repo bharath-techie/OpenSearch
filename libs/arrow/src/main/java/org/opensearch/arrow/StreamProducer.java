@@ -15,7 +15,7 @@ import org.apache.arrow.vector.VectorSchemaRoot;
  * Functional interface for providing Arrow streams.
  * This interface defines the contract for creating and managing Arrow stream tasks.
  */
-public interface StreamProvider {
+public interface StreamProducer {
 
     /**
      * Initializes the task with a given buffer allocator.

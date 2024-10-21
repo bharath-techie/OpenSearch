@@ -20,7 +20,7 @@ import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.arrow.StreamManager;
-import org.opensearch.arrow.StreamProvider;
+import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamTicket;
 
 import java.util.Collections;
@@ -67,7 +67,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                 streamHolder = streamManager.getStreamProvider(streamTicket);
             } else {
                 FlightClient remoteClient = flightService.getFlightClient(streamTicket.getNodeID());
-                StreamProvider proxyProvider = new ProxyStreamProvider(remoteClient.getStream(ticket));
+                StreamProducer proxyProvider = new ProxyStreamProducer(remoteClient.getStream(ticket));
                 VectorSchemaRoot remoteRoot = proxyProvider.createRoot(allocator);
                 streamHolder = new StreamManager.StreamHolder(proxyProvider, remoteRoot);
             }
@@ -75,7 +75,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                 listener.error(CallStatus.NOT_FOUND.withDescription("Stream not found").toRuntimeException());
                 return;
             }
-            StreamProvider.BatchedJob batchedJob = streamHolder.getProvider().createJob(allocator);
+            StreamProducer.BatchedJob batchedJob = streamHolder.getProvider().createJob(allocator);
             if (context.isCancelled()) {
                 batchedJob.onCancel();
                 listener.error(CallStatus.CANCELLED.cause());
@@ -84,7 +84,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
             listener.setOnCancelHandler(batchedJob::onCancel);
             BackpressureStrategy backpressureStrategy = new BaseBackpressureStrategy(null, batchedJob::onCancel);
             backpressureStrategy.register(listener);
-            StreamProvider.FlushSignal flushSignal = (timeout) -> {
+            StreamProducer.FlushSignal flushSignal = (timeout) -> {
                 BackpressureStrategy.WaitResult result = backpressureStrategy.waitForListener(timeout);
                 if (result.equals(BackpressureStrategy.WaitResult.READY)) {
                     listener.putNext();
@@ -113,6 +113,13 @@ public class BaseFlightProducer extends NoOpFlightProducer {
         }
     }
 
+    /**
+     * Retrieves FlightInfo for the given FlightDescriptor, handling both local and remote cases.
+     *
+     * @param context The call context
+     * @param descriptor The FlightDescriptor containing stream information
+     * @return FlightInfo for the requested stream
+     */
     @Override
     public FlightInfo getFlightInfo(CallContext context, FlightDescriptor descriptor) {
         StreamTicket streamTicket = StreamTicket.fromBytes(descriptor.getCommand());

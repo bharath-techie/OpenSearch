@@ -16,7 +16,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.Query;
-import org.opensearch.arrow.StreamProvider;
+import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamTicket;
 import org.opensearch.arrow.query.ArrowDocIdCollector;
@@ -113,13 +113,13 @@ public class StreamSearchPhase extends QueryPhase {
             if (streamManager == null) {
                 throw new RuntimeException("StreamManager not setup");
             }
-            StreamTicket ticket = streamManager.registerStream(new StreamProvider() {
+            StreamTicket ticket = streamManager.registerStream(new StreamProducer() {
                 @Override
                 public BatchedJob createJob(BufferAllocator allocator) {
                     return new BatchedJob() {
 
                         @Override
-                        public void run(VectorSchemaRoot root, StreamProvider.FlushSignal flushSignal) {
+                        public void run(VectorSchemaRoot root, StreamProducer.FlushSignal flushSignal) {
                             try {
                                 Collector collector = QueryCollectorContext.createQueryCollector(collectors);
                                 final ArrowDocIdCollector arrowDocIdCollector = new ArrowDocIdCollector(collector, root, flushSignal, 1000);

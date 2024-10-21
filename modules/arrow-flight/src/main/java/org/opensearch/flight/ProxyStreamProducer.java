@@ -11,13 +11,20 @@ package org.opensearch.flight;
 import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.opensearch.arrow.StreamProvider;
+import org.opensearch.arrow.StreamProducer;
+import org.opensearch.arrow.StreamTicket;
 
-public class ProxyStreamProvider implements StreamProvider {
+/**
+ * ProxyStreamProvider acts as forward proxy for FlightStream.
+ * It creates a BatchedJob to handle the streaming of data from the remote FlightStream.
+ * This is useful when stream is not present locally and needs to be fetched from a node
+ * retrieved using {@link StreamTicket#getNodeID()} where it is present.
+ */
+public class ProxyStreamProducer implements StreamProducer {
 
     private final FlightStream remoteStream;
 
-    ProxyStreamProvider(FlightStream remoteStream) {
+    ProxyStreamProducer(FlightStream remoteStream) {
         this.remoteStream = remoteStream;
     }
 
@@ -31,7 +38,7 @@ public class ProxyStreamProvider implements StreamProvider {
         return new ProxyBatchedJob(remoteStream);
     }
 
-    private static class ProxyBatchedJob implements BatchedJob {
+    public static class ProxyBatchedJob implements BatchedJob {
 
         private final FlightStream remoteStream;
 

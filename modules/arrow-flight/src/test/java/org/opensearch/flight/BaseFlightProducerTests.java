@@ -8,23 +8,53 @@
 
 package org.opensearch.flight;
 
+import org.apache.arrow.flight.FlightClient;
+import org.apache.arrow.flight.FlightProducer;
+import org.apache.arrow.flight.FlightStream;
+import org.apache.arrow.flight.Ticket;
+import org.apache.arrow.memory.ArrowBuf;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.dictionary.DictionaryProvider;
+import org.apache.arrow.vector.ipc.message.IpcOption;
+import org.opensearch.arrow.StreamProducer;
+import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.StreamTicket;
 import org.opensearch.test.OpenSearchTestCase;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 public class BaseFlightProducerTests extends OpenSearchTestCase {
-    /*
+
     private BaseFlightProducer baseFlightProducer;
     private StreamManager streamManager;
-    private ArrowStreamProvider arrowStreamProvider;
-    private ArrowStreamProvider.Task task;
+    private StreamProducer streamProducer;
+    private StreamProducer.BatchedJob batchedJob;
+    private static final String LOCAL_NODE_ID = "localNodeId";
+    private final FlightService flightService = mock(FlightService.class);
+    private final Ticket ticket = new Ticket((new StreamTicket("test-ticket", LOCAL_NODE_ID)).toBytes());
+    private BufferAllocator allocator;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
         streamManager = mock(StreamManager.class);
-        BufferAllocator allocator = mock(BufferAllocator.class);
-        arrowStreamProvider = mock(ArrowStreamProvider.class);
-        task = mock(ArrowStreamProvider.Task.class);
-        baseFlightProducer = new BaseFlightProducer(streamManager, allocator);
+        when(streamManager.getLocalNodeId()).thenReturn(LOCAL_NODE_ID);
+        when(flightService.getLocalNodeId()).thenReturn(LOCAL_NODE_ID);
+        allocator = mock(BufferAllocator.class);
+        streamProducer = mock(StreamProducer.class);
+        batchedJob = mock(StreamProducer.BatchedJob.class);
+        baseFlightProducer = new BaseFlightProducer(flightService, streamManager, allocator);
     }
 
     private static class TestServerStreamListener implements FlightProducer.ServerStreamListener {
@@ -126,18 +156,15 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     }
 
     public void testGetStream_SuccessfulFlow() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
-
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(new StreamManager.StreamHolder(streamProducer, root));
+        when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
+        when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
         AtomicInteger flushCount = new AtomicInteger(0);
         TestServerStreamListener listener = new TestServerStreamListener();
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 3; i++) {
                 Thread clientThread = new Thread(() -> {
                     listener.setReady(false);
@@ -145,46 +172,35 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
                 });
                 listener.setReady(false);
                 clientThread.start();
-                assertTrue("Await consumption should return true", flushSignal.awaitConsumption(100));
-                assertTrue("Data should be consumed", listener.getDataConsumed());
+                flushSignal.awaitConsumption(100);
+                assertTrue(listener.getDataConsumed());
                 flushCount.incrementAndGet();
                 listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
-
+        }).when(batchedJob).run(any(VectorSchemaRoot.class), any(StreamProducer.FlushSignal.class));
         baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener);
 
-        assertNull("No error should be set", listener.getError());
-        assertEquals("PutNext should be called 3 times", 3, listener.getPutNextCount());
-        assertEquals("Flush should be called 3 times", 3, flushCount.get());
+        assertNull(listener.getError());
+        assertEquals(3, listener.getPutNextCount());
+        assertEquals(3, flushCount.get());
 
-        verify(streamManager).getVectorSchemaRoot(eq(streamTicket));
-        verify(streamManager).getArrowStreamProvider(eq(streamTicket));
-        verify(arrowStreamProvider).createTask();
-        verify(task).run(eq(root), any(ArrowStreamProvider.FlushSignal.class));
-        verify(streamManager).removeStreamProvider(eq(streamTicket));
+        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
         verify(root).close();
-
-        assertFalse("Stream should not be cancelled", listener.isCancelled());
-        assertNull("OnReady handler should not be set", listener.getOnReadyHandler());
-        assertNull("OnCancel handler should not be set", listener.getOnCancelHandler());
     }
 
     public void testGetStream_WithSlowClient() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(new StreamManager.StreamHolder(streamProducer, root));
+        when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
+        when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
         AtomicInteger flushCount = new AtomicInteger(0);
         TestServerStreamListener listener = new TestServerStreamListener();
 
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 5; i++) {
                 Thread clientThread = new Thread(() -> {
                     try {
@@ -197,45 +213,35 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
                 });
                 listener.setReady(false);
                 clientThread.start();
-                assertTrue("Await consumption should return true", flushSignal.awaitConsumption(300));
-                assertTrue("Data should be consumed", listener.getDataConsumed());
+                flushSignal.awaitConsumption(300); // waiting for consumption for more than client thread sleep
+                assertTrue(listener.getDataConsumed());
                 flushCount.incrementAndGet();
                 listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
+        }).when(batchedJob).run(any(), any());
 
         baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener);
 
-        assertNull("No error should be set", listener.getError());
-        assertEquals("PutNext should be called 5 times", 5, listener.getPutNextCount());
-        assertEquals("Flush should be called 5 times", 5, flushCount.get());
+        assertNull(listener.getError());
+        assertEquals(5, listener.getPutNextCount());
+        assertEquals(5, flushCount.get());
 
-        verify(streamManager).getVectorSchemaRoot(eq(streamTicket));
-        verify(streamManager).getArrowStreamProvider(eq(streamTicket));
-        verify(arrowStreamProvider).createTask();
-        verify(task).run(eq(root), any(ArrowStreamProvider.FlushSignal.class));
-        verify(streamManager).removeStreamProvider(eq(streamTicket));
+        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
         verify(root).close();
-
-        assertFalse("Stream should not be cancelled", listener.isCancelled());
-        assertNull("OnReady handler should not be set", listener.getOnReadyHandler());
-        assertNull("OnCancel handler should not be set", listener.getOnCancelHandler());
     }
 
     public void testGetStream_WithSlowClientTimeout() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(new StreamManager.StreamHolder(streamProducer, root));
+        when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
+        when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
         AtomicInteger flushCount = new AtomicInteger(0);
         TestServerStreamListener listener = new TestServerStreamListener();
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 5; i++) {
                 Thread clientThread = new Thread(() -> {
                     try {
@@ -254,7 +260,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
                 listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
+        }).when(batchedJob).run(any(), any());
 
         assertThrows(RuntimeException.class, () -> baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener));
 
@@ -268,18 +274,16 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     }
 
     public void testGetStream_WithClientCancel() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(new StreamManager.StreamHolder(streamProducer, root));
+        when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
+        when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
         AtomicInteger flushCount = new AtomicInteger(0);
         TestServerStreamListener listener = new TestServerStreamListener();
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 5; i++) {
                 int finalI = i;
                 Thread clientThread = new Thread(() -> {
@@ -298,7 +302,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
                 listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
+        }).when(batchedJob).run(any(), any());
 
         assertThrows(RuntimeException.class, () -> baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener));
         assertNotNull(listener.getError());
@@ -311,18 +315,16 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     }
 
     public void testGetStream_WithUnresponsiveClient() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(new StreamManager.StreamHolder(streamProducer, root));
+        when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
+        when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
         AtomicInteger flushCount = new AtomicInteger(0);
         TestServerStreamListener listener = new TestServerStreamListener();
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 5; i++) {
                 Thread clientThread = new Thread(() -> {
                     listener.setReady(false);
@@ -336,7 +338,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
                 listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
+        }).when(batchedJob).run(any(), any());
 
         assertThrows(RuntimeException.class, () -> baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener));
 
@@ -350,18 +352,16 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     }
 
     public void testGetStream_WithServerBackpressure() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(new StreamManager.StreamHolder(streamProducer, root));
+        when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
+        when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
         TestServerStreamListener listener = new TestServerStreamListener();
         AtomicInteger flushCount = new AtomicInteger(0);
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 5; i++) {
                 Thread clientThread = new Thread(() -> {
                     listener.setReady(false);
@@ -376,7 +376,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
                 listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
+        }).when(batchedJob).run(any(VectorSchemaRoot.class), any(StreamProducer.FlushSignal.class));
 
         baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener);
 
@@ -389,18 +389,16 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     }
 
     public void testGetStream_WithServerError() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(new StreamManager.StreamHolder(streamProducer, root));
+        when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
+        when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
         TestServerStreamListener listener = new TestServerStreamListener();
         AtomicInteger flushCount = new AtomicInteger(0);
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 5; i++) {
                 Thread clientThread = new Thread(() -> {
                     listener.setReady(false);
@@ -417,7 +415,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
                 listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
+        }).when(batchedJob).run(any(VectorSchemaRoot.class), any(StreamProducer.FlushSignal.class));
 
         assertThrows(RuntimeException.class, () -> baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener));
 
@@ -430,164 +428,71 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         verify(root).close();
     }
 
-    public void testGetStream_WithMultipleConcurrentClients() throws Exception {
-        // Arrange
-        int numClients = 5;
-        CountDownLatch startLatch = new CountDownLatch(numClients);
-        CountDownLatch endLatch = new CountDownLatch(numClients);
-        AtomicInteger successCount = new AtomicInteger(0);
-
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        VectorSchemaRoot mockRoot = mock(VectorSchemaRoot.class);
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(mockRoot);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
-
-        // Act
-        for (int i = 0; i < numClients; i++) {
-            new Thread(() -> {
-                try {
-                    startLatch.countDown();
-                    startLatch.await(); // Ensure all threads start at the same time
-                    Ticket ticket = new Ticket(streamTicket.getBytes());
-                    TestServerStreamListener listener = new TestServerStreamListener();
-                    baseFlightProducer.getStream(null, ticket, listener);
-                    if (listener.getError() == null) {
-                        successCount.incrementAndGet();
-                    }
-                } catch (Exception e) {
-                    // Count failed attempts
-                } finally {
-                    endLatch.countDown();
-                }
-            }).start();
-        }
-
-        // Assert
-        assertTrue("All threads should finish within the timeout", endLatch.await(10, TimeUnit.SECONDS));
-        assertEquals("All clients should successfully get the stream", numClients, successCount.get());
-        verify(streamManager, times(numClients)).getVectorSchemaRoot(any(StreamTicket.class));
-        verify(streamManager, times(numClients)).getArrowStreamProvider(any(StreamTicket.class));
-        verify(arrowStreamProvider, times(numClients)).createTask();
-        verify(task, times(numClients)).run(eq(mockRoot), any(ArrowStreamProvider.FlushSignal.class));
-        verify(streamManager, times(numClients)).removeStreamProvider(any(StreamTicket.class));
-        verify(mockRoot, times(numClients)).close();
-    }
-
     public void testGetStream_StreamNotFound() throws Exception {
-        // Arrange
-        StreamTicket streamTicket = new StreamTicket("nonexistentTicket");
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenThrow(new IllegalArgumentException("Stream not found"));
+
+        when(streamManager.getStreamProvider(any(StreamTicket.class))).thenReturn(null);
 
         TestServerStreamListener listener = new TestServerStreamListener();
-        Ticket ticket = new Ticket(streamTicket.getBytes());
 
-        // Act
         baseFlightProducer.getStream(null, ticket, listener);
 
-        // Assert
-        verify(streamManager).getVectorSchemaRoot(any(StreamTicket.class));
-        assertNotNull("Error should be set", listener.getError());
-        assertTrue("Error should be IllegalArgumentException", listener.getError() instanceof IllegalArgumentException);
-        assertEquals("Error message should match", "Stream not found", listener.getError().getMessage());
-        verify(streamManager, never()).getArrowStreamProvider(any(StreamTicket.class));
-        verify(arrowStreamProvider, never()).createTask();
+        assertNotNull(listener.getError());
+        assertTrue(listener.getError().getMessage().contains("Stream not found"));
         assertEquals(0, listener.getPutNextCount());
 
         verify(streamManager).removeStreamProvider(any(StreamTicket.class));
     }
 
-    public void testGetStream_EdgeCases() throws Exception {
-        // Test with null ticket
-        TestServerStreamListener listener = new TestServerStreamListener();
-        assertThrows("Should throw NullPointerException for null ticket",
-            NullPointerException.class,
-            () -> baseFlightProducer.getStream(null, null, listener)
-        );
+    public void testProxyStreamProviderCreationWithDifferentNodeIDs() {
+        // Mock streamTicket with a remote node ID different from LOCAL_NODE_ID
+        String remoteNodeId = LOCAL_NODE_ID + "_remote";
+        StreamTicket streamTicket = new StreamTicket("test-ticket", remoteNodeId);
 
-        // Test with empty ticket
-        Ticket emptyTicket = new Ticket(new byte[0]);
-        baseFlightProducer.getStream(null, emptyTicket, listener);
-        assertNotNull("Error should be set for empty ticket", listener.getError());
-        assertTrue("Error should be IllegalArgumentException for empty ticket", listener.getError() instanceof IllegalArgumentException);
-        assertEquals("Error message should match for empty ticket", "Invalid ticket format", listener.getError().getMessage());
+        FlightClient mockFlightClient = mock(FlightClient.class);
+        when(flightService.getFlightClient(anyString())).thenReturn(mockFlightClient);
 
-        // Test with null listener
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket validTicket = new Ticket(streamTicket.getBytes());
-        assertThrows("Should throw NullPointerException for null listener",
-            NullPointerException.class,
-            () -> baseFlightProducer.getStream(null, validTicket, null)
-        );
+        FlightStream mockFlightStream = mock(FlightStream.class);
+        when(mockFlightClient.getStream(any())).thenReturn(mockFlightStream);
 
-        // Test with invalid ticket format
-        Ticket invalidTicket = new Ticket("invalid".getBytes());
-        listener = new TestServerStreamListener();
-        baseFlightProducer.getStream(null, invalidTicket, listener);
-        assertNotNull("Error should be set for invalid ticket", listener.getError());
-        assertTrue("Error should be IllegalArgumentException for invalid ticket", listener.getError() instanceof IllegalArgumentException);
-        assertEquals("Error message should match for invalid ticket", "Invalid ticket format", listener.getError().getMessage());
+        FlightClient remoteClient = flightService.getFlightClient(streamTicket.getNodeID());
+        verify(flightService).getFlightClient(remoteNodeId);
 
-        // Verify that no stream provider is created or removed for invalid cases
-        verify(streamManager, never()).getVectorSchemaRoot(any(StreamTicket.class));
-        verify(streamManager, never()).getArrowStreamProvider(any(StreamTicket.class));
-        verify(arrowStreamProvider, never()).createTask();
-        verify(streamManager, never()).removeStreamProvider(any(StreamTicket.class));
-    }
+        StreamProducer proxyProvider = new ProxyStreamProducer(remoteClient.getStream(new Ticket(streamTicket.toBytes())));
+        VectorSchemaRoot remoteRoot = proxyProvider.createRoot(allocator);
 
-    public void testGetStream_WithInterruptedException() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
-        final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
+        StreamManager.StreamHolder streamHolder = new StreamManager.StreamHolder(proxyProvider, remoteRoot);
+        assertNotNull(streamHolder);
 
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
-
-        TestServerStreamListener listener = new TestServerStreamListener();
-        doAnswer(invocation -> {
-            Thread.currentThread().interrupt();
-            return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
-
-        assertThrows(RuntimeException.class, () -> baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener));
-        assertTrue(Thread.interrupted()); // Clear the interrupt flag
-        assertNotNull(listener.getError());
-        assertTrue(listener.getError() instanceof InterruptedException);
-
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
-        verify(root).close();
-    }
-
-    public void testGetStream_WithFlushSignalTimeout() throws Exception {
-        StreamTicket streamTicket = new StreamTicket("testTicket");
-        Ticket ticket = new Ticket(streamTicket.getBytes());
-        final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
-
-        when(streamManager.getVectorSchemaRoot(any(StreamTicket.class))).thenReturn(root);
-        when(streamManager.getArrowStreamProvider(any(StreamTicket.class))).thenReturn(arrowStreamProvider);
-        when(arrowStreamProvider.createTask()).thenReturn(task);
-
-        TestServerStreamListener listener = new TestServerStreamListener();
         AtomicInteger flushCount = new AtomicInteger(0);
+        TestServerStreamListener listener = new TestServerStreamListener();
         doAnswer(invocation -> {
-            ArrowStreamProvider.FlushSignal flushSignal = invocation.getArgument(1);
+            StreamProducer.FlushSignal flushSignal = invocation.getArgument(1);
             for (int i = 0; i < 3; i++) {
-                assertFalse("Await consumption should timeout", flushSignal.awaitConsumption(1)); // Very short timeout
+                Thread clientThread = new Thread(() -> {
+                    listener.setReady(false);
+                    listener.setReady(true);
+                });
+                listener.setReady(false);
+                clientThread.start();
+                flushSignal.awaitConsumption(100);
+                assertTrue(listener.getDataConsumed());
                 flushCount.incrementAndGet();
+                listener.resetConsumptionLatch();
             }
             return null;
-        }).when(task).run(any(VectorSchemaRoot.class), any(ArrowStreamProvider.FlushSignal.class));
+        }).when(batchedJob).run(any(VectorSchemaRoot.class), any(StreamProducer.FlushSignal.class));
 
-        assertThrows(RuntimeException.class, () -> baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), ticket, listener));
-        assertNotNull(listener.getError());
-        assertEquals("Stream deadline exceeded for consumption", listener.getError().getMessage());
+        baseFlightProducer.getStream(mock(FlightProducer.CallContext.class), new Ticket(streamTicket.toBytes()), listener);
+
+        assertNull(listener.getError());
+        assertEquals(3, listener.getPutNextCount());
         assertEquals(3, flushCount.get());
-        assertEquals(0, listener.getPutNextCount());
 
         verify(streamManager).removeStreamProvider(any(StreamTicket.class));
-        verify(root).close();
-    }
+        // verify(root).close();
 
-     */
+        verify(mockFlightClient).getStream(new Ticket(streamTicket.toBytes()));
+
+        verify(streamManager, never()).getStreamProvider(any());
+    }
 }
