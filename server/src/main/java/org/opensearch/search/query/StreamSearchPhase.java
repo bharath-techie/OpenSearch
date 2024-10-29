@@ -170,7 +170,13 @@ public class StreamSearchPhase extends QueryPhase {
                 public int estimatedRowCount() {
                     return searcher.getIndexReader().numDocs();
                 }
-            });
+
+                @Override
+                public String getAction() {
+                   return searchContext.getTask().getAction();
+                }
+            },
+                searchContext.getTask().getParentTaskId());
             StreamSearchResult streamSearchResult = searchContext.streamSearchResult();
             streamSearchResult.flights(List.of(new OSTicket(ticket.getTicketID(), ticket.getNodeID())));
             return false;

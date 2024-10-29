@@ -8,93 +8,104 @@
 
 package org.opensearch.arrow;
 
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.core.tasks.TaskId;
+
+import java.util.function.Supplier;
+
+import static org.mockito.Mockito.mock;
 
 public class StreamManagerTests extends OpenSearchTestCase {
 
-    /*
-    private StreamManager streamManager;
-
-    @Mock
-    private ArrowStreamProvider mockProvider;
-
-    private final VectorSchemaRoot mockRoot = mock(VectorSchemaRoot.class);
+    private TestStreamManager streamManager;
+    private BufferAllocator testAllocator;
+    private TestStreamProducer testStreamProducer;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        streamManager = new StreamManager() {
-            @Override
-            public VectorSchemaRoot getVectorSchemaRoot(StreamTicket ticket) {
-                return mockRoot;
-            }
-
-            @Override
-            public StreamTicket generateUniqueTicket() {
-                return new StreamTicket(("ticket" + (getStreamProviders().size() + 1)).getBytes(StandardCharsets.UTF_8));
-            }
-        };
-        mockProvider = allocator -> new ArrowStreamProvider.Task() {
-            @Override
-            public VectorSchemaRoot init(BufferAllocator allocator) {
-                return mockRoot;
-            }
-
-            @Override
-            public void run(VectorSchemaRoot root, ArrowStreamProvider.FlushSignal flushSignal) {
-
-            }
-
-            @Override
-            public void onCancel() {
-
-            }
-        };
+        testAllocator = mock(BufferAllocator.class);
+        Supplier<BufferAllocator> allocatorSupplier = () -> testAllocator;
+        streamManager = new TestStreamManager(allocatorSupplier);
+        testStreamProducer = new TestStreamProducer();
     }
 
     public void testRegisterStream() {
-        StreamTicket ticket = streamManager.registerStream(mockProvider);
+        TaskId taskId = new TaskId("node1", 1);
+        StreamTicket ticket = streamManager.registerStream(testStreamProducer, taskId);
+
         assertNotNull(ticket);
-        assertEquals(new StreamTicket("ticket1".getBytes(StandardCharsets.UTF_8)), ticket);
+        assertEquals("test-ticket", ticket.getTicketID());
+        assertEquals("test-node", ticket.getNodeID());
+        assertTrue(testStreamProducer.rootCreated);
     }
 
-    public void testGetStreamProvider() {
-        StreamTicket ticket = streamManager.registerStream(mockProvider);
-        ArrowStreamProvider retrievedProvider = streamManager.getStreamProvider(ticket);
-        assertEquals(mockProvider, retrievedProvider);
-    }
+    public void testGetStreamProducer() {
+        TaskId taskId = new TaskId("node1", 1);
+        StreamTicket ticket = streamManager.registerStream(testStreamProducer, taskId);
+        StreamManager.StreamProducerHolder holder = streamManager.getStreamProducer(ticket);
 
-    public void testGetVectorSchemaRoot() {
-        StreamTicket ticket = streamManager.registerStream(mockProvider);
-        VectorSchemaRoot root = streamManager.getVectorSchemaRoot(ticket);
-        assertEquals(mockRoot, root);
+        assertNotNull(holder);
+        assertSame(testStreamProducer, holder.getProducer());
+        assertNotNull(holder.getRoot());
     }
 
     public void testRemoveStreamProvider() {
-        StreamTicket ticket = streamManager.registerStream(mockProvider);
+        TaskId taskId = new TaskId("node1", 1);
+        StreamTicket ticket = streamManager.registerStream(testStreamProducer, taskId);
         streamManager.removeStreamProvider(ticket);
-        assertNull(streamManager.getStreamProvider(ticket));
+
+        assertNull(streamManager.getStreamProducer(ticket));
     }
 
-    public void testClose() {
-        StreamTicket ticket = streamManager.registerStream(mockProvider);
+    public void testClose() throws Exception {
+        TaskId taskId = new TaskId("node1", 1);
+        StreamTicket ticket = streamManager.registerStream(testStreamProducer, taskId);
         streamManager.close();
-        assertNull(streamManager.getStreamProvider(ticket));
+
+        assertNull(streamManager.getStreamProducer(ticket));
     }
 
-    public void testMultipleStreams() {
-        ArrowStreamProvider mockProvider2 = mock(ArrowStreamProvider.class);
-
-        StreamTicket ticket1 = streamManager.registerStream(mockProvider);
-        StreamTicket ticket2 = streamManager.registerStream(mockProvider2);
-        assertNotEquals(ticket1, ticket2);
-        assertEquals(2, streamManager.getStreamProviders().size());
+    public void testAllocatorSupplier() {
+        assertSame(testAllocator, streamManager.allocatorSupplier().get());
     }
 
-    public void testInvalidTicket() {
-        StreamTicket invalidTicket = new StreamTicket("invalid-ticket".getBytes(StandardCharsets.UTF_8));
-        assertNull(streamManager.getStreamProvider(invalidTicket));
+    private static class TestStreamManager extends StreamManager {
+        public TestStreamManager(Supplier<BufferAllocator> allocatorSupplier) {
+            super(allocatorSupplier);
+        }
+
+        @Override
+        public StreamIterator getStreamIterator(StreamTicket ticket) {
+            return null; // Not tested in this class
+        }
+
+        @Override
+        public String generateUniqueTicket() {
+            return "test-ticket";
+        }
+
+        @Override
+        public String getLocalNodeId() {
+            return "test-node";
+        }
     }
 
-     */
+    private static class TestStreamProducer implements StreamProducer {
+        boolean rootCreated = false;
+
+        @Override
+        public VectorSchemaRoot createRoot(BufferAllocator allocator) {
+            rootCreated = true;
+            return mock(VectorSchemaRoot.class);
+        }
+
+        @Override
+        public BatchedJob createJob(BufferAllocator allocator) {
+            return null;
+        }
+    }
 }
+

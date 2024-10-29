@@ -8,6 +8,7 @@
 
 package org.opensearch.arrow.query;
 import org.apache.arrow.vector .*;
+import org.apache.arrow.vector.holders.IntHolder;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.FilterCollector;

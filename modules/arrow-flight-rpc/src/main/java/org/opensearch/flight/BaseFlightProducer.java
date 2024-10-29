@@ -19,6 +19,8 @@ import org.apache.arrow.flight.NoOpFlightProducer;
 import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamTicket;
@@ -35,6 +37,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
     private final FlightService flightService;
     private final StreamManager streamManager;
     private final BufferAllocator allocator;
+    private static final Logger logger = LogManager.getLogger(BaseFlightProducer.class);
 
     /**
      * Constructs a new BaseFlightProducer.
@@ -62,20 +65,20 @@ public class BaseFlightProducer extends NoOpFlightProducer {
     public void getStream(CallContext context, Ticket ticket, ServerStreamListener listener) {
         StreamTicket streamTicket = StreamTicket.fromBytes(ticket.getBytes());
         try {
-            StreamManager.StreamHolder streamHolder;
+            StreamManager.StreamProducerHolder streamProducerHolder;
             if (streamTicket.getNodeID().equals(flightService.getLocalNodeId())) {
-                streamHolder = streamManager.getStreamProvider(streamTicket);
+                streamProducerHolder = streamManager.getStreamProducer(streamTicket);
             } else {
                 FlightClient remoteClient = flightService.getFlightClient(streamTicket.getNodeID());
                 StreamProducer proxyProvider = new ProxyStreamProducer(remoteClient.getStream(ticket));
                 VectorSchemaRoot remoteRoot = proxyProvider.createRoot(allocator);
-                streamHolder = new StreamManager.StreamHolder(proxyProvider, remoteRoot);
+                streamProducerHolder = new StreamManager.StreamProducerHolder(proxyProvider, remoteRoot);
             }
-            if (streamHolder == null) {
+            if (streamProducerHolder == null) {
                 listener.error(CallStatus.NOT_FOUND.withDescription("Stream not found").toRuntimeException());
                 return;
             }
-            StreamProducer.BatchedJob batchedJob = streamHolder.getProvider().createJob(allocator);
+            StreamProducer.BatchedJob batchedJob = streamProducerHolder.getProducer().createJob(allocator);
             if (context.isCancelled()) {
                 batchedJob.onCancel();
                 listener.error(CallStatus.CANCELLED.cause());
@@ -100,12 +103,13 @@ public class BaseFlightProducer extends NoOpFlightProducer {
                     throw new RuntimeException("Error while waiting for client: " + result);
                 }
             };
-            try (VectorSchemaRoot root = streamHolder.getRoot()) {
+            try (VectorSchemaRoot root = streamProducerHolder.getRoot()) {
                 listener.start(root);
                 batchedJob.run(root, flushSignal);
             }
         } catch (Exception e) {
             listener.error(CallStatus.INTERNAL.withDescription(e.getMessage()).withCause(e).cause());
+            logger.error(e);
             throw e;
         } finally {
             listener.completed();
@@ -122,20 +126,21 @@ public class BaseFlightProducer extends NoOpFlightProducer {
      */
     @Override
     public FlightInfo getFlightInfo(CallContext context, FlightDescriptor descriptor) {
+        // TODO: this api should only be used internally
         StreamTicket streamTicket = StreamTicket.fromBytes(descriptor.getCommand());
-        StreamManager.StreamHolder streamHolder;
+        StreamManager.StreamProducerHolder streamProducerHolder;
         if (streamTicket.getNodeID().equals(flightService.getLocalNodeId())) {
-            streamHolder = streamManager.getStreamProvider(streamTicket);
-            if (streamHolder == null) {
+            streamProducerHolder = streamManager.getStreamProducer(streamTicket);
+            if (streamProducerHolder == null) {
                 throw CallStatus.NOT_FOUND.withDescription("FlightInfo not found").toRuntimeException();
             }
             Location location = flightService.getFlightClientLocation(streamTicket.getNodeID());
             FlightEndpoint endpoint = new FlightEndpoint(new Ticket(descriptor.getCommand()), location);
             FlightInfo.Builder infoBuilder = FlightInfo.builder(
-                streamHolder.getRoot().getSchema(),
+                streamProducerHolder.getRoot().getSchema(),
                 descriptor,
                 Collections.singletonList(endpoint)
-            ).setRecords(streamHolder.getProvider().estimatedRowCount());
+            ).setRecords(streamProducerHolder.getProducer().estimatedRowCount());
             return infoBuilder.build();
         } else {
             FlightClient remoteClient = flightService.getFlightClient(streamTicket.getNodeID());

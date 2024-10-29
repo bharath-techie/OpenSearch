@@ -37,6 +37,10 @@ public interface StreamProducer {
         return -1;
     }
 
+    default String getAction() {
+        return "";
+    }
+
     /**
      * Represents a task for managing an Arrow stream.
      */

@@ -6,11 +6,20 @@
  * compatible open source license.
  */
 
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+
 package org.opensearch.arrow;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.core.tasks.TaskId;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -22,7 +31,7 @@ import java.util.function.Supplier;
  */
 @ExperimentalApi
 public abstract class StreamManager implements AutoCloseable {
-    private final ConcurrentHashMap<String, StreamHolder> streamProviders;
+    private final ConcurrentHashMap<String, StreamProducerHolder> streamProducers;
     private final Supplier<BufferAllocator> allocatorSupplier;
 
     /**
@@ -30,7 +39,11 @@ public abstract class StreamManager implements AutoCloseable {
      */
     public StreamManager(Supplier<BufferAllocator> allocatorSupplier) {
         this.allocatorSupplier = allocatorSupplier;
-        this.streamProviders = new ConcurrentHashMap<>();
+        this.streamProducers = new ConcurrentHashMap<>();
+    }
+
+    public Supplier<BufferAllocator> allocatorSupplier() {
+        return allocatorSupplier;
     }
 
     /**
@@ -39,10 +52,10 @@ public abstract class StreamManager implements AutoCloseable {
      * @param provider The ArrowStreamProvider to register.
      * @return A new StreamTicket for the registered stream.
      */
-    public StreamTicket registerStream(StreamProducer provider) {
+    public StreamTicket registerStream(StreamProducer provider, TaskId parentTaskId) {
         String ticket = generateUniqueTicket();
         VectorSchemaRoot root = provider.createRoot(allocatorSupplier.get());
-        streamProviders.put(ticket, new StreamHolder(provider, root));
+        streamProducers.put(ticket, new StreamProducerHolder(provider, root));
         return new StreamTicket(ticket, getLocalNodeId());
     }
 
@@ -52,8 +65,8 @@ public abstract class StreamManager implements AutoCloseable {
      * @param ticket The StreamTicket of the desired stream.
      * @return The ArrowStreamProvider associated with the ticket, or null if not found.
      */
-    public StreamHolder getStreamProvider(StreamTicket ticket) {
-        return streamProviders.get(ticket.getTicketID());
+    public StreamProducerHolder getStreamProducer(StreamTicket ticket) {
+        return streamProducers.get(ticket.getTicketID());
     }
 
     /**
@@ -70,7 +83,7 @@ public abstract class StreamManager implements AutoCloseable {
      * @param ticket The StreamTicket of the stream to remove.
      */
     public void removeStreamProvider(StreamTicket ticket) {
-        streamProviders.remove(ticket.getTicketID());
+        streamProducers.remove(ticket.getTicketID());
     }
 
     /**
@@ -94,23 +107,23 @@ public abstract class StreamManager implements AutoCloseable {
      */
     public void close() {
         // TODO: logic to cancel all threads and clear the streamManager queue
-        streamProviders.clear();
+        streamProducers.clear();
     }
 
     /**
-     * Holds a StreamProvider and its associated VectorSchemaRoot.
+     * Holds a StreamProducer and its associated VectorSchemaRoot.
      */
-    public static class StreamHolder {
-        private final StreamProducer provider;
+    public static class StreamProducerHolder {
+        private final StreamProducer producer;
         private final VectorSchemaRoot root;
 
-        public StreamHolder(StreamProducer provider, VectorSchemaRoot root) {
-            this.provider = provider;
+        public StreamProducerHolder(StreamProducer producer, VectorSchemaRoot root) {
+            this.producer = producer;
             this.root = root;
         }
 
-        public StreamProducer getProvider() {
-            return provider;
+        public StreamProducer getProducer() {
+            return producer;
         }
 
         public VectorSchemaRoot getRoot() {
