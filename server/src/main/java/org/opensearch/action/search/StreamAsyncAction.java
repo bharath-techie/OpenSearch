@@ -78,7 +78,7 @@ class StreamAsyncAction extends SearchQueryThenFetchAsyncAction {
 
     @Override
     protected SearchPhase getNextPhase(final SearchPhaseResults<SearchPhaseResult> results, SearchPhaseContext context) {
-        return new StreamSearchReducePhase("stream_reduce", context);
+        return new StreamSearchReducePhase(SearchPhaseName.STREAM_REDUCE.getName(), context);
     }
 
     class StreamSearchReducePhase extends SearchPhase {
