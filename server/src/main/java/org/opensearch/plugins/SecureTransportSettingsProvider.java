@@ -19,7 +19,6 @@ import javax.net.ssl.SSLException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Optional;
-
 /**
  * A provider for security related settings for transports.
  *
@@ -70,6 +69,8 @@ public interface SecureTransportSettingsProvider {
      * @throws SSLException throws SSLException if the {@link SSLEngine} instance cannot be built
      */
     Optional<SSLEngine> buildSecureServerTransportEngine(Settings settings, Transport transport) throws SSLException;
+
+    Optional<Object> buildSecureServerTransportSslContext(Settings settings, Transport transport) throws SSLException;
 
     /**
      * If supported, builds the {@link SSLEngine} instance for client transport instance

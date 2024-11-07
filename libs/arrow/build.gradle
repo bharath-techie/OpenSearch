@@ -17,10 +17,10 @@ dependencies {
   api "org.apache.arrow:arrow-format:${versions.arrow}"
   api "org.apache.arrow:arrow-memory-netty-buffer-patch:${versions.arrow}"
   api "org.apache.arrow:arrow-memory-netty:${versions.arrow}"
-  api("io.netty:netty-common:${versions.netty}") {
+  implementation("io.netty:netty-common:${versions.netty}") {
     exclude group: 'io.netty', module: 'netty-common'
   }
-  api("io.netty:netty-buffer:${versions.netty}") {
+  implementation("io.netty:netty-buffer:${versions.netty}") {
     exclude group: 'io.netty', module: 'netty-buffer'
   }
 

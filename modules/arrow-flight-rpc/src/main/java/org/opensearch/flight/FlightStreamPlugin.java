@@ -12,25 +12,37 @@ import org.opensearch.arrow.StreamManager;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.network.NetworkService;
+import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.util.BigArrays;
 import org.opensearch.common.util.FeatureFlags;
+import org.opensearch.common.util.PageCacheRecycler;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
+import org.opensearch.core.indices.breaker.CircuitBreakerService;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.http.HttpServerTransport;
+import org.opensearch.plugins.NetworkPlugin;
 import org.opensearch.plugins.Plugin;
+import org.opensearch.plugins.SecureHttpTransportSettingsProvider;
+import org.opensearch.plugins.SecureTransportSettingsProvider;
 import org.opensearch.plugins.StreamManagerPlugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
+import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
+import org.opensearch.transport.Transport;
 import org.opensearch.watcher.ResourceWatcherService;
 
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 import static org.opensearch.common.util.FeatureFlags.ARROW_STREAMS_SETTING;
@@ -42,7 +54,7 @@ import static org.opensearch.flight.FlightService.NETTY_NO_UNSAFE;
 import static org.opensearch.flight.FlightService.NETTY_TRY_REFLECTION_SET_ACCESSIBLE;
 import static org.opensearch.flight.FlightService.NETTY_TRY_UNSAFE;
 
-public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
+public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin, NetworkPlugin {
 
     private final FlightService flightService;
 
@@ -71,6 +83,21 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin {
 
         flightService.initialize(clusterService, threadPool);
         return List.of(flightService);
+    }
+
+    @Override
+    public Map<String, Supplier<Transport>> getSecureTransports(
+        Settings settings,
+        ThreadPool threadPool,
+        PageCacheRecycler pageCacheRecycler,
+        CircuitBreakerService circuitBreakerService,
+        NamedWriteableRegistry namedWriteableRegistry,
+        NetworkService networkService,
+        SecureTransportSettingsProvider secureTransportSettingsProvider,
+        Tracer tracer
+    ) {
+        flightService.setSecureTransportSettingsProvider(secureTransportSettingsProvider);
+        return Collections.emptyMap();
     }
 
     @Override

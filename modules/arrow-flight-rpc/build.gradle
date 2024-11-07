@@ -23,15 +23,24 @@ opensearchplugin {
 dependencies {
   implementation 'org.checkerframework:checker-qual:3.44.0'
   implementation project(':libs:opensearch-arrow')
-  runtimeOnly project(':modules:transport-netty4')
+
+  implementation "io.netty:netty-common:${versions.netty}"
+  implementation "io.netty:netty-transport:${versions.netty}"
+  implementation "io.netty:netty-handler:${versions.netty}"
+  implementation "io.netty:netty-codec:${versions.netty}"
+  implementation "io.netty:netty-codec-http:${versions.netty}"
+  implementation "io.netty:netty-codec-http2:${versions.netty}"
+  implementation "io.netty:netty-resolver:${versions.netty}"
+  implementation "io.netty:netty-transport-native-unix-common:${versions.netty}"
+
   runtimeOnly group: 'com.google.code.findbugs', name: 'jsr305', version: '3.0.2'
   compileOnly 'org.immutables:value:2.9.3'
   annotationProcessor 'org.immutables:value:2.9.3'
   implementation 'org.checkerframework:checker-qual:3.44.0'
   implementation 'org.apache.arrow:arrow-flight:17.0.0'
   implementation 'org.apache.arrow:flight-core:17.0.0'
-  runtimeOnly 'io.grpc:grpc-api:1.63.0'
-  runtimeOnly 'io.grpc:grpc-netty:1.63.0'
+  implementation 'io.grpc:grpc-api:1.63.0'
+  implementation 'io.grpc:grpc-netty:1.63.0'
   runtimeOnly 'io.grpc:grpc-core:1.63.0'
   runtimeOnly 'io.grpc:grpc-stub:1.63.0'
   runtimeOnly 'io.grpc:grpc-all:1.63.0'
@@ -39,6 +48,7 @@ dependencies {
   runtimeOnly 'io.grpc:grpc-protobuf-lite:1.63.0'
   runtimeOnly 'io.perfmark:perfmark-api:0.27.0'
   runtimeOnly "com.google.guava:failureaccess:1.0.1"
+  compileOnly "com.google.errorprone:error_prone_annotations:2.18.0"
   runtimeOnly('com.google.guava:guava:33.2.1-jre') {
     attributes {
       attribute(Attribute.of('org.gradle.jvm.environment', String), 'standard-jvm')

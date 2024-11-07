@@ -8,8 +8,8 @@
 
 package org.opensearch.flight;
 
+import io.netty.handler.ssl.SslContext;
 import org.apache.arrow.flight.FlightClient;
-import org.apache.arrow.flight.FlightServer;
 import org.apache.arrow.flight.Location;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -27,7 +27,7 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
-import org.opensearch.threadpool.ExecutorBuilder;
+import org.opensearch.plugins.SecureTransportSettingsProvider;
 import org.opensearch.threadpool.ScalingExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -46,7 +46,7 @@ import java.util.concurrent.ExecutorService;
 @ExperimentalApi
 public class FlightService extends AbstractLifecycleComponent implements ClusterStateListener {
 
-    private static FlightServer server;
+    private static OpenSearchFlightServer server;
     private static FlightClient client;
     private static BufferAllocator allocator;
     private static StreamManager streamManager;
@@ -54,6 +54,7 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
     private static final String host = "localhost";
     private static int port;
     private ThreadPool threadPool;
+    private static boolean enableSsl;
 
     public static final Setting<Integer> STREAM_PORT = Setting.intSetting(
         "node.attr.transport.stream.port",
@@ -119,6 +120,12 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         Property.NodeScope
     );
 
+    public static final Setting<Boolean> ARROW_SSL_ENABLE = Setting.boolSetting(
+        "arrow.ssl.enable",
+        false,
+        Property.NodeScope
+    );
+
     public static final String FLIGHT_THREAD_POOL_NAME = "flight-server";
     private final ScalingExecutorBuilder executorBuilder;
     public static final Setting<Boolean> NETTY_NO_UNSAFE = Setting.boolSetting("io.netty.noUnsafe", false, Setting.Property.NodeScope);
@@ -128,6 +135,8 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
     private final Map<String, FlightClientHolder> flightClients;
 
     private final SetOnce<ClusterService> clusterService = new SetOnce<>();
+
+    private SecureTransportSettingsProvider secureTransportSettingsProvider;
 
     FlightService(Settings settings) {
         System.setProperty("arrow.allocation.manager.type", ARROW_ALLOCATION_MANAGER_TYPE.get(settings));
@@ -140,6 +149,7 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         System.setProperty("arrow.memory.debug.allocator", Boolean.toString(ARROW_ENABLE_DEBUG_ALLOCATOR.get(settings)));
         this.flightClients = new ConcurrentHashMap<>();
         port = STREAM_PORT.get(settings);
+        enableSsl = ARROW_SSL_ENABLE.get(settings);
         executorBuilder = new ScalingExecutorBuilder(
             FLIGHT_THREAD_POOL_NAME,
             FLIGHT_THREAD_POOL_MIN_SIZE.get(settings),
@@ -155,6 +165,10 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         streamManager = new FlightStreamManager(this::getAllocator, this);
     }
 
+    public void setSecureTransportSettingsProvider(SecureTransportSettingsProvider secureTransportSettingsProvider) {
+        this.secureTransportSettingsProvider = secureTransportSettingsProvider;
+    }
+
     private BufferAllocator getAllocator() {
         return allocator;
     }
@@ -168,11 +182,18 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         try {
             allocator = new RootAllocator(Integer.MAX_VALUE);
             BaseFlightProducer producer = new BaseFlightProducer(this, streamManager, allocator);
-            final Location location = Location.forGrpcInsecure(host, port);
+            final Location location = getLocation(host, port);
             ExecutorService executorService = threadPool.executor(FLIGHT_THREAD_POOL_NAME);
-            server = FlightServer.builder(allocator, location, producer)
-                .executor(executorService)
-                .build();
+            OpenSearchFlightServer.Builder builder = OpenSearchFlightServer.builder(allocator, location, producer);
+            builder.executor(executorService);
+
+            if (enableSsl) {
+                SslContext sslContext = (SslContext) secureTransportSettingsProvider.buildSecureServerTransportSslContext(null, null).orElseThrow(
+                    () -> new RuntimeException("Failed to build SSL context for FlightServer")
+                );
+                builder.useTls(sslContext);
+            }
+            server = builder.build();
             client = FlightClient.builder(allocator, location).build();
             server.start();
             logger.info("Arrow Flight server started successfully:{}", location.getUri().toString());
@@ -202,6 +223,13 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
     protected void doClose() {
         doStop();
         allocator.close();
+    }
+
+    protected Location getLocation(String address, int port) {
+        if (enableSsl) {
+            return Location.forGrpcTls(address, port);
+        }
+        return Location.forGrpcInsecure(address, port);
     }
 
     public StreamManager getStreamManager() {
