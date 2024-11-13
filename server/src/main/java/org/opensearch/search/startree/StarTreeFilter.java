@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -225,4 +226,36 @@ public class StarTreeFilter {
             this.maxMatchedDoc = maxMatchedDoc;
         }
     }
+
+
+    public static Map<Long, FixedBitSet> getPredicateValueToFixedBitSetMap(
+            StarTreeValues starTreeValues,
+            String predicateField
+    ) throws IOException {
+
+        Map<Long, FixedBitSet> predicateValueToBitSet = new HashMap<>();
+
+        // 1. Get all distinct values for the predicate field from the star-tree
+        SortedNumericStarTreeValuesIterator valuesIterator =
+                (SortedNumericStarTreeValuesIterator) starTreeValues.getDimensionValuesIterator(predicateField);
+
+        Set<Long> distinctValues = new HashSet<>();
+        while (valuesIterator.nextEntry() != NO_MORE_DOCS) {
+            for (int i = 0; i < valuesIterator.entryValueCount(); i++) {
+                distinctValues.add(valuesIterator.nextValue());
+            }
+        }
+
+        // 2. For each distinct value, create a predicate map and call getStarTreeResult
+        for (Long value : distinctValues) {
+            Map<String, Long> predicateEvaluators = new HashMap<>();
+            predicateEvaluators.put(predicateField, value);
+
+            FixedBitSet bitSet = getStarTreeResult(starTreeValues, predicateEvaluators);
+            predicateValueToBitSet.put(value, bitSet);
+        }
+
+        return predicateValueToBitSet;
+    }
+
 }

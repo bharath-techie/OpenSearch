@@ -29,6 +29,7 @@ import org.opensearch.index.query.TermQueryBuilder;
 import org.opensearch.search.aggregations.AggregatorFactory;
 import org.opensearch.search.aggregations.LeafBucketCollector;
 import org.opensearch.search.aggregations.LeafBucketCollectorBase;
+import org.opensearch.search.aggregations.bucket.histogram.DateHistogramAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.MetricAggregatorFactory;
 import org.opensearch.search.aggregations.support.ValuesSource;
 import org.opensearch.search.builder.SearchSourceBuilder;
@@ -74,9 +75,14 @@ public class StarTreeQueryHelper {
         );
 
         for (AggregatorFactory aggregatorFactory : context.aggregations().factories().getFactories()) {
+            // first check for aggregation is a metric aggregation
             MetricStat metricStat = validateStarTreeMetricSupport(compositeMappedFieldType, aggregatorFactory);
+
+            // if not a metric aggregation, check for applicable date histogram shape
             if (metricStat == null) {
-                return null;
+                if (validateDateHistogramSupport(compositeMappedFieldType, aggregatorFactory) == false) {
+                    return null;
+                }
             }
         }
 
@@ -157,6 +163,18 @@ public class StarTreeQueryHelper {
             }
         }
         return null;
+    }
+
+    private static boolean validateDateHistogramSupport(CompositeDataCubeFieldType compositeIndexFieldInfo,
+                                                        AggregatorFactory aggregatorFactory) {
+        if (aggregatorFactory instanceof DateHistogramAggregatorFactory && aggregatorFactory.getSubFactories().getFactories().length == 1) {
+            AggregatorFactory subFactory = aggregatorFactory.getSubFactories().getFactories()[0];
+            MetricStat metricStat = validateStarTreeMetricSupport(compositeIndexFieldInfo, subFactory);
+            if (metricStat != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static CompositeIndexFieldInfo getSupportedStarTree(SearchContext context) {
