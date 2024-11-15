@@ -32,6 +32,7 @@
 package org.opensearch.search.aggregations.metrics;
 
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.CollectionTerminatedException;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.util.NumericUtils;
 import org.opensearch.common.lease.Releasables;
@@ -42,10 +43,7 @@ import org.opensearch.index.compositeindex.datacube.MetricStat;
 import org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeQueryHelper;
 import org.opensearch.index.fielddata.SortedNumericDoubleValues;
 import org.opensearch.search.DocValueFormat;
-import org.opensearch.search.aggregations.Aggregator;
-import org.opensearch.search.aggregations.InternalAggregation;
-import org.opensearch.search.aggregations.LeafBucketCollector;
-import org.opensearch.search.aggregations.LeafBucketCollectorBase;
+import org.opensearch.search.aggregations.*;
 import org.opensearch.search.aggregations.support.ValuesSource;
 import org.opensearch.search.aggregations.support.ValuesSourceConfig;
 import org.opensearch.search.internal.SearchContext;
@@ -98,6 +96,7 @@ public class SumAggregator extends NumericMetricsAggregator.SingleValue {
 
         CompositeIndexFieldInfo supportedStarTree = getSupportedStarTree(this.context);
         if (supportedStarTree != null) {
+            //LeafBucketStarTreeCollector s = new LeafBucketCollectorStarTreeBase(sub)
             return getStarTreeCollector(ctx, sub, supportedStarTree);
         }
         return getDefaultLeafCollector(ctx, sub);
@@ -135,6 +134,36 @@ public class SumAggregator extends NumericMetricsAggregator.SingleValue {
 
     public LeafBucketCollector getStarTreeCollector(LeafReaderContext ctx, LeafBucketCollector sub, CompositeIndexFieldInfo starTree)
         throws IOException {
+
+        return new LeafBucketCollectorStarTreeBase(sub, valuesSource.doubleValues(ctx)) {
+            @Override
+            public void collect(int doc, long bucket) {
+                throw new CollectionTerminatedException();
+            }
+            @Override
+            public void collectStarEntry(int doc, long bucket) {
+                sums = bigArrays.grow(sums, bucket + 1);
+                compensations = bigArrays.grow(compensations, bucket + 1);
+
+                if (values.advanceExact(doc)) {
+                    final int valuesCount = values.docValueCount();
+                    // Compute the sum of double values with Kahan summation algorithm which is more
+                    // accurate than naive summation.
+                    double sum = sums.get(bucket);
+                    double compensation = compensations.get(bucket);
+                    kahanSummation.reset(sum, compensation);
+
+                    for (int i = 0; i < valuesCount; i++) {
+                        double value = values.nextValue();
+                        kahanSummation.add(value);
+                    }
+
+                    compensations.set(bucket, kahanSummation.delta());
+                    sums.set(bucket, kahanSummation.value());
+                }
+            }
+        };
+
         final CompensatedSum kahanSummation = new CompensatedSum(sums.get(0), 0);
         return StarTreeQueryHelper.getStarTreeLeafCollector(
             context,

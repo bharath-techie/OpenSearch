@@ -147,6 +147,8 @@ public class Composite912DocValuesWriter extends DocValuesConsumer {
         // TODO : add integ test where there are no composite fields in a segment, test both flush and merge cases
         segmentHasCompositeFields = Collections.disjoint(segmentFieldSet, compositeFieldSet) == false;
     }
+    // add document -> buffer reaches threshold [512 mb] / refresh interval scheduler
+    // flush
 
     @Override
     public void addNumericField(FieldInfo field, DocValuesProducer valuesProducer) throws IOException {

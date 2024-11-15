@@ -52,13 +52,7 @@ import org.opensearch.index.compositeindex.datacube.startree.utils.iterator.Sort
 import org.opensearch.index.mapper.CompositeDataCubeFieldType;
 import org.opensearch.index.compositeindex.datacube.Dimension;
 import org.opensearch.search.DocValueFormat;
-import org.opensearch.search.aggregations.Aggregator;
-import org.opensearch.search.aggregations.AggregatorFactories;
-import org.opensearch.search.aggregations.BucketOrder;
-import org.opensearch.search.aggregations.CardinalityUpperBound;
-import org.opensearch.search.aggregations.InternalAggregation;
-import org.opensearch.search.aggregations.LeafBucketCollector;
-import org.opensearch.search.aggregations.LeafBucketCollectorBase;
+import org.opensearch.search.aggregations.*;
 import org.opensearch.search.aggregations.bucket.BucketsAggregator;
 import org.opensearch.search.aggregations.bucket.filterrewrite.DateHistogramAggregatorBridge;
 import org.opensearch.search.aggregations.bucket.filterrewrite.FilterRewriteOptimizationContext;
@@ -118,6 +112,8 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         AggregatorFactories factories,
         Rounding rounding,
         Rounding.Prepared preparedRounding,
+        // 111
+        // [ 100, 200 ]
         BucketOrder order,
         boolean keyed,
         long minDocCount,
@@ -192,30 +188,61 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
             return LeafBucketCollector.NO_OP_COLLECTOR;
         }
 
-        boolean optimized = filterRewriteOptimizationContext.tryOptimize(ctx, this::incrementBucketDocCount, segmentMatchAll(context, ctx));
-        if (optimized) throw new CollectionTerminatedException();
+//        boolean optimized = filterRewriteOptimizationContext.tryOptimize(ctx, this::incrementBucketDocCount, segmentMatchAll(context, ctx));
+//        if (optimized) throw new CollectionTerminatedException();
+//
 
-        SortedNumericDocValues values = valuesSource.longValues(ctx);
         CompositeIndexFieldInfo supportedStarTree = getSupportedStarTree(this.context);
-        if (supportedStarTree != null) {
+        if (supportedStarTree != null && sub instanceof LeafBucketCollectorStarTreeBase) {
             StarTreeValues starTreeValues = getStarTreeValues(ctx, supportedStarTree);
             assert starTreeValues != null;
 
-            Map<Long, FixedBitSet> matchingDocsBitSet = StarTreeFilter.getPredicateValueToFixedBitSetMap(starTreeValues, "@timestamp_month");
+            FixedBitSet matchedDocIds = StarTreeFilter.getPredicateValueToFixedBitSetMap(starTreeValues, "ts_month");
 
-            assert (matchingDocsBitSet.size() == 3);
-//            return getStarTreeLeafCollector(ctx, sub, supportedStarTree);
+            SortedNumericStarTreeValuesIterator starValues = (SortedNumericStarTreeValuesIterator) starTreeValues.getDimensionValuesIterator("ts_month");
+            assert matchedDocIds != null;
 
-            // TODO: get doc_coun as well here other than sums (hard-coded right now)
-            Map<Long, Double> sumMap = getPredicateValueToSumMap(starTreeValues, matchingDocsBitSet, "startree1_status_sum_metric");
+            Map<Long, CompensatedSum> bucketSums = new HashMap<>();
+            int numBits = matchedDocIds.length();
+            LeafBucketCollectorStarTreeBase sub1 = new LeafBucketCollectorStarTreeBase(sub, starValues) {
+                @Override
+                public void collect(int doc, long owningBucketOrd) throws IOException {
+                    throw new CollectionTerminatedException();
+                }
+            };
+            if (numBits > 0) {
+                for (int bit = matchedDocIds.nextSetBit(0); bit != DocIdSetIterator.NO_MORE_DOCS;
+                     bit = (bit + 1 < numBits) ? matchedDocIds.nextSetBit(bit + 1) : DocIdSetIterator.NO_MORE_DOCS) {
 
-            assert (sumMap.size() == 3);
+                    if (starValues.advanceExact(bit)) {
+                        int valuesCount = starValues.entryValueCount();
 
-            // Here we have the sumMap which has all sums
-            // To extract this info to sub-collector / sub-aggregator buckets is the blocker rn.
+                        long previousRounded = Long.MIN_VALUE;
+                        for (int i = 0; i < valuesCount; ++i) {
+                            long value = starValues.nextValue();
+                            long rounded = preparedRounding.round(value);
+                            assert rounded >= previousRounded;
+                            if (rounded == previousRounded) {
+                                continue;
+                            }
+                            if (hardBounds == null || hardBounds.contain(rounded)) {
+                                long bucketOrd = bucketOrds.add(0, rounded);
+                                if (bucketOrd < 0) { // already seen
+                                    bucketOrd = -1 - bucketOrd;
+                                    collectExistingBucket((LeafBucketCollectorStarTreeBase)sub, bit, bucketOrd);
+                                } else {
+                                    collectBucket((LeafBucketCollectorStarTreeBase)sub, bit, bucketOrd);
+                                }
+                            }
+                            previousRounded = rounded;
+                        }
+                    }
+                }
+            }
 
+            throw new CollectionTerminatedException();
         }
-
+        SortedNumericDocValues values = valuesSource.longValues(ctx);
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {

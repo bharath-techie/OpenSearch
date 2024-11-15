@@ -329,6 +329,9 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
             searchContext.setSearchTimedOut(true);
             return;
         }
+
+        // TODO : make the change
+
         // catch early terminated exception and rethrow?
         Bits liveDocs = ctx.reader().getLiveDocs();
         BitSet liveDocsBitSet = getSparseBitSetOrNull(liveDocs);

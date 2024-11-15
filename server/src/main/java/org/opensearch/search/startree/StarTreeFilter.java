@@ -48,9 +48,9 @@ public class StarTreeFilter {
      *   First go over the star tree and try to match as many dimensions as possible
      *   For the remaining columns, use star-tree doc values to match them
      */
-    public static FixedBitSet getStarTreeResult(StarTreeValues starTreeValues, Map<String, Long> predicateEvaluators) throws IOException {
+    public static FixedBitSet getStarTreeResult(StarTreeValues starTreeValues, Map<String, Long> predicateEvaluators, Set<String> groupbyField) throws IOException {
         Map<String, Long> queryMap = predicateEvaluators != null ? predicateEvaluators : Collections.emptyMap();
-        StarTreeResult starTreeResult = traverseStarTree(starTreeValues, queryMap);
+        StarTreeResult starTreeResult = traverseStarTree(starTreeValues, queryMap, groupbyField);
 
         // Initialize FixedBitSet with size maxMatchedDoc + 1
         FixedBitSet bitSet = new FixedBitSet(starTreeResult.maxMatchedDoc + 1);
@@ -114,7 +114,7 @@ public class StarTreeFilter {
      * Helper method to traverse the star tree, get matching documents and keep track of all the
      * predicate dimensions that are not matched.
      */
-    private static StarTreeResult traverseStarTree(StarTreeValues starTreeValues, Map<String, Long> queryMap) throws IOException {
+    private static StarTreeResult traverseStarTree(StarTreeValues starTreeValues, Map<String, Long> queryMap, Set<String> groupbyField) throws IOException {
         DocIdSetBuilder docsWithField = new DocIdSetBuilder(starTreeValues.getStarTreeDocumentCount());
         DocIdSetBuilder.BulkAdder adder;
         Set<String> globalRemainingPredicateColumns = null;
@@ -130,6 +130,7 @@ public class StarTreeFilter {
         queue.add(starTree);
         int currentDimensionId = -1;
         Set<String> remainingPredicateColumns = new HashSet<>(queryMap.keySet());
+        Set<String> remainingGroupByColumns = new HashSet<>(groupbyField);
         int matchedDocsCountInStarTree = 0;
         int maxDocNum = -1;
         StarTreeNode starTreeNode;
@@ -140,13 +141,14 @@ public class StarTreeFilter {
             if (dimensionId > currentDimensionId) {
                 String dimension = dimensionNames.get(dimensionId);
                 remainingPredicateColumns.remove(dimension);
+                remainingGroupByColumns.remove(dimension);
                 if (foundLeafNode && globalRemainingPredicateColumns == null) {
                     globalRemainingPredicateColumns = new HashSet<>(remainingPredicateColumns);
                 }
                 currentDimensionId = dimensionId;
             }
 
-            if (remainingPredicateColumns.isEmpty()) {
+            if (remainingPredicateColumns.isEmpty() && remainingGroupByColumns.isEmpty()) {
                 int docId = starTreeNode.getAggregatedDocId();
                 docIds.add(docId);
                 matchedDocsCountInStarTree++;
@@ -165,11 +167,11 @@ public class StarTreeFilter {
 
             String childDimension = dimensionNames.get(dimensionId + 1);
             StarTreeNode starNode = null;
-            if (globalRemainingPredicateColumns == null || !globalRemainingPredicateColumns.contains(childDimension)) {
+            if ((globalRemainingPredicateColumns == null || !globalRemainingPredicateColumns.contains(childDimension)) && !remainingGroupByColumns.contains(childDimension)) {
                 starNode = starTreeNode.getChildStarNode();
             }
 
-            if (remainingPredicateColumns.contains(childDimension)) {
+            if (remainingPredicateColumns.contains(childDimension) ) {
                 long queryValue = queryMap.get(childDimension); // Get the query value directly from the map
                 StarTreeNode matchingChild = starTreeNode.getChildForDimensionValue(queryValue);
                 if (matchingChild != null) {
@@ -228,34 +230,13 @@ public class StarTreeFilter {
     }
 
 
-    public static Map<Long, FixedBitSet> getPredicateValueToFixedBitSetMap(
+    public static FixedBitSet getPredicateValueToFixedBitSetMap(
             StarTreeValues starTreeValues,
             String predicateField
     ) throws IOException {
-
-        Map<Long, FixedBitSet> predicateValueToBitSet = new HashMap<>();
-
-        // 1. Get all distinct values for the predicate field from the star-tree
-        SortedNumericStarTreeValuesIterator valuesIterator =
-                (SortedNumericStarTreeValuesIterator) starTreeValues.getDimensionValuesIterator(predicateField);
-
-        Set<Long> distinctValues = new HashSet<>();
-        while (valuesIterator.nextEntry() != NO_MORE_DOCS) {
-            for (int i = 0; i < valuesIterator.entryValueCount(); i++) {
-                distinctValues.add(valuesIterator.nextValue());
-            }
-        }
-
-        // 2. For each distinct value, create a predicate map and call getStarTreeResult
-        for (Long value : distinctValues) {
-            Map<String, Long> predicateEvaluators = new HashMap<>();
-            predicateEvaluators.put(predicateField, value);
-
-            FixedBitSet bitSet = getStarTreeResult(starTreeValues, predicateEvaluators);
-            predicateValueToBitSet.put(value, bitSet);
-        }
-
-        return predicateValueToBitSet;
+        Set<String> groupByField = new java.util.HashSet<>();
+        groupByField.add(predicateField);
+        FixedBitSet bitSet = getStarTreeResult(starTreeValues, new HashMap<>(), groupByField);
+        return bitSet;
     }
-
 }

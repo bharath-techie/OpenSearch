@@ -35,14 +35,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.util.BigArrays;
 import org.opensearch.common.util.LongArray;
-import org.opensearch.search.aggregations.AggregationExecutionException;
-import org.opensearch.search.aggregations.Aggregator;
-import org.opensearch.search.aggregations.AggregatorBase;
-import org.opensearch.search.aggregations.AggregatorFactories;
-import org.opensearch.search.aggregations.CardinalityUpperBound;
-import org.opensearch.search.aggregations.InternalAggregation;
-import org.opensearch.search.aggregations.InternalAggregations;
-import org.opensearch.search.aggregations.LeafBucketCollector;
+import org.opensearch.search.aggregations.*;
 import org.opensearch.search.aggregations.bucket.global.GlobalAggregator;
 import org.opensearch.search.aggregations.bucket.terms.LongKeyedBucketOrds;
 import org.opensearch.search.aggregations.support.AggregationPath;
@@ -111,6 +104,9 @@ public abstract class BucketsAggregator extends AggregatorBase {
      * Utility method to collect the given doc in the given bucket (identified by the bucket ordinal)
      */
     public final void collectBucket(LeafBucketCollector subCollector, int doc, long bucketOrd) throws IOException {
+        if(subCollector instanceof LeafBucketStarTreeCollector) {
+            collectBucket((LeafBucketStarTreeCollector) subCollector, doc, bucketOrd);
+        }
         grow(bucketOrd + 1);
         collectExistingBucket(subCollector, doc, bucketOrd);
     }
@@ -119,6 +115,31 @@ public abstract class BucketsAggregator extends AggregatorBase {
      * Same as {@link #collectBucket(LeafBucketCollector, int, long)}, but doesn't check if the docCounts needs to be re-sized.
      */
     public final void collectExistingBucket(LeafBucketCollector subCollector, int doc, long bucketOrd) throws IOException {
+        if(subCollector instanceof LeafBucketStarTreeCollector) {
+            collectExistingBucket((LeafBucketStarTreeCollector) subCollector, doc, bucketOrd);
+        }
+        long docCount = docCountProvider.getDocCount(doc);
+        if (docCounts.increment(bucketOrd, docCount) == docCount) {
+            // We calculate the final number of buckets only during the reduce phase. But we still need to
+            // trigger bucket consumer from time to time in order to give it a chance to check available memory and break
+            // the execution if we are running out. To achieve that we are passing 0 as a bucket count.
+            multiBucketConsumer.accept(0);
+        }
+        subCollector.collect(doc, bucketOrd);
+    }
+
+    /**
+     * Utility method to collect the given doc in the given bucket (identified by the bucket ordinal)
+     */
+    public final void collectBucket(LeafBucketStarTreeCollector subCollector, int doc, long bucketOrd) throws IOException {
+        grow(bucketOrd + 1);
+        collectExistingBucket(subCollector, doc, bucketOrd);
+    }
+
+    /**
+     * Same as {@link #collectBucket(LeafBucketCollector, int, long)}, but doesn't check if the docCounts needs to be re-sized.
+     */
+    public final void collectExistingBucket(LeafBucketStarTreeCollector subCollector, int doc, long bucketOrd) throws IOException {
         long docCount = docCountProvider.getDocCount(doc);
         if (docCounts.increment(bucketOrd, docCount) == docCount) {
             // We calculate the final number of buckets only during the reduce phase. But we still need to

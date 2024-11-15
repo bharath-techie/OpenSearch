@@ -109,6 +109,8 @@ public class StarTreesBuilder implements Closeable {
      * @param metaOut                      an IndexInput for star-tree metadata
      * @param dataOut                      an IndexInput for star-tree data
      * @param starTreeValuesSubsPerField   starTreeValuesSubs per field
+     *                                     S1 - starTreeValues
+     *                                     S2 - starTreeValues
      * @param starTreeDocValuesConsumer    a consumer to write star-tree doc values
      */
     public void buildDuringMerge(

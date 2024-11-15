@@ -26,9 +26,7 @@ import org.opensearch.index.mapper.CompositeDataCubeFieldType;
 import org.opensearch.index.query.MatchAllQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.TermQueryBuilder;
-import org.opensearch.search.aggregations.AggregatorFactory;
-import org.opensearch.search.aggregations.LeafBucketCollector;
-import org.opensearch.search.aggregations.LeafBucketCollectorBase;
+import org.opensearch.search.aggregations.*;
 import org.opensearch.search.aggregations.bucket.histogram.DateHistogramAggregatorFactory;
 import org.opensearch.search.aggregations.metrics.MetricAggregatorFactory;
 import org.opensearch.search.aggregations.support.ValuesSource;
@@ -39,6 +37,7 @@ import org.opensearch.search.startree.StarTreeQueryContext;
 
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -195,7 +194,7 @@ public class StarTreeQueryHelper {
      * Get the star-tree leaf collector
      * This collector computes the aggregation prematurely and invokes an early termination collector
      */
-    public static LeafBucketCollector getStarTreeLeafCollector(
+    public static LeafBucketStarTreeCollector getStarTreeLeafCollector(
         SearchContext context,
         ValuesSource.Numeric valuesSource,
         LeafReaderContext ctx,
@@ -241,10 +240,32 @@ public class StarTreeQueryHelper {
         finalConsumer.run();
 
         // Return a LeafBucketCollector that terminates collection
-        return new LeafBucketCollectorBase(sub, valuesSource.doubleValues(ctx)) {
+        return new LeafBucketCollectorStarTreeBase(sub, valuesSource.doubleValues(ctx)) {
             @Override
             public void collect(int doc, long bucket) {
                 throw new CollectionTerminatedException();
+            }
+            @Override
+            public void collectStarEntry(int doc, long bucket) {
+                sums = bigArrays.grow(sums, bucket + 1);
+                compensations = bigArrays.grow(compensations, bucket + 1);
+
+                if (values.advanceExact(doc)) {
+                    final int valuesCount = values.docValueCount();
+                    // Compute the sum of double values with Kahan summation algorithm which is more
+                    // accurate than naive summation.
+                    double sum = sums.get(bucket);
+                    double compensation = compensations.get(bucket);
+                    kahanSummation.reset(sum, compensation);
+
+                    for (int i = 0; i < valuesCount; i++) {
+                        double value = values.nextValue();
+                        kahanSummation.add(value);
+                    }
+
+                    compensations.set(bucket, kahanSummation.delta());
+                    sums.set(bucket, kahanSummation.value());
+                }
             }
         };
     }
@@ -258,7 +279,7 @@ public class StarTreeQueryHelper {
         throws IOException {
         FixedBitSet result = context.getStarTreeQueryContext().getStarTreeValues(ctx);
         if (result == null) {
-            result = StarTreeFilter.getStarTreeResult(starTreeValues, context.getStarTreeQueryContext().getQueryMap());
+            result = StarTreeFilter.getStarTreeResult(starTreeValues, context.getStarTreeQueryContext().getQueryMap(), new HashSet<>());
             context.getStarTreeQueryContext().setStarTreeValues(ctx, result);
         }
         return result;
