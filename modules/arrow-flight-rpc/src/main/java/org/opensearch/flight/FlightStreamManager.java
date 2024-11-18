@@ -23,6 +23,7 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.tasks.TaskId;
 
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * FlightStreamManager is a concrete implementation of StreamManager that provides
@@ -33,7 +34,7 @@ import java.util.UUID;
 public class FlightStreamManager implements StreamManager {
 
     private final FlightService flightService;
-    private final BufferAllocator allocator;
+    private final Supplier<BufferAllocator> allocatorSupplier;
     private final Cache<String, StreamProducerHolder> streamProducers;
     private static final TimeValue expireAfter = TimeValue.timeValueMinutes(2);
     private static final long MAX_PRODUCERS = 10000;
@@ -42,8 +43,8 @@ public class FlightStreamManager implements StreamManager {
      * Constructs a new FlightStreamManager.
      * @param flightService The FlightService instance to use for Flight client operations.
      */
-    public FlightStreamManager(BufferAllocator allocator, FlightService flightService) {
-        this.allocator = allocator;
+    public FlightStreamManager(Supplier<BufferAllocator> allocatorSupplier, FlightService flightService) {
+        this.allocatorSupplier = allocatorSupplier;
         this.flightService = flightService;
         this.streamProducers = CacheBuilder.<String, StreamProducerHolder>builder()
             .setExpireAfterWrite(expireAfter)
@@ -54,7 +55,7 @@ public class FlightStreamManager implements StreamManager {
     @Override
     public StreamTicket registerStream(StreamProducer provider, TaskId parentTaskId) {
         String ticket = generateUniqueTicket();
-        streamProducers.put(ticket, new StreamProducerHolder(provider, allocator));
+        streamProducers.put(ticket, new StreamProducerHolder(provider, allocatorSupplier.get()));
         return new StreamTicket(ticket, getLocalNodeId());
     }
 

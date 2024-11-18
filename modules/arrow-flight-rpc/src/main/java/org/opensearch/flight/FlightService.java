@@ -174,7 +174,7 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         this.threadPool = threadPool;
         this.clusterService.trySet(clusterService);
         clusterService.addListener(this);
-        streamManager = new FlightStreamManager(allocator, this);
+        streamManager = new FlightStreamManager(() -> allocator, this);
     }
 
     public void setSecureTransportSettingsProvider(SecureTransportSettingsProvider secureTransportSettingsProvider) {
