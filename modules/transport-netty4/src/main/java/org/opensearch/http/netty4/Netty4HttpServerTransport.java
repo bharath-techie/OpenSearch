@@ -348,10 +348,29 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
         return new HttpChannelHandler(this, handlingSettings);
     }
 
-    public static final AttributeKey<Netty4HttpChannel> HTTP_CHANNEL_KEY = AttributeKey.newInstance("opensearch-http-channel");
-    protected static final AttributeKey<Netty4HttpServerChannel> HTTP_SERVER_CHANNEL_KEY = AttributeKey.newInstance(
-        "opensearch-http-server-channel"
-    );
+    public static final AttributeKey<Netty4HttpChannel> HTTP_CHANNEL_KEY;
+    static {
+        AttributeKey<Netty4HttpChannel> key;
+        try {
+            key = AttributeKey.newInstance("opensearch-http-channel");
+        } catch (IllegalArgumentException e) {
+            // Key already exists, get existing one
+            key = AttributeKey.valueOf("opensearch-http-channel");
+        }
+        HTTP_CHANNEL_KEY = key;
+    }
+
+    protected static final AttributeKey<Netty4HttpServerChannel> HTTP_SERVER_CHANNEL_KEY;
+    static {
+        AttributeKey<Netty4HttpServerChannel> key;
+        try {
+            key = AttributeKey.newInstance("opensearch-http-server-channel");
+        } catch (IllegalArgumentException e) {
+            // Key already exists, get existing one
+            key = AttributeKey.valueOf("opensearch-http-server-channel");
+        }
+        HTTP_SERVER_CHANNEL_KEY = key;
+    }
 
     protected static class HttpChannelHandler extends ChannelInitializer<Channel> {
 

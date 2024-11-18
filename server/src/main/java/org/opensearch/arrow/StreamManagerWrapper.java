@@ -19,13 +19,14 @@ import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskAwareRequest;
 import org.opensearch.tasks.TaskManager;
 
-public class StreamManagerWrapper extends StreamManager {
+
+public class StreamManagerWrapper implements StreamManager {
 
     private final StreamManager streamManager;
     private final TaskManager taskManager;
 
     public StreamManagerWrapper(StreamManager streamManager, TaskManager taskManager) {
-        super(streamManager.allocatorSupplier());
+        super();
         this.streamManager = streamManager;
         this.taskManager = taskManager;
     }
@@ -51,6 +52,11 @@ public class StreamManagerWrapper extends StreamManager {
     @Override
     public String getLocalNodeId() {
         return streamManager.getLocalNodeId();
+    }
+
+    @Override
+    public void close() throws Exception {
+        streamManager.close();
     }
 
     static class StreamProducerTaskWrapper implements StreamProducer {

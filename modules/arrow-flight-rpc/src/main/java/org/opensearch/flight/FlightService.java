@@ -8,13 +8,22 @@
 
 package org.opensearch.flight;
 
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolNames;
+import io.netty.handler.ssl.ClientAuth;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import org.apache.arrow.flight.FlightClient;
 import org.apache.arrow.flight.Location;
+import org.apache.arrow.flight.OpenSearchFlightClient;
+import org.apache.arrow.flight.OpenSearchFlightServer;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.OpenSearchException;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
@@ -32,6 +41,9 @@ import org.opensearch.threadpool.ScalingExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 
 import java.io.IOException;
+import java.security.AccessController;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -47,9 +59,8 @@ import java.util.concurrent.ExecutorService;
 public class FlightService extends AbstractLifecycleComponent implements ClusterStateListener {
 
     private static OpenSearchFlightServer server;
-    private static FlightClient client;
     private static BufferAllocator allocator;
-    private static StreamManager streamManager;
+    private static FlightStreamManager streamManager;
     private static final Logger logger = LogManager.getLogger(FlightService.class);
     private static final String host = "localhost";
     private static int port;
@@ -122,7 +133,7 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
 
     public static final Setting<Boolean> ARROW_SSL_ENABLE = Setting.boolSetting(
         "arrow.ssl.enable",
-        false,
+        false, // TODO: get default from security enabled
         Property.NodeScope
     );
 
@@ -162,15 +173,11 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         this.threadPool = threadPool;
         this.clusterService.trySet(clusterService);
         clusterService.addListener(this);
-        streamManager = new FlightStreamManager(this::getAllocator, this);
+        streamManager = new FlightStreamManager(allocator, this);
     }
 
     public void setSecureTransportSettingsProvider(SecureTransportSettingsProvider secureTransportSettingsProvider) {
         this.secureTransportSettingsProvider = secureTransportSettingsProvider;
-    }
-
-    private BufferAllocator getAllocator() {
-        return allocator;
     }
 
     public ScalingExecutorBuilder getExecutorBuilder() {
@@ -186,15 +193,16 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
             ExecutorService executorService = threadPool.executor(FLIGHT_THREAD_POOL_NAME);
             OpenSearchFlightServer.Builder builder = OpenSearchFlightServer.builder(allocator, location, producer);
             builder.executor(executorService);
+            OpenSearchFlightClient.Builder clientBuilder = OpenSearchFlightClient.builder(allocator, location);
 
             if (enableSsl) {
-                SslContext sslContext = (SslContext) secureTransportSettingsProvider.buildSecureServerTransportSslContext(null, null).orElseThrow(
-                    () -> new RuntimeException("Failed to build SSL context for FlightServer")
-                );
+                SslContext sslContext = buildServerSslContext(secureTransportSettingsProvider);
                 builder.useTls(sslContext);
+                SslContext clientSslContext = buildClientSslContext(secureTransportSettingsProvider);
+                clientBuilder.useTls();
+                clientBuilder.sslContext(clientSslContext);
             }
             server = builder.build();
-            client = FlightClient.builder(allocator, location).build();
             server.start();
             logger.info("Arrow Flight server started successfully:{}", location.getUri().toString());
         } catch (IOException e) {
@@ -208,7 +216,6 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         try {
             server.shutdown();
             streamManager.close();
-            client.close();
             for (FlightClientHolder clientHolder : flightClients.values()) {
                 clientHolder.flightClient.close();
             }
@@ -252,8 +259,14 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         //TODO: handle cases where flight server isn't running like mixed cluster with nodes of previous version
         // ideally streaming shouldn't be supported on mixed cluster.
         String clientPort = node.getAttributes().get("transport.stream.port");
-        Location location = Location.forGrpcInsecure(node.getHostAddress(), Integer.parseInt(clientPort));
-        return new FlightClientHolder(FlightClient.builder(allocator, location).build(), location);
+        Location location = getLocation(node.getHostAddress(), Integer.parseInt(clientPort));
+        OpenSearchFlightClient.Builder clientBuilder = OpenSearchFlightClient.builder(allocator, location);
+        if (enableSsl) {
+            SslContext clientSslContext = buildClientSslContext(secureTransportSettingsProvider);
+            clientBuilder.useTls();
+            clientBuilder.sslContext(clientSslContext);
+        }
+        return new FlightClientHolder(clientBuilder.build(), location);
     }
 
     private void initializeFlightClients() {
@@ -289,6 +302,73 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         FlightClientHolder(FlightClient flightClient, Location location) {
             this.flightClient = flightClient;
             this.location = location;
+        }
+    }
+
+    SslContext buildServerSslContext(SecureTransportSettingsProvider secureTransportSettingsProvider) {
+        try {
+            SecureTransportSettingsProvider.SecureTransportParameters parameters = secureTransportSettingsProvider.parameters(null).get();
+            return AccessController.doPrivileged(
+                (PrivilegedExceptionAction<SslContext>) () -> SslContextBuilder.forServer(
+                        parameters.keyManagerFactory()
+                    )
+                    .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase()))
+                    .clientAuth(ClientAuth.valueOf(parameters.clientAuth().toUpperCase()))
+                    .protocols(parameters.protocols())
+                    // TODO we always add all HTTP 2 ciphers, while maybe it is better to set them differently
+                    .ciphers(
+                        parameters.cipherSuites(),
+                        SupportedCipherSuiteFilter.INSTANCE
+                    )
+                    .sessionCacheSize(0)
+                    .sessionTimeout(0)
+                    .applicationProtocolConfig(
+                        new ApplicationProtocolConfig(
+                            ApplicationProtocolConfig.Protocol.ALPN,
+                            // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
+                            ApplicationProtocolConfig.SelectorFailureBehavior.NO_ADVERTISE,
+                            // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
+                            ApplicationProtocolConfig.SelectedListenerFailureBehavior.ACCEPT,
+                            ApplicationProtocolNames.HTTP_2,
+                            ApplicationProtocolNames.HTTP_1_1
+                        )
+                    )
+                    .trustManager(parameters.trustManagerFactory())
+                    .build()
+            );
+        } catch (PrivilegedActionException e) {
+            throw new OpenSearchException("Filed to build server SSL context", e);
+        }
+    }
+
+    SslContext buildClientSslContext(SecureTransportSettingsProvider secureTransportSettingsProvider) {
+        try {
+            SecureTransportSettingsProvider.SecureTransportParameters parameters = secureTransportSettingsProvider.parameters(null).get();
+            return AccessController.doPrivileged(
+                (PrivilegedExceptionAction<SslContext>) () -> SslContextBuilder.forClient()
+                    .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase()))
+                    .protocols(parameters.protocols())
+                    .ciphers(parameters.cipherSuites(),
+                        SupportedCipherSuiteFilter.INSTANCE)
+                    .applicationProtocolConfig(
+                        new ApplicationProtocolConfig(
+                            ApplicationProtocolConfig.Protocol.ALPN,
+                            // NO_ADVERTISE is currently the only mode supported by both OpenSsl and JDK providers.
+                            ApplicationProtocolConfig.SelectorFailureBehavior.NO_ADVERTISE,
+                            // ACCEPT is currently the only mode supported by both OpenSsl and JDK providers.
+                            ApplicationProtocolConfig.SelectedListenerFailureBehavior.ACCEPT,
+                            ApplicationProtocolNames.HTTP_2,
+                            ApplicationProtocolNames.HTTP_1_1
+                        )
+                    )
+                    .sessionCacheSize(0)
+                    .sessionTimeout(0)
+                    .keyManager(parameters.keyManagerFactory())
+                    .trustManager(parameters.trustManagerFactory())
+                    .build()
+            );
+        } catch (PrivilegedActionException e) {
+            throw new OpenSearchException("Filed to build client SSL context", e);
         }
     }
 }

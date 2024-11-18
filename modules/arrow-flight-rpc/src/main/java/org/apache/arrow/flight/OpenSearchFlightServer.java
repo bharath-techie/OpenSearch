@@ -6,7 +6,7 @@
  * compatible open source license.
  */
 
-package org.opensearch.flight;
+package org.apache.arrow.flight;
 
 import io.grpc.Server;
 import io.grpc.ServerInterceptors;
@@ -15,13 +15,6 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
 import io.netty.handler.ssl.ClientAuth;
 import io.netty.handler.ssl.SslContextBuilder;
-import org.apache.arrow.flight.FlightConstants;
-import org.apache.arrow.flight.FlightGrpcUtils;
-import org.apache.arrow.flight.FlightProducer;
-import org.apache.arrow.flight.FlightServerMiddleware;
-import org.apache.arrow.flight.Location;
-import org.apache.arrow.flight.LocationSchemes;
-import org.apache.arrow.flight.ServerHeaderMiddleware;
 import org.apache.arrow.flight.auth.ServerAuthHandler;
 import org.apache.arrow.flight.auth.ServerAuthInterceptor;
 import org.apache.arrow.flight.auth2.Auth2Constants;
@@ -287,7 +280,7 @@ public class OpenSearchFlightServer implements AutoCloseable {
                     break;
                 }
                 case LocationSchemes.GRPC_TLS: {
-                    if (certChain == null) {
+                    if (certChain == null && sslContext == null) {
                         throw new IllegalArgumentException(
                             "Must provide a certificate and key to serve gRPC over TLS");
                     }
@@ -299,7 +292,7 @@ public class OpenSearchFlightServer implements AutoCloseable {
                         "Scheme is not supported: " + location.getUri().getScheme());
             }
 
-            if (sslContext == null && certChain != null) {
+            if (certChain != null) {
                 SslContextBuilder sslContextBuilder = GrpcSslContexts.forServer(certChain, key);
                 if (mTlsCACert != null) {
                     sslContextBuilder.clientAuth(ClientAuth.REQUIRE).trustManager(mTlsCACert);
@@ -313,6 +306,8 @@ public class OpenSearchFlightServer implements AutoCloseable {
                     closeCertChain();
                     closeKey();
                 }
+                builder.sslContext(sslContext);
+            } else if (sslContext != null) {
                 builder.sslContext(sslContext);
             }
 

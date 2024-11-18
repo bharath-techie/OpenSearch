@@ -16,7 +16,6 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.ipc.message.IpcOption;
 import org.opensearch.arrow.StreamProducer;
-import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamTicket;
 import org.opensearch.test.OpenSearchTestCase;
 
@@ -33,7 +32,7 @@ import static org.mockito.Mockito.when;
 public class BaseFlightProducerTests extends OpenSearchTestCase {
 
     private BaseFlightProducer baseFlightProducer;
-    private StreamManager streamManager;
+    private FlightStreamManager streamManager;
     private StreamProducer streamProducer;
     private StreamProducer.BatchedJob batchedJob;
     private static final String LOCAL_NODE_ID = "localNodeId";
@@ -44,7 +43,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        streamManager = mock(StreamManager.class);
+        streamManager = mock(FlightStreamManager.class);
         when(streamManager.getLocalNodeId()).thenReturn(LOCAL_NODE_ID);
         when(flightService.getLocalNodeId()).thenReturn(LOCAL_NODE_ID);
         allocator = mock(BufferAllocator.class);
@@ -153,7 +152,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
 
     public void testGetStream_SuccessfulFlow() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new StreamManager.StreamProducerHolder(streamProducer, root));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -188,7 +187,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithSlowClient() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new StreamManager.StreamProducerHolder(streamProducer, root));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -230,7 +229,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithSlowClientTimeout() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new StreamManager.StreamProducerHolder(streamProducer, root));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -272,7 +271,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithClientCancel() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new StreamManager.StreamProducerHolder(streamProducer, root));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -313,7 +312,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithUnresponsiveClient() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new StreamManager.StreamProducerHolder(streamProducer, root));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -350,7 +349,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithServerBackpressure() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new StreamManager.StreamProducerHolder(streamProducer, root));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -387,7 +386,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithServerError() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new StreamManager.StreamProducerHolder(streamProducer, root));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 

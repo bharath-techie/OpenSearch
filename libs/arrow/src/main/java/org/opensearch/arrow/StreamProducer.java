@@ -33,10 +33,18 @@ public interface StreamProducer {
      */
     BatchedJob createJob(BufferAllocator allocator);
 
+    /**
+     * Returns the estimated row count of the stream.
+     * This method is used to optimize the consumption of the stream.
+     */
     default int estimatedRowCount() {
         return -1;
     }
 
+    /**
+     * Task action name
+     * @return action name
+     */
     default String getAction() {
         return "";
     }

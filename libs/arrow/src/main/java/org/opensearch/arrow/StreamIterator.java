@@ -34,4 +34,3 @@ public interface StreamIterator extends Closeable {
      */
     VectorSchemaRoot getRoot();
 }
-

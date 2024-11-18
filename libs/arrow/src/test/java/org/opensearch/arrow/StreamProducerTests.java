@@ -29,7 +29,7 @@ public class StreamProducerTests extends OpenSearchTestCase {
         mockAllocator = mock(BufferAllocator.class);
         mockRoot = mock(VectorSchemaRoot.class);
         mockFlushSignal = mock(StreamProducer.FlushSignal.class);
-        mockBatchedJob =  new StreamProducer.BatchedJob() {
+        mockBatchedJob = new StreamProducer.BatchedJob() {
             @Override
             public void run(VectorSchemaRoot root, StreamProducer.FlushSignal flushSignal) {
                 flushSignal.awaitConsumption(1000);
@@ -70,7 +70,6 @@ public class StreamProducerTests extends OpenSearchTestCase {
     public void testGetAction() {
         assertEquals("", streamProducer.getAction());
     }
-
 
     public void testFlushSignalAwaitConsumption() {
         StreamProducer.FlushSignal mockFlushSignal = mock(StreamProducer.FlushSignal.class);

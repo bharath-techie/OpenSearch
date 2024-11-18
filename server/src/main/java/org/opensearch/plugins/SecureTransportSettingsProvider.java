@@ -13,9 +13,12 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.transport.Transport;
 import org.opensearch.transport.TransportAdapterProvider;
 
+import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
+import javax.net.ssl.TrustManagerFactory;
 
+import java.io.InputStream;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Optional;
@@ -51,6 +54,12 @@ public interface SecureTransportSettingsProvider {
     @ExperimentalApi
     interface SecureTransportParameters {
         boolean dualModeEnabled();
+        KeyManagerFactory keyManagerFactory();
+        String sslProvider();
+        String clientAuth();
+        Iterable<String> protocols();
+        Iterable<String> cipherSuites();
+        TrustManagerFactory trustManagerFactory();
     }
 
     /**
@@ -69,6 +78,7 @@ public interface SecureTransportSettingsProvider {
      * @throws SSLException throws SSLException if the {@link SSLEngine} instance cannot be built
      */
     Optional<SSLEngine> buildSecureServerTransportEngine(Settings settings, Transport transport) throws SSLException;
+
 
     Optional<Object> buildSecureServerTransportSslContext(Settings settings, Transport transport) throws SSLException;
 

@@ -50,6 +50,8 @@ import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.common.unit.ByteSizeUnit;
 import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.core.indices.breaker.CircuitBreakerService;
+import org.opensearch.http.netty4.Netty4HttpChannel;
+import org.opensearch.http.netty4.Netty4HttpServerChannel;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.Netty4NioSocketChannel;
@@ -305,9 +307,30 @@ public class Netty4Transport extends TcpTransport {
     protected ChannelHandler getClientChannelInitializer(DiscoveryNode node) {
         return new ClientChannelInitializer();
     }
+    public static final AttributeKey<Netty4TcpChannel> CHANNEL_KEY;
+    static {
+        AttributeKey<Netty4TcpChannel> key;
+        try {
+            key = AttributeKey.newInstance("es-channel");
+        } catch (IllegalArgumentException e) {
+            // Key already exists, get existing one
+            key = AttributeKey.valueOf("es-channel");
+        }
+        CHANNEL_KEY = key;
+    }
 
-    static final AttributeKey<Netty4TcpChannel> CHANNEL_KEY = AttributeKey.newInstance("es-channel");
-    static final AttributeKey<Netty4TcpServerChannel> SERVER_CHANNEL_KEY = AttributeKey.newInstance("es-server-channel");
+    protected static final AttributeKey<Netty4TcpServerChannel> SERVER_CHANNEL_KEY;
+
+    static {
+        AttributeKey<Netty4TcpServerChannel> key;
+        try {
+            key = AttributeKey.newInstance("es-server-channel");
+        } catch (IllegalArgumentException e) {
+            // Key already exists, get existing one
+            key = AttributeKey.valueOf("es-server-channel");
+        }
+        SERVER_CHANNEL_KEY = key;
+    }
 
     @Override
     protected Netty4TcpChannel initiateChannel(DiscoveryNode node) throws IOException {

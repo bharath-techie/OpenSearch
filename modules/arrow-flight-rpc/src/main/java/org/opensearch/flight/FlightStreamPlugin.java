@@ -13,10 +13,8 @@ import org.opensearch.client.Client;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.network.NetworkService;
-import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.util.BigArrays;
 import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.common.util.PageCacheRecycler;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
@@ -24,10 +22,8 @@ import org.opensearch.core.indices.breaker.CircuitBreakerService;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
-import org.opensearch.http.HttpServerTransport;
 import org.opensearch.plugins.NetworkPlugin;
 import org.opensearch.plugins.Plugin;
-import org.opensearch.plugins.SecureHttpTransportSettingsProvider;
 import org.opensearch.plugins.SecureTransportSettingsProvider;
 import org.opensearch.plugins.StreamManagerPlugin;
 import org.opensearch.repositories.RepositoriesService;
@@ -49,6 +45,7 @@ import static org.opensearch.common.util.FeatureFlags.ARROW_STREAMS_SETTING;
 import static org.opensearch.flight.FlightService.ARROW_ALLOCATION_MANAGER_TYPE;
 import static org.opensearch.flight.FlightService.ARROW_ENABLE_NULL_CHECK_FOR_GET;
 import static org.opensearch.flight.FlightService.ARROW_ENABLE_UNSAFE_MEMORY_ACCESS;
+import static org.opensearch.flight.FlightService.ARROW_SSL_ENABLE;
 import static org.opensearch.flight.FlightService.NETTY_ALLOCATOR_NUM_DIRECT_ARENAS;
 import static org.opensearch.flight.FlightService.NETTY_NO_UNSAFE;
 import static org.opensearch.flight.FlightService.NETTY_TRY_REFLECTION_SET_ACCESSIBLE;
@@ -80,7 +77,6 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin, N
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
-
         flightService.initialize(clusterService, threadPool);
         return List.of(flightService);
     }
@@ -119,7 +115,8 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin, N
             ARROW_ENABLE_UNSAFE_MEMORY_ACCESS,
             NETTY_ALLOCATOR_NUM_DIRECT_ARENAS,
             NETTY_NO_UNSAFE,
-            NETTY_TRY_UNSAFE
+            NETTY_TRY_UNSAFE,
+            ARROW_SSL_ENABLE
         );
     }
 }
