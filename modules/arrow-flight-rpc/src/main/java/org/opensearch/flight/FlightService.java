@@ -8,13 +8,6 @@
 
 package org.opensearch.flight;
 
-import io.netty.handler.ssl.ApplicationProtocolConfig;
-import io.netty.handler.ssl.ApplicationProtocolNames;
-import io.netty.handler.ssl.ClientAuth;
-import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.SslContextBuilder;
-import io.netty.handler.ssl.SslProvider;
-import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import org.apache.arrow.flight.FlightClient;
 import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.OpenSearchFlightClient;
@@ -49,6 +42,14 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolNames;
+import io.netty.handler.ssl.ClientAuth;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 
 /**
  * FlightService manages the Arrow Flight server and client for OpenSearch.
@@ -256,7 +257,7 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         if (node == null) {
             throw new IllegalArgumentException("Node with id " + nodeId + " not found in cluster");
         }
-        //TODO: handle cases where flight server isn't running like mixed cluster with nodes of previous version
+        // TODO: handle cases where flight server isn't running like mixed cluster with nodes of previous version
         // ideally streaming shouldn't be supported on mixed cluster.
         String clientPort = node.getAttributes().get("transport.stream.port");
         Location location = getLocation(node.getHostAddress(), Integer.parseInt(clientPort));
@@ -309,17 +310,12 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
         try {
             SecureTransportSettingsProvider.SecureTransportParameters parameters = secureTransportSettingsProvider.parameters(null).get();
             return AccessController.doPrivileged(
-                (PrivilegedExceptionAction<SslContext>) () -> SslContextBuilder.forServer(
-                        parameters.keyManagerFactory()
-                    )
+                (PrivilegedExceptionAction<SslContext>) () -> SslContextBuilder.forServer(parameters.keyManagerFactory())
                     .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase()))
                     .clientAuth(ClientAuth.valueOf(parameters.clientAuth().toUpperCase()))
                     .protocols(parameters.protocols())
                     // TODO we always add all HTTP 2 ciphers, while maybe it is better to set them differently
-                    .ciphers(
-                        parameters.cipherSuites(),
-                        SupportedCipherSuiteFilter.INSTANCE
-                    )
+                    .ciphers(parameters.cipherSuites(), SupportedCipherSuiteFilter.INSTANCE)
                     .sessionCacheSize(0)
                     .sessionTimeout(0)
                     .applicationProtocolConfig(
@@ -348,8 +344,7 @@ public class FlightService extends AbstractLifecycleComponent implements Cluster
                 (PrivilegedExceptionAction<SslContext>) () -> SslContextBuilder.forClient()
                     .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase()))
                     .protocols(parameters.protocols())
-                    .ciphers(parameters.cipherSuites(),
-                        SupportedCipherSuiteFilter.INSTANCE)
+                    .ciphers(parameters.cipherSuites(), SupportedCipherSuiteFilter.INSTANCE)
                     .applicationProtocolConfig(
                         new ApplicationProtocolConfig(
                             ApplicationProtocolConfig.Protocol.ALPN,

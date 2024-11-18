@@ -9,8 +9,8 @@
 package org.opensearch.flight;
 
 import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.Collection;
 
@@ -29,19 +29,41 @@ public class FlightStreamPluginTests extends OpenSearchTestCase {
     }
 
     public void testCreateComponents() {
-        Collection<Object> components = flightStreamPlugin.createComponents(null, mock(ClusterService.class), null,null, null,null, null, null, null, null, null);
+        Collection<Object> components = flightStreamPlugin.createComponents(
+            null,
+            mock(ClusterService.class),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+        );
         assertNotNull(components);
         assertTrue(components.stream().anyMatch(component -> component instanceof FlightService));
     }
 
-    public void testGetStreamManager() {
-    }
+    public void testGetStreamManager() {}
 
-    public void testGetSettings() {
-    }
+    public void testGetSettings() {}
 
     public void testCreateComponentsWithNullArguments() {
-        Collection<Object> components = flightStreamPlugin.createComponents(null, mock(ClusterService.class), null,null, null,null, null, null, null, null, null);
+        Collection<Object> components = flightStreamPlugin.createComponents(
+            null,
+            mock(ClusterService.class),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+        );
         assertNotNull(components);
         assertFalse(components.isEmpty());
     }

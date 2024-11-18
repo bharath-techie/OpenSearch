@@ -9,7 +9,6 @@
 package org.opensearch.search.query;
 
 import org.opensearch.core.common.io.stream.StreamOutput;
-import org.opensearch.core.transport.TransportResponse;
 import org.opensearch.search.SearchPhaseResult;
 
 import java.io.IOException;

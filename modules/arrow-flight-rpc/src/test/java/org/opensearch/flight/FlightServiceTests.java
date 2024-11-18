@@ -8,8 +8,8 @@
 
 package org.opensearch.flight;
 
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.test.OpenSearchTestCase;
 
 public class FlightServiceTests extends OpenSearchTestCase {
 

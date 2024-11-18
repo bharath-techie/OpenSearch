@@ -14,7 +14,11 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.arrow.StreamProducer;
 import org.opensearch.test.OpenSearchTestCase;
 
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class ProxyStreamProducerTests extends OpenSearchTestCase {
 

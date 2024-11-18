@@ -146,7 +146,7 @@ final class DefaultSearchContext extends SearchContext {
     private final IndexShard indexShard;
     private final ClusterService clusterService;
     private final IndexService indexService;
-    private final StreamManager  streamManager;
+    private final StreamManager streamManager;
     private final ContextIndexSearcher searcher;
     private final DfsSearchResult dfsResult;
     private final QuerySearchResult queryResult;

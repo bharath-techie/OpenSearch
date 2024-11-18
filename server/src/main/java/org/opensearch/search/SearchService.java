@@ -588,7 +588,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     @Override
-    protected void doStart() { }
+    protected void doStart() {}
 
     @Override
     protected void doStop() {
@@ -872,7 +872,6 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             }
         }, wrapFailureListener(listener, readerContext, markAsUsed));
     }
-
 
     public void executeStreamPhase(QuerySearchRequest request, SearchShardTask task, ActionListener<StreamSearchResult> listener) {
         final ReaderContext readerContext = findReaderContext(request.contextId(), request.shardSearchRequest());
@@ -1778,7 +1777,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     private CanMatchResponse canMatch(ShardSearchRequest request, boolean checkRefreshPending) throws IOException {
-        assert (request.searchType() == SearchType.QUERY_THEN_FETCH || request.searchType() == SearchType.STREAM): "unexpected search type: " + request.searchType();
+        assert (request.searchType() == SearchType.QUERY_THEN_FETCH || request.searchType() == SearchType.STREAM)
+            : "unexpected search type: " + request.searchType();
         final ReaderContext readerContext = request.readerId() != null ? findReaderContext(request.readerId(), request) : null;
         final Releasable markAsUsed = readerContext != null ? readerContext.markAsUsed(getKeepAlive(request)) : () -> {};
         try (Releasable ignored = markAsUsed) {

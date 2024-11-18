@@ -87,8 +87,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         }
 
         @Override
-        public void start(VectorSchemaRoot root, DictionaryProvider dictionaries, IpcOption option) {
-        }
+        public void start(VectorSchemaRoot root, DictionaryProvider dictionaries, IpcOption option) {}
 
         @Override
         public void putNext(ArrowBuf metadata) {
@@ -152,7 +151,9 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
 
     public void testGetStream_SuccessfulFlow() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+            new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
+        );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -187,7 +188,9 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithSlowClient() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+            new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
+        );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -229,7 +232,9 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithSlowClientTimeout() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+            new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
+        );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -271,7 +276,9 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithClientCancel() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+            new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
+        );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -312,7 +319,9 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithUnresponsiveClient() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+            new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
+        );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -349,7 +358,9 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithServerBackpressure() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+            new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
+        );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 
@@ -386,7 +397,9 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void testGetStream_WithServerError() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(new FlightStreamManager.StreamProducerHolder(streamProducer, allocator));
+        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+            new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
+        );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
         when(streamProducer.createRoot(any(BufferAllocator.class))).thenReturn(root);
 

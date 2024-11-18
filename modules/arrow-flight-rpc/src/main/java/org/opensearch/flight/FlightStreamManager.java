@@ -37,6 +37,7 @@ public class FlightStreamManager implements StreamManager {
     private final Cache<String, StreamProducerHolder> streamProducers;
     private static final TimeValue expireAfter = TimeValue.timeValueMinutes(2);
     private static final long MAX_PRODUCERS = 10000;
+
     /**
      * Constructs a new FlightStreamManager.
      * @param flightService The FlightService instance to use for Flight client operations.
@@ -44,7 +45,7 @@ public class FlightStreamManager implements StreamManager {
     public FlightStreamManager(BufferAllocator allocator, FlightService flightService) {
         this.allocator = allocator;
         this.flightService = flightService;
-        this.streamProducers = CacheBuilder.<String, StreamProducerHolder> builder()
+        this.streamProducers = CacheBuilder.<String, StreamProducerHolder>builder()
             .setExpireAfterWrite(expireAfter)
             .setMaximumWeight(MAX_PRODUCERS)
             .build();

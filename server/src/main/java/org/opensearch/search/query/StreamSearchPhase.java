@@ -16,8 +16,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.Query;
-import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamTicket;
 import org.opensearch.arrow.query.ArrowDocIdCollector;
 import org.opensearch.search.SearchContextSourcePrinter;
@@ -33,7 +33,6 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.function.Supplier;
 
 public class StreamSearchPhase extends QueryPhase {
 
@@ -59,7 +58,6 @@ public class StreamSearchPhase extends QueryPhase {
             searchContext.queryResult().profileResults(shardResults);
         }
     }
-
 
     public static class DefaultStreamSearchPhaseSearcher extends DefaultQueryPhaseSearcher {
 
@@ -127,7 +125,8 @@ public class StreamSearchPhase extends QueryPhase {
                                 try {
                                     searcher.search(query, arrowDocIdCollector);
                                 } catch (EarlyTerminatingCollector.EarlyTerminationException e) {
-                                    // EarlyTerminationException is not caught in ContextIndexSearcher to allow force termination of collection. Postcollection
+                                    // EarlyTerminationException is not caught in ContextIndexSearcher to allow force termination of
+                                    // collection. Postcollection
                                     // still needs to be processed for Aggregations when early termination takes place.
                                     searchContext.bucketCollectorProcessor().processPostCollection(arrowDocIdCollector);
                                     queryResult.terminatedEarly(true);
@@ -139,7 +138,8 @@ public class StreamSearchPhase extends QueryPhase {
                                     }
                                     queryResult.searchTimedOut(true);
                                 }
-                                if (searchContext.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER && queryResult.terminatedEarly() == null) {
+                                if (searchContext.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER
+                                    && queryResult.terminatedEarly() == null) {
                                     queryResult.terminatedEarly(false);
                                 }
 
@@ -161,9 +161,7 @@ public class StreamSearchPhase extends QueryPhase {
                 @Override
                 public VectorSchemaRoot createRoot(BufferAllocator allocator) {
                     IntVector docIDVector = new IntVector("docID", allocator);
-                    FieldVector[] vectors = new FieldVector[]{
-                        docIDVector
-                    };
+                    FieldVector[] vectors = new FieldVector[] { docIDVector };
                     return new VectorSchemaRoot(Arrays.asList(vectors));
                 }
 
@@ -174,10 +172,9 @@ public class StreamSearchPhase extends QueryPhase {
 
                 @Override
                 public String getAction() {
-                   return searchContext.getTask().getAction();
+                    return searchContext.getTask().getAction();
                 }
-            },
-                searchContext.getTask().getParentTaskId());
+            }, searchContext.getTask().getParentTaskId());
             StreamSearchResult streamSearchResult = searchContext.streamSearchResult();
             streamSearchResult.flights(List.of(new OSTicket(ticket.getTicketID(), ticket.getNodeID())));
             return false;

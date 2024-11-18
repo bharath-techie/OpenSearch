@@ -20,7 +20,9 @@ import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.Collections;
 
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class FlightStreamManagerTests extends OpenSearchTestCase {
 

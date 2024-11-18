@@ -46,9 +46,6 @@ public class OSTicket implements Writeable, ToXContentFragment {
 
     @Override
     public String toString() {
-        return "OSTicket{" +
-            "ticketID='" + streamTicket.getTicketID() + '\'' +
-            ", nodeID='" + streamTicket.getNodeID() + '\'' +
-            '}';
+        return "OSTicket{" + "ticketID='" + streamTicket.getTicketID() + '\'' + ", nodeID='" + streamTicket.getNodeID() + '\'' + '}';
     }
 }

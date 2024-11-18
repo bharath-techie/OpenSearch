@@ -18,10 +18,10 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.TrustManagerFactory;
 
-import java.io.InputStream;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Optional;
+
 /**
  * A provider for security related settings for transports.
  *
@@ -54,11 +54,17 @@ public interface SecureTransportSettingsProvider {
     @ExperimentalApi
     interface SecureTransportParameters {
         boolean dualModeEnabled();
+
         KeyManagerFactory keyManagerFactory();
+
         String sslProvider();
+
         String clientAuth();
+
         Iterable<String> protocols();
+
         Iterable<String> cipherSuites();
+
         TrustManagerFactory trustManagerFactory();
     }
 
@@ -78,7 +84,6 @@ public interface SecureTransportSettingsProvider {
      * @throws SSLException throws SSLException if the {@link SSLEngine} instance cannot be built
      */
     Optional<SSLEngine> buildSecureServerTransportEngine(Settings settings, Transport transport) throws SSLException;
-
 
     Optional<Object> buildSecureServerTransportSslContext(Settings settings, Transport transport) throws SSLException;
 

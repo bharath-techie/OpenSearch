@@ -60,7 +60,6 @@ import org.opensearch.search.internal.ShardSearchRequest;
 import org.opensearch.search.query.QuerySearchRequest;
 import org.opensearch.search.query.QuerySearchResult;
 import org.opensearch.search.query.ScrollQuerySearchResult;
-import org.opensearch.search.query.StreamQueryResponse;
 import org.opensearch.search.stream.StreamSearchResult;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.RemoteClusterService;
@@ -243,7 +242,6 @@ public class SearchTransportService {
     ) {
         // we optimize this and expect a QueryFetchSearchResult if we only have a single shard in the search request
         // this used to be the QUERY_AND_FETCH which doesn't exist anymore.
-
 
         if (request.isStreamRequest()) {
             Writeable.Reader<SearchPhaseResult> reader = StreamSearchResult::new;

@@ -7,8 +7,9 @@
  */
 
 package org.opensearch.arrow.query;
-import org.apache.arrow.vector .*;
-import org.apache.arrow.vector.holders.IntHolder;
+
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.FilterCollector;
@@ -48,10 +49,9 @@ public class ArrowDocIdCollector extends FilterCollector {
         return ScoreMode.TOP_DOCS;
     }
 
-
     @Override
     public LeafCollector getLeafCollector(LeafReaderContext context) throws IOException {
-        LeafCollector inner = (this.in == null ? null: super.getLeafCollector(context));
+        LeafCollector inner = (this.in == null ? null : super.getLeafCollector(context));
         return new LeafCollector() {
             @Override
             public void setScorer(Scorable scorer) throws IOException {

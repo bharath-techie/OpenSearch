@@ -19,7 +19,6 @@ import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskAwareRequest;
 import org.opensearch.tasks.TaskManager;
 
-
 public class StreamManagerWrapper implements StreamManager {
 
     private final StreamManager streamManager;
@@ -34,7 +33,7 @@ public class StreamManagerWrapper implements StreamManager {
     @Override
     public StreamTicket registerStream(StreamProducer producer, TaskId parentTaskId) {
         StreamProducerTaskWrapper wrappedProducer = new StreamProducerTaskWrapper(producer, taskManager, parentTaskId);
-        StreamTicket  ticket = streamManager.registerStream(wrappedProducer, parentTaskId);
+        StreamTicket ticket = streamManager.registerStream(wrappedProducer, parentTaskId);
         wrappedProducer.setDescription(ticket.toString());
         return ticket;
     }
@@ -104,8 +103,13 @@ public class StreamManagerWrapper implements StreamManager {
             private final String description;
             private final String action;
 
-            public BatchedJobTaskWrapper(BatchedJob batchedJob, TaskId parentTaskId, TaskManager taskManager,
-                                         String description, String action) {
+            public BatchedJobTaskWrapper(
+                BatchedJob batchedJob,
+                TaskId parentTaskId,
+                TaskManager taskManager,
+                String description,
+                String action
+            ) {
                 this.batchedJob = batchedJob;
                 this.taskManager = taskManager;
                 this.parentTaskId = parentTaskId;

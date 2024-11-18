@@ -13,7 +13,6 @@ import org.opensearch.common.settings.Settings;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.TrustManagerFactory;
-import java.io.InputStream;
 
 /**
  * Default implementation of {@link SecureTransportSettingsProvider.SecureTransportParameters}.
