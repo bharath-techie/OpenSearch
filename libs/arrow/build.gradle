@@ -14,10 +14,10 @@ dependencies {
   implementation project(':libs:opensearch-core')
   api "org.apache.arrow:arrow-vector:${versions.arrow}"
   api "org.apache.arrow:arrow-format:${versions.arrow}"
-  implementation("org.apache.arrow:arrow-memory-core:${versions.arrow}")
+  api "org.apache.arrow:arrow-memory-core:${versions.arrow}"
   runtimeOnly "org.apache.arrow:arrow-memory-netty-buffer-patch:${versions.arrow}"
   runtimeOnly "org.apache.arrow:arrow-memory-netty:${versions.arrow}"
-  runtimeOnly ("io.netty:netty-buffer:${versions.netty}")
+  runtimeOnly "io.netty:netty-buffer:${versions.netty}"
   runtimeOnly "io.netty:netty-common:${versions.netty}"
 
   runtimeOnly "com.google.flatbuffers:flatbuffers-java:${versions.flatbuffers}"

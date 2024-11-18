@@ -70,22 +70,6 @@ dependencies {
   api project(":libs:opensearch-telemetry")
   api project(":libs:opensearch-task-commons")
   implementation project(':libs:opensearch-arrow')
-  compileOnly("org.apache.arrow:arrow-memory-core:${versions.arrow}") {
-    exclude group: 'org.apache.arrow', module: 'arrow-memory-core'
-  }
-  compileOnly("org.apache.arrow:arrow-memory-netty:${versions.arrow}") {
-    exclude group: 'org.apache.arrow', module: 'arrow-memory-netty'
-  }
-  compileOnly("org.apache.arrow:arrow-memory-netty-buffer-patch:${versions.arrow}") {
-    exclude group: 'org.apache.arrow', module: 'arrow-memory-netty-buffer-patch'
-  }
-  compileOnly("io.netty:netty-buffer:${versions.netty}") {
-    exclude group: 'io.netty', module: 'netty-buffer'
-  }
-  compileOnly("io.netty:netty-common:${versions.netty}") {
-    exclude group: 'io.netty', module: 'netty-common'
-  }
-
   implementation 'org.checkerframework:checker-qual:3.44.0'
 
   compileOnly project(':libs:opensearch-plugin-classloader')
