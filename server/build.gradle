@@ -177,7 +177,7 @@ tasks.named("testingConventions").configure {
     }
 }
 
- Set to current version by default
+// Set to current version by default
 def japicmpCompareTarget = System.getProperty("japicmp.compare.version")
 if (japicmpCompareTarget == null) { /* use latest released version */
     // Read the list from maven central.
