@@ -10,11 +10,13 @@ package org.opensearch.arrow;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.opensearch.common.annotation.ExperimentalApi;
 
 /**
  * Functional interface for providing Arrow streams.
  * This interface defines the contract for creating and managing Arrow stream tasks.
  */
+@ExperimentalApi
 public interface StreamProducer {
 
     /**

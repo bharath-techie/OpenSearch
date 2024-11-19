@@ -8,6 +8,8 @@
 
 package org.opensearch.arrow;
 
+import org.opensearch.common.annotation.ExperimentalApi;
+
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -19,6 +21,7 @@ import java.util.Objects;
  * The byte array is constructed by concatenating the ticket ID and node ID strings.
  * The class provides methods to serialize and deserialize the ticket information to and from bytes.
  */
+@ExperimentalApi
 public class StreamTicket {
     private final String ticketID;
     private final String nodeID;
