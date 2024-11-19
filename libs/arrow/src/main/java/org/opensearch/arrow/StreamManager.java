@@ -21,7 +21,7 @@ import org.opensearch.core.tasks.TaskId;
 
 /**
  * Abstract class for managing Arrow streams.
- * This class provides functionality for registering, retrieving, and removing streams.
+ * This class provides functionality for registering, retrieving, and removing stream producers.
  * It also manages the lifecycle of streams and their associated resources.
  */
 @ExperimentalApi
@@ -30,11 +30,11 @@ public interface StreamManager extends AutoCloseable {
     /**
      * Registers a new stream with the given ArrowStreamProvider.
      *
-     * @param provider The ArrowStreamProvider to register.
+     * @param producer The StreamProducer to register.
      * @param parentTaskId The TaskId of the parent task.
      * @return A new StreamTicket for the registered stream.
      */
-    StreamTicket registerStream(StreamProducer provider, TaskId parentTaskId);
+    StreamTicket registerStream(StreamProducer producer, TaskId parentTaskId);
 
     /**
      * Retrieves the StreamIterator for the given StreamTicket.
@@ -52,7 +52,8 @@ public interface StreamManager extends AutoCloseable {
     String generateUniqueTicket();
 
     /**
-     * Returns the ID of the local node.
+     * Returns the ID of the local node. This is useful to embed the node id into ticket.
+     * NodeId can be used to identify the node where the stream is registered.
      *
      * @return The ID of the local node.
      */

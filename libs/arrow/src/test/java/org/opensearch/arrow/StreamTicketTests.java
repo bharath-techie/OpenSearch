@@ -10,6 +10,7 @@ package org.opensearch.arrow;
 
 import org.opensearch.test.OpenSearchTestCase;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
 public class StreamTicketTests extends OpenSearchTestCase {
@@ -53,8 +54,34 @@ public class StreamTicketTests extends OpenSearchTestCase {
         assertEquals("Field lengths exceed the maximum allowed size.", exception.getMessage());
     }
 
-    public void testFromBytesWithInvalidInput() {
-        // TODO
+    public void testNullInput() {
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> StreamTicket.fromBytes(null));
+        assertEquals("Invalid byte array input.", e.getMessage());
+    }
+
+    public void testEmptyInput() {
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> StreamTicket.fromBytes(new byte[0]));
+        assertEquals("Invalid byte array input.", e.getMessage());
+    }
+
+    public void testMalformedBase64() {
+        byte[] invalidBase64 = "Invalid Base64!@#$".getBytes(StandardCharsets.UTF_8);
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> StreamTicket.fromBytes(invalidBase64));
+        assertEquals("Illegal base64 character 20", e.getMessage());
+    }
+
+    public void testModifiedLengthFields() {
+        StreamTicket original = new StreamTicket("ticket123", "node456");
+        byte[] bytes = original.toBytes();
+        byte[] decoded = Base64.getDecoder().decode(bytes);
+
+        // Modify the length field to be larger than actual data
+        decoded[0] = (byte) 0xFF;
+        decoded[1] = (byte) 0xFF;
+
+        byte[] modified = Base64.getEncoder().encode(decoded);
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> StreamTicket.fromBytes(modified));
+        assertEquals("Invalid ticketID length: -1", e.getMessage());
     }
 
     public void testEquals() {

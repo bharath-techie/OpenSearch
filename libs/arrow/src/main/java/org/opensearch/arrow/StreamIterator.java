@@ -20,7 +20,7 @@ import java.io.Closeable;
 public interface StreamIterator extends Closeable {
 
     /**
-     * Advances the iterator to the next batch of data.
+     * Blocking request to load next batch into root.
      *
      * @return true if more data was found, false if the stream is exhausted
      */

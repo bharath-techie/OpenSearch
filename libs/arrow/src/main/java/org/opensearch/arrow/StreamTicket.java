@@ -16,13 +16,15 @@ import java.util.Base64;
 import java.util.Objects;
 
 /**
- * Represents a ticket for identifying and managing Arrow streams.
- * This class encapsulates a byte array that serves as a unique identifier for a stream.
- * The byte array is constructed by concatenating the ticket ID and node ID strings.
- * The class provides methods to serialize and deserialize the ticket information to and from bytes.
+ * A ticket that uniquely identifies a stream. This ticket is created when a producer registers
+ * a stream with {@link StreamManager} and can be used by consumers to retrieve the stream using
+ * {@link StreamManager#getStreamIterator(StreamTicket)}.
  */
 @ExperimentalApi
 public class StreamTicket {
+    private static final int MAX_TOTAL_SIZE = 4096;
+    private static final int MAX_ID_LENGTH = 256;
+
     private final String ticketID;
     private final String nodeID;
 
@@ -56,13 +58,10 @@ public class StreamTicket {
     }
 
     /**
-     * Converts this StreamTicket into a byte array representation.
-     * The byte array contains the lengths and contents of both ticketID and nodeID,
-     * encoded in Base64 format. The format is:
-     * [ticketID length (2 bytes)][ticketID bytes][nodeID length (2 bytes)][nodeID bytes]
+     * Serializes this ticket into a Base64 encoded byte array that can be deserialized using
+     * {@link #fromBytes(byte[])}.
      *
-     * @return a Base64 encoded byte array containing the ticket information
-     * @throws IllegalArgumentException if either ticketID or nodeID length exceeds Short.MAX_VALUE
+     * @return Base64 encoded byte array containing the ticket information
      */
     public byte[] toBytes() {
         byte[] ticketIDBytes = ticketID.getBytes(StandardCharsets.UTF_8);
@@ -73,42 +72,47 @@ public class StreamTicket {
         }
         ByteBuffer buffer = ByteBuffer.allocate(2 + ticketIDBytes.length + 2 + nodeIDBytes.length);
         buffer.putShort((short) ticketIDBytes.length);
-        buffer.put(ticketIDBytes);
         buffer.putShort((short) nodeIDBytes.length);
+        buffer.put(ticketIDBytes);
         buffer.put(nodeIDBytes);
         return Base64.getEncoder().encode(buffer.array());
     }
 
     /**
-     * Creates a StreamTicket instance from its byte array representation.
-     * The byte array should be in the format created by {@link #toBytes()}.
+     * Creates a StreamTicket from its serialized byte representation. The byte array should be
+     * a Base64 encoded string containing the ticketID and nodeID.
      *
-     * @param bytes the Base64 encoded byte array containing the ticket information
+     * @param bytes Base64 encoded byte array containing ticket information
      * @return a new StreamTicket instance
-     * @throws IllegalArgumentException if the input byte array is null, too short,
-     *         or doesn't contain valid ticket information
      */
     public static StreamTicket fromBytes(byte[] bytes) {
         if (bytes == null || bytes.length < 4) {
             throw new IllegalArgumentException("Invalid byte array input.");
         }
+
+        if (bytes.length > MAX_TOTAL_SIZE) {
+            throw new IllegalArgumentException("Input exceeds maximum allowed size");
+        }
+
         ByteBuffer buffer = ByteBuffer.wrap(Base64.getDecoder().decode(bytes));
+
         short ticketIDLength = buffer.getShort();
-        if (ticketIDLength < 0) {
-            throw new IllegalArgumentException("Invalid ticketID length.");
+        if (ticketIDLength < 0 || ticketIDLength > MAX_ID_LENGTH) {
+            throw new IllegalArgumentException("Invalid ticketID length: " + ticketIDLength);
+        }
+
+        short nodeIDLength = buffer.getShort();
+        if (nodeIDLength < 0 || nodeIDLength > MAX_ID_LENGTH) {
+            throw new IllegalArgumentException("Invalid nodeID length: " + nodeIDLength);
         }
         byte[] ticketIDBytes = new byte[ticketIDLength];
         if (buffer.remaining() < ticketIDLength) {
-            throw new IllegalArgumentException("Malformed byte array. Not enough data for ticketID.");
+            throw new IllegalArgumentException("Malformed byte array. Not enough data for TicketId.");
         }
         buffer.get(ticketIDBytes);
-        short nodeIDLength = buffer.getShort();
-        if (nodeIDLength < 0) {
-            throw new IllegalArgumentException("Invalid nodeID length.");
-        }
         byte[] nodeIDBytes = new byte[nodeIDLength];
         if (buffer.remaining() < nodeIDLength) {
-            throw new IllegalArgumentException("Malformed byte array.");
+            throw new IllegalArgumentException("Malformed byte array. Not enough data for NodeId.");
         }
         buffer.get(nodeIDBytes);
         String ticketID = new String(ticketIDBytes, StandardCharsets.UTF_8);
