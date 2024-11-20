@@ -16,6 +16,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.Collector;
 import org.apache.lucene.search.Query;
+import org.opensearch.OpenSearchException;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamTicket;
@@ -112,7 +113,14 @@ public class StreamSearchPhase extends QueryPhase {
             if (streamManager == null) {
                 throw new RuntimeException("StreamManager not setup");
             }
+            final boolean[] isCancelled = {false};
             StreamTicket ticket = streamManager.registerStream(new StreamProducer() {
+
+                @Override
+                public void close() {
+                    isCancelled[0] = true;
+                }
+
                 @Override
                 public BatchedJob createJob(BufferAllocator allocator) {
                     return new BatchedJob() {
@@ -123,6 +131,9 @@ public class StreamSearchPhase extends QueryPhase {
                                 Collector collector = QueryCollectorContext.createQueryCollector(collectors);
                                 final ArrowDocIdCollector arrowDocIdCollector = new ArrowDocIdCollector(collector, root, flushSignal, 1000);
                                 try {
+                                    searcher.addQueryCancellation(() -> {if (isCancelled[0] == true) {
+                                        throw new OpenSearchException("Stream for query results cancelled.");
+                                    }});
                                     searcher.search(query, arrowDocIdCollector);
                                 } catch (EarlyTerminatingCollector.EarlyTerminationException e) {
                                     // EarlyTerminationException is not caught in ContextIndexSearcher to allow force termination of
@@ -153,7 +164,12 @@ public class StreamSearchPhase extends QueryPhase {
 
                         @Override
                         public void onCancel() {
+                            isCancelled[0] = true;
+                        }
 
+                        @Override
+                        public boolean isCancelled() {
+                            return searchContext.isCancelled() || isCancelled();
                         }
                     };
                 }

@@ -14,6 +14,8 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamTicket;
 
+import java.io.IOException;
+
 /**
  * ProxyStreamProvider acts as forward proxy for FlightStream.
  * It creates a BatchedJob to handle the streaming of data from the remote FlightStream.
@@ -36,6 +38,15 @@ public class ProxyStreamProducer implements StreamProducer {
     @Override
     public BatchedJob createJob(BufferAllocator allocator) {
         return new ProxyBatchedJob(remoteStream);
+    }
+
+    @Override
+    public void close() {
+        try {
+            remoteStream.close();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public static class ProxyBatchedJob implements BatchedJob {
@@ -65,6 +76,13 @@ public class ProxyStreamProducer implements StreamProducer {
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
+        }
+
+        @Override
+        public boolean isCancelled() {
+            // Proxy stream don't have any business logic to set this flag,
+            // they piggyback on remote stream getting cancelled.
+            return false;
         }
     }
 }

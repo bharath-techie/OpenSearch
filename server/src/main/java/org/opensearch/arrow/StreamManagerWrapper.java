@@ -19,6 +19,8 @@ import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskAwareRequest;
 import org.opensearch.tasks.TaskManager;
 
+import java.io.IOException;
+
 public class StreamManagerWrapper implements StreamManager {
 
     private final StreamManager streamManager;
@@ -96,6 +98,11 @@ public class StreamManagerWrapper implements StreamManager {
             return streamProducer.estimatedRowCount();
         }
 
+        @Override
+        public void close() throws IOException {
+            streamProducer.close();
+        }
+
         static class BatchedJobTaskWrapper implements BatchedJob, TaskAwareRequest {
             private final BatchedJob batchedJob;
             private final TaskManager taskManager;
@@ -138,6 +145,11 @@ public class StreamManagerWrapper implements StreamManager {
             @Override
             public void onCancel() {
                 batchedJob.onCancel();
+            }
+
+            @Override
+            public boolean isCancelled() {
+               return batchedJob.isCancelled();
             }
 
             @Override
