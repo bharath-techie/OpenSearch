@@ -63,12 +63,17 @@ import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.BitSetIterator;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.CombinedBitSet;
+import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.SparseFixedBitSet;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
+import org.opensearch.index.codec.composite.CompositeIndexFieldInfo;
+import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.SearchService;
+import org.opensearch.search.aggregations.StarTreeBucketCollector;
+import org.opensearch.search.aggregations.StarTreeLeafBucketCollectorBase;
 import org.opensearch.search.approximate.ApproximateScoreQuery;
 import org.opensearch.search.dfs.AggregatedDfs;
 import org.opensearch.search.profile.ContextualProfileBreakdown;
@@ -80,6 +85,7 @@ import org.opensearch.search.query.QueryPhase;
 import org.opensearch.search.query.QuerySearchResult;
 import org.opensearch.search.sort.FieldSortBuilder;
 import org.opensearch.search.sort.MinAndMax;
+import org.opensearch.search.startree.StarTreeFilter;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -89,6 +95,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Executor;
+
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeQueryHelper.getStarTreeValues;
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeQueryHelper.getSupportedStarTree;
 
 /**
  * Context-aware extension of {@link IndexSearcher}.
@@ -329,6 +338,11 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
             searchContext.setSearchTimedOut(true);
             return;
         }
+        if(queryStarTree(ctx, leafCollector)) {
+            // take parent star tree  collector out of multi collector
+            // top n docs collector
+            return;
+        }
         // catch early terminated exception and rethrow?
         Bits liveDocs = ctx.reader().getLiveDocs();
         BitSet liveDocsBitSet = getSparseBitSetOrNull(liveDocs);
@@ -369,6 +383,30 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
         // Note: this is called if collection ran successfully, including the above special cases of
         // CollectionTerminatedException and TimeExceededException, but no other exception.
         leafCollector.finish();
+    }
+
+    private boolean queryStarTree(LeafReaderContext ctx, LeafCollector leafCollector) throws IOException {
+        if(!(leafCollector instanceof StarTreeBucketCollector)) {
+            return false;
+        }
+        CompositeIndexFieldInfo supportedStarTree = getSupportedStarTree(searchContext);
+        if (supportedStarTree != null) {
+            StarTreeValues starTreeValues = getStarTreeValues(ctx, supportedStarTree);
+            assert starTreeValues != null;
+
+            FixedBitSet matchingDocsBitSet = StarTreeFilter.getPredicateValueToFixedBitSetMap(starTreeValues, "@timestamp_month");
+            int numBits = matchingDocsBitSet.length();
+
+            if (numBits > 0) {
+                for (int bit = matchingDocsBitSet.nextSetBit(0); bit != DocIdSetIterator.NO_MORE_DOCS; bit = (bit + 1 < numBits)
+                    ? matchingDocsBitSet.nextSetBit(bit + 1)
+                    : DocIdSetIterator.NO_MORE_DOCS) {
+                    ((StarTreeBucketCollector) leafCollector).collectStarEntry(bit, 0);
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     private Weight wrapWeight(Weight weight) {

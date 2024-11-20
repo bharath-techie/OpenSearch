@@ -53,6 +53,7 @@ import org.opensearch.search.aggregations.InternalAggregation;
 import org.opensearch.search.aggregations.LeafBucketCollector;
 import org.opensearch.search.aggregations.LeafBucketCollectorBase;
 import org.opensearch.search.aggregations.StarTreeBucketCollector;
+import org.opensearch.search.aggregations.StarTreeLeafBucketCollectorBase;
 import org.opensearch.search.aggregations.bucket.BucketsAggregator;
 import org.opensearch.search.aggregations.bucket.filterrewrite.DateHistogramAggregatorBridge;
 import org.opensearch.search.aggregations.bucket.filterrewrite.FilterRewriteOptimizationContext;
@@ -176,6 +177,10 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
             return LeafBucketCollector.NO_OP_COLLECTOR;
         }
 
+        if (parent == null) {
+
+        }
+
         boolean optimized = filterRewriteOptimizationContext.tryOptimize(ctx, this::incrementBucketDocCount, segmentMatchAll(context, ctx));
         if (optimized) throw new CollectionTerminatedException();
 
@@ -183,25 +188,16 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         CompositeIndexFieldInfo supportedStarTree = getSupportedStarTree(this.context);
         if (supportedStarTree != null) {
             StarTreeValues starTreeValues = getStarTreeValues(ctx, supportedStarTree);
-            assert starTreeValues != null;
-
-            FixedBitSet matchingDocsBitSet = StarTreeFilter.getPredicateValueToFixedBitSetMap(starTreeValues, "@timestamp_month");
-
             SortedNumericStarTreeValuesIterator valuesIterator = (SortedNumericStarTreeValuesIterator) starTreeValues
                 .getDimensionValuesIterator("@timestamp_month");
 
             SortedNumericStarTreeValuesIterator metricValuesIterator = (SortedNumericStarTreeValuesIterator) starTreeValues
                 .getMetricValuesIterator("startree1__doc_count_doc_count_metric");
-
-            int numBits = matchingDocsBitSet.length();
-
-            if (numBits > 0) {
-                for (int bit = matchingDocsBitSet.nextSetBit(0); bit != DocIdSetIterator.NO_MORE_DOCS; bit = (bit + 1 < numBits)
-                    ? matchingDocsBitSet.nextSetBit(bit + 1)
-                    : DocIdSetIterator.NO_MORE_DOCS) {
-
+            return new StarTreeLeafBucketCollectorBase(sub, values) {
+                @Override
+                public void collectStarEntry(int bit, long owningBucketOrd) throws IOException {
                     if (!valuesIterator.advanceExact(bit)) {
-                        continue;
+                        return;
                     }
 
                     for (int i = 0, count = valuesIterator.entryValueCount(); i < count; i++) {
@@ -221,8 +217,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                         }
                     }
                 }
-            }
-            throw new CollectionTerminatedException();
+            };
         }
 
         return new LeafBucketCollectorBase(sub, values) {

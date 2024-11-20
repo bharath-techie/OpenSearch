@@ -135,7 +135,9 @@ public abstract class BucketsAggregator extends AggregatorBase {
         if (docCounts.increment(bucketOrd, docCount) == docCount) {
             multiBucketConsumer.accept(0);
         }
-        subCollector.collectStarEntry(entryBit, bucketOrd);
+        if(subCollector != null) {
+            subCollector.collectStarEntry(entryBit, bucketOrd);
+        }
     }
 
     /**

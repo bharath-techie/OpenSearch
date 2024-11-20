@@ -172,8 +172,8 @@ public class StarTreeFilter {
 
             String childDimension = dimensionNames.get(dimensionId + 1);
             StarTreeNode starNode = null;
-            if (globalRemainingPredicateColumns == null
-                || !globalRemainingPredicateColumns.contains(childDimension) && !remainingGroupByColumns.contains(childDimension)) {
+            if ((globalRemainingPredicateColumns == null
+                || !globalRemainingPredicateColumns.contains(childDimension)) && !remainingGroupByColumns.contains(childDimension)) {
                 starNode = starTreeNode.getChildStarNode();
             }
 
@@ -238,6 +238,7 @@ public class StarTreeFilter {
     public static FixedBitSet getPredicateValueToFixedBitSetMap(StarTreeValues starTreeValues, String predicateField) throws IOException {
         Set<String> groupByField = new java.util.HashSet<>();
         groupByField.add(predicateField);
+        groupByField.add("status");
         FixedBitSet bitSet = getStarTreeResult(starTreeValues, new HashMap<>(), groupByField);
         return bitSet;
     }

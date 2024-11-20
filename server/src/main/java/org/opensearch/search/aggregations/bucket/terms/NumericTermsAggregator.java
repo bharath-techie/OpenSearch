@@ -41,6 +41,9 @@ import org.opensearch.common.Numbers;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.util.LongArray;
+import org.opensearch.index.codec.composite.CompositeIndexFieldInfo;
+import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
+import org.opensearch.index.compositeindex.datacube.startree.utils.iterator.SortedNumericStarTreeValuesIterator;
 import org.opensearch.index.fielddata.FieldData;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.aggregations.Aggregator;
@@ -52,6 +55,8 @@ import org.opensearch.search.aggregations.InternalMultiBucketAggregation;
 import org.opensearch.search.aggregations.InternalOrder;
 import org.opensearch.search.aggregations.LeafBucketCollector;
 import org.opensearch.search.aggregations.LeafBucketCollectorBase;
+import org.opensearch.search.aggregations.StarTreeBucketCollector;
+import org.opensearch.search.aggregations.StarTreeLeafBucketCollectorBase;
 import org.opensearch.search.aggregations.bucket.LocalBucketCountThresholds;
 import org.opensearch.search.aggregations.bucket.terms.IncludeExclude.LongFilter;
 import org.opensearch.search.aggregations.bucket.terms.LongKeyedBucketOrds.BucketOrdsEnum;
@@ -71,6 +76,8 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static java.util.Collections.emptyList;
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeQueryHelper.getStarTreeValues;
+import static org.opensearch.index.compositeindex.datacube.startree.utils.StarTreeQueryHelper.getSupportedStarTree;
 import static org.opensearch.search.aggregations.InternalOrder.isKeyOrder;
 
 /**
@@ -117,6 +124,48 @@ public class NumericTermsAggregator extends TermsAggregator {
     @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         SortedNumericDocValues values = resultStrategy.getValues(ctx);
+        CompositeIndexFieldInfo supportedStarTree = getSupportedStarTree(this.context);
+        if (supportedStarTree != null) {
+            StarTreeValues starTreeValues = getStarTreeValues(ctx, supportedStarTree);
+            SortedNumericStarTreeValuesIterator valuesIterator = (SortedNumericStarTreeValuesIterator) starTreeValues
+                .getDimensionValuesIterator("status");
+
+            SortedNumericStarTreeValuesIterator metricValuesIterator = (SortedNumericStarTreeValuesIterator) starTreeValues
+                .getMetricValuesIterator("startree1__doc_count_doc_count_metric");
+            return new StarTreeLeafBucketCollectorBase(sub, values) {
+                @Override
+                public void collectStarEntry(int bit, long owningBucketOrd) throws IOException {
+                    if (!valuesIterator.advanceExact(bit)) {
+                        return;
+                    }
+                    long previous = Long.MAX_VALUE;
+                    for (int i = 0, count = valuesIterator.entryValueCount(); i < count; i++) {
+                        long dimensionValue = valuesIterator.nextValue();
+                        if (previous != dimensionValue || i == 0) {
+                            if ((longFilter == null) || (longFilter.accept(dimensionValue))) {
+                                if (metricValuesIterator.advanceExact(bit)) {
+                                    long metricValue = metricValuesIterator.nextValue();
+                                    long bucketOrd = bucketOrds.add(owningBucketOrd, dimensionValue);
+                                    if (bucketOrd < 0) {
+                                        bucketOrd = -1 - bucketOrd;
+                                        collectStarTreeBucket((StarTreeBucketCollector) sub, metricValue, bucketOrd, bit);
+                                    } else {
+                                        grow(bucketOrd + 1);
+                                        if(sub instanceof StarTreeBucketCollector) {
+                                            collectStarTreeBucket((StarTreeBucketCollector) sub, metricValue, bucketOrd, bit);
+                                        } else {
+                                            collectStarTreeBucket(null, metricValue, bucketOrd, bit);
+                                        }
+                                    }
+                                }
+                            }
+                            previous = dimensionValue;
+                        }
+                    }
+                }
+            };
+        }
+
         return resultStrategy.wrapCollector(new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {

@@ -170,14 +170,16 @@ public class StarTreeQueryHelper {
         CompositeDataCubeFieldType compositeIndexFieldInfo,
         AggregatorFactory aggregatorFactory
     ) {
-        if (aggregatorFactory instanceof DateHistogramAggregatorFactory && aggregatorFactory.getSubFactories().getFactories().length == 1) {
-            AggregatorFactory subFactory = aggregatorFactory.getSubFactories().getFactories()[0];
-            MetricStat metricStat = validateStarTreeMetricSupport(compositeIndexFieldInfo, subFactory);
-            if (metricStat != null) {
-                return true;
-            }
-        }
-        return false;
+        return true;
+
+//        if (aggregatorFactory instanceof DateHistogramAggregatorFactory && aggregatorFactory.getSubFactories().getFactories().length == 1) {
+//            AggregatorFactory subFactory = aggregatorFactory.getSubFactories().getFactories()[0];
+//            MetricStat metricStat = validateStarTreeMetricSupport(compositeIndexFieldInfo, subFactory);
+//            if (metricStat != null) {
+//                return true;
+//            }
+//        }
+//        return false;
     }
 
     public static CompositeIndexFieldInfo getSupportedStarTree(SearchContext context) {
