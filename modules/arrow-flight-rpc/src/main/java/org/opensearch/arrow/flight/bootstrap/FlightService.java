@@ -31,6 +31,9 @@ import org.opensearch.plugins.SecureTransportSettingsProvider;
 import org.opensearch.threadpool.ThreadPool;
 
 import java.io.IOException;
+import java.security.AccessController;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.Objects;
 
 /**
@@ -55,7 +58,14 @@ public class FlightService extends AbstractLifecycleComponent {
      * @param settings The settings for the FlightService.
      */
     public FlightService(Settings settings) {
-        ServerConfig.init(settings);
+        try {
+            AccessController.doPrivileged((PrivilegedExceptionAction<Void>) () -> {
+                ServerConfig.init(settings);
+                return null;
+            });
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to initialize Arrow Flight server", e);
+        }
     }
 
     /**
@@ -89,7 +99,10 @@ public class FlightService extends AbstractLifecycleComponent {
     @Override
     protected void doStart() {
         try {
-            allocator = new RootAllocator(Integer.MAX_VALUE);
+            allocator = AccessController.doPrivileged(
+                (PrivilegedExceptionAction<BufferAllocator>) () -> new RootAllocator(Integer.MAX_VALUE)
+            );
+
             BaseFlightProducer producer = new BaseFlightProducer(clientManager, streamManager, allocator);
             FlightServerBuilder builder = new FlightServerBuilder(threadPool.get(), () -> allocator, producer, sslContextProvider);
             server = builder.build();
@@ -98,6 +111,8 @@ public class FlightService extends AbstractLifecycleComponent {
         } catch (IOException e) {
             logger.error("Failed to start Arrow Flight server", e);
             throw new RuntimeException("Failed to start Arrow Flight server", e);
+        } catch (PrivilegedActionException e) {
+            throw new RuntimeException(e);
         }
     }
 
