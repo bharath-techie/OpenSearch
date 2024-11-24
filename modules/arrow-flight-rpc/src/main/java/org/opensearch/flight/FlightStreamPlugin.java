@@ -22,10 +22,8 @@ import org.opensearch.core.indices.breaker.CircuitBreakerService;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
-import org.opensearch.plugins.NetworkPlugin;
-import org.opensearch.plugins.Plugin;
+import org.opensearch.flight.bootstrap.FlightStreamPluginImpl;
 import org.opensearch.plugins.SecureTransportSettingsProvider;
-import org.opensearch.plugins.StreamManagerPlugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
 import org.opensearch.telemetry.tracing.Tracer;
@@ -34,35 +32,94 @@ import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.Transport;
 import org.opensearch.watcher.ResourceWatcherService;
 
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
 import static org.opensearch.common.util.FeatureFlags.ARROW_STREAMS_SETTING;
-import static org.opensearch.flight.FlightService.ARROW_ALLOCATION_MANAGER_TYPE;
-import static org.opensearch.flight.FlightService.ARROW_ENABLE_NULL_CHECK_FOR_GET;
-import static org.opensearch.flight.FlightService.ARROW_ENABLE_UNSAFE_MEMORY_ACCESS;
-import static org.opensearch.flight.FlightService.ARROW_SSL_ENABLE;
-import static org.opensearch.flight.FlightService.NETTY_ALLOCATOR_NUM_DIRECT_ARENAS;
-import static org.opensearch.flight.FlightService.NETTY_NO_UNSAFE;
-import static org.opensearch.flight.FlightService.NETTY_TRY_REFLECTION_SET_ACCESSIBLE;
-import static org.opensearch.flight.FlightService.NETTY_TRY_UNSAFE;
 
-public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin, NetworkPlugin {
+/**
+ * Delegates the plugin implementation to the {@link FlightStreamPluginImpl} if the Arrow Streams feature flag is enabled.
+ * Otherwise, it creates a no-op implementation.
+ */
+public class FlightStreamPlugin extends BaseFlightStreamPlugin {
 
-    private final FlightService flightService;
+    private final BaseFlightStreamPlugin delegate;
 
+    /**
+     * Constructor for FlightStreamPlugin.
+     * @param settings The settings for the plugin.
+     */
     public FlightStreamPlugin(Settings settings) {
         if (FeatureFlags.isEnabled(ARROW_STREAMS_SETTING)) {
-            this.flightService = new FlightService(settings);
+            this.delegate = new FlightStreamPluginImpl(settings);
         } else {
-            this.flightService = null;
+            this.delegate = new BaseFlightStreamPlugin() {
+                @Override
+                public Collection<Object> createComponents(
+                    Client client,
+                    ClusterService clusterService,
+                    ThreadPool threadPool,
+                    ResourceWatcherService resourceWatcherService,
+                    ScriptService scriptService,
+                    NamedXContentRegistry xContentRegistry,
+                    Environment environment,
+                    NodeEnvironment nodeEnvironment,
+                    NamedWriteableRegistry namedWriteableRegistry,
+                    IndexNameExpressionResolver indexNameExpressionResolver,
+                    Supplier<RepositoriesService> repositoriesServiceSupplier
+                ) {
+                    return List.of();
+                }
+
+                @Override
+                public Map<String, Supplier<Transport>> getSecureTransports(
+                    Settings settings,
+                    ThreadPool threadPool,
+                    PageCacheRecycler pageCacheRecycler,
+                    CircuitBreakerService circuitBreakerService,
+                    NamedWriteableRegistry namedWriteableRegistry,
+                    NetworkService networkService,
+                    SecureTransportSettingsProvider secureTransportSettingsProvider,
+                    Tracer tracer
+                ) {
+                    return Map.of();
+                }
+
+                @Override
+                public StreamManager getStreamManager() {
+                    return null;
+                }
+
+                @Override
+                public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
+                    return List.of();
+                }
+
+                @Override
+                public List<Setting<?>> getSettings() {
+                    return List.of();
+                }
+            };
         }
     }
 
+    /**
+     * Creates components related to the Flight stream functionality.
+     * @param client The OpenSearch client
+     * @param clusterService The cluster service
+     * @param threadPool The thread pool
+     * @param resourceWatcherService The resource watcher service
+     * @param scriptService The script service
+     * @param xContentRegistry The named XContent registry
+     * @param environment The environment
+     * @param nodeEnvironment The node environment
+     * @param namedWriteableRegistry The named writeable registry
+     * @param indexNameExpressionResolver The index name expression resolver
+     * @param repositoriesServiceSupplier The supplier for the repositories service
+     * @return A collection of components
+     */
     @Override
     public Collection<Object> createComponents(
         Client client,
@@ -77,10 +134,33 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin, N
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
-        flightService.initialize(clusterService, threadPool);
-        return List.of(flightService);
+        return delegate.createComponents(
+            client,
+            clusterService,
+            threadPool,
+            resourceWatcherService,
+            scriptService,
+            xContentRegistry,
+            environment,
+            nodeEnvironment,
+            namedWriteableRegistry,
+            indexNameExpressionResolver,
+            repositoriesServiceSupplier
+        );
     }
 
+    /**
+     * Gets the secure transports for Flight stream functionality.
+     * @param settings The settings for the plugin
+     * @param threadPool The thread pool
+     * @param pageCacheRecycler The page cache recycler
+     * @param circuitBreakerService The circuit breaker service
+     * @param namedWriteableRegistry The named writeable registry
+     * @param networkService The network service
+     * @param secureTransportSettingsProvider The secure transport settings provider
+     * @param tracer The tracer
+     * @return A map of secure transports
+     */
     @Override
     public Map<String, Supplier<Transport>> getSecureTransports(
         Settings settings,
@@ -92,31 +172,40 @@ public class FlightStreamPlugin extends Plugin implements StreamManagerPlugin, N
         SecureTransportSettingsProvider secureTransportSettingsProvider,
         Tracer tracer
     ) {
-        flightService.setSecureTransportSettingsProvider(secureTransportSettingsProvider);
-        return Collections.emptyMap();
+        return delegate.getSecureTransports(
+            settings,
+            threadPool,
+            pageCacheRecycler,
+            circuitBreakerService,
+            namedWriteableRegistry,
+            networkService,
+            secureTransportSettingsProvider,
+            tracer
+        );
     }
 
+    /**
+     * Gets the StreamManager instance for managing flight streams.
+     */
     @Override
     public StreamManager getStreamManager() {
-        return flightService.getStreamManager();
+        return delegate.getStreamManager();
     }
 
+    /**
+     * Gets the list of ExecutorBuilder instances for building thread pools used for FlightServer.
+     * @param settings The settings for the plugin
+     */
     @Override
     public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
-        return Collections.singletonList(flightService.getExecutorBuilder());
+        return delegate.getExecutorBuilders(settings);
     }
 
+    /**
+     * Gets the list of settings for the Flight plugin.
+     */
     @Override
     public List<Setting<?>> getSettings() {
-        return Arrays.asList(
-            ARROW_ALLOCATION_MANAGER_TYPE,
-            ARROW_ENABLE_NULL_CHECK_FOR_GET,
-            NETTY_TRY_REFLECTION_SET_ACCESSIBLE,
-            ARROW_ENABLE_UNSAFE_MEMORY_ACCESS,
-            NETTY_ALLOCATOR_NUM_DIRECT_ARENAS,
-            NETTY_NO_UNSAFE,
-            NETTY_TRY_UNSAFE,
-            ARROW_SSL_ENABLE
-        );
+        return delegate.getSettings();
     }
 }

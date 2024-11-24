@@ -19,6 +19,9 @@ import org.opensearch.core.xcontent.XContentBuilder;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
+/**
+ * A ticket for a stream.
+ */
 @ExperimentalApi
 public class OSTicket implements Writeable, ToXContentFragment {
 

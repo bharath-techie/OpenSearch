@@ -9,10 +9,6 @@
  * GitHub history for details.
  */
 
-apply plugin: 'opensearch.yaml-rest-test'
-apply plugin: 'opensearch.java-rest-test'
-apply plugin: 'opensearch.internal-cluster-test'
-
 apply plugin: 'opensearch.publish'
 
 opensearchplugin {
@@ -51,4 +47,82 @@ dependencies {
     }
   }
   runtimeOnly 'org.apache.parquet:parquet-arrow:1.13.1'
+}
+
+tasks.named('forbiddenApisMain').configure {
+  replaceSignatureFiles 'jdk-signatures'
+
+  excludes = [
+    'org/apache/arrow/flight/OpenSearchFlightServer$Builder.class',
+    'org/opensearch/flight/bootstrap/server/ServerConfig$Netty4Configs.class',
+    'org/opensearch/flight/bootstrap/server/ServerConfig.class',
+    'org/opensearch/flight/bootstrap/tls/DefaultSslContextProvider.class',
+    'org/apache/arrow/flight/OpenSearchFlightClient$Builder.class'
+  ]
+}
+
+tasks.named('thirdPartyAudit').configure {
+  ignoreMissingClasses(
+
+  )
+}
+
+tasks.named('thirdPartyAudit').configure {
+  ignoreMissingClasses(
+    'com.google.gson.stream.JsonReader',
+    'com.google.gson.stream.JsonToken',
+    'com.google.protobuf.util.Timestamps',
+    'com.google.rpc.Status',
+    'com.google.rpc.Status$Builder',
+    'org.apache.parquet.schema.GroupType',
+    // Parquet Schema classes
+    'org.apache.parquet.schema.LogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$DateLogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$DecimalLogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$IntLogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$IntervalLogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$ListLogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$LogicalTypeAnnotationVisitor',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$StringLogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$TimeLogicalTypeAnnotation',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$TimeUnit',
+    'org.apache.parquet.schema.LogicalTypeAnnotation$TimestampLogicalTypeAnnotation',
+    'org.apache.parquet.schema.MessageType',
+    'org.apache.parquet.schema.OriginalType',
+    'org.apache.parquet.schema.PrimitiveType',
+    'org.apache.parquet.schema.PrimitiveType$PrimitiveTypeName',
+    'org.apache.parquet.schema.PrimitiveType$PrimitiveTypeNameConverter',
+    'org.apache.parquet.schema.Type',
+    'org.apache.parquet.schema.Type$Repetition',
+    'org.apache.parquet.schema.Types',
+    'org.apache.parquet.schema.Types$BaseListBuilder',
+    'org.apache.parquet.schema.Types$GroupBuilder',
+    'org.apache.parquet.schema.Types$ListBuilder',
+    'org.apache.parquet.schema.Types$PrimitiveBuilder'
+  )
+
+  ignoreViolations(
+    // Guava internal classes
+    'com.google.common.cache.Striped64',
+    'com.google.common.cache.Striped64$1',
+    'com.google.common.cache.Striped64$Cell',
+    'com.google.common.hash.LittleEndianByteArray$UnsafeByteArray',
+    'com.google.common.hash.LittleEndianByteArray$UnsafeByteArray$1',
+    'com.google.common.hash.LittleEndianByteArray$UnsafeByteArray$2',
+    'com.google.common.hash.Striped64',
+    'com.google.common.hash.Striped64$1',
+    'com.google.common.hash.Striped64$Cell',
+    'com.google.common.primitives.UnsignedBytes$LexicographicalComparatorHolder$UnsafeComparator',
+    'com.google.common.primitives.UnsignedBytes$LexicographicalComparatorHolder$UnsafeComparator$1',
+    'com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper',
+    'com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper$1',
+
+    // Arrow memory classes
+    'org.apache.arrow.memory.ArrowBuf',
+    'org.apache.arrow.memory.util.ByteFunctionHelpers',
+    'org.apache.arrow.memory.util.MemoryUtil',
+    'org.apache.arrow.memory.util.MemoryUtil$1',
+    'org.apache.arrow.memory.util.hash.MurmurHasher',
+    'org.apache.arrow.memory.util.hash.SimpleHasher'
+  )
 }

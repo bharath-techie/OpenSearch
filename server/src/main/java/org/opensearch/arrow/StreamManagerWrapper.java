@@ -21,6 +21,9 @@ import org.opensearch.tasks.TaskManager;
 
 import java.io.IOException;
 
+/**
+ * Wraps a StreamManager to make it work with the TaskManager.
+ */
 public class StreamManagerWrapper implements StreamManager {
 
     private final StreamManager streamManager;

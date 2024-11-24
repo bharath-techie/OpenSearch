@@ -20,6 +20,9 @@ import org.opensearch.search.query.QuerySearchResult;
 import java.io.IOException;
 import java.util.List;
 
+/**
+ * A result of stream search execution.
+ */
 @ExperimentalApi
 public class StreamSearchResult extends SearchPhaseResult {
     private List<OSTicket> flightTickets;

@@ -1388,16 +1388,17 @@ public class Node implements Closeable {
                             Locale.ROOT,
                             "Only one StreamManagerPlugin can be installed. Found: %d",
                             streamManagerPlugins.size()
-
                         )
                     );
                 }
                 if (!streamManagerPlugins.isEmpty()) {
-                    streamManager = new StreamManagerWrapper(
-                        streamManagerPlugins.get(0).getStreamManager(),
-                        transportService.getTaskManager()
-                    );
-                    logger.info("StreamManager initialized");
+                    if (streamManagerPlugins.get(0).getStreamManager() != null) {
+                        streamManager = new StreamManagerWrapper(
+                            streamManagerPlugins.get(0).getStreamManager(),
+                            transportService.getTaskManager()
+                        );
+                        logger.info("StreamManager initialized");
+                    }
                 }
             }
             final SearchService searchService = newSearchService(

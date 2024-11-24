@@ -8,31 +8,41 @@
 
 package org.opensearch.flight;
 
+import org.opensearch.arrow.StreamManager;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.threadpool.ExecutorBuilder;
+import org.opensearch.threadpool.ThreadPool;
 
+import java.io.IOException;
 import java.util.Collection;
+import java.util.List;
 
+import static org.opensearch.common.util.FeatureFlags.ARROW_STREAMS_SETTING;
 import static org.mockito.Mockito.mock;
 
 public class FlightStreamPluginTests extends OpenSearchTestCase {
-
     private Settings settings;
-    private FlightStreamPlugin flightStreamPlugin;
+    private FlightStreamPlugin plugin;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        settings = Settings.builder().build();
-        flightStreamPlugin = new FlightStreamPlugin(settings);
+        settings = Settings.builder().put("node.attr.transport.stream.port", "8815").put(ARROW_STREAMS_SETTING.getKey(), true).build();
+        plugin = new FlightStreamPlugin(settings);
     }
 
-    public void testCreateComponents() {
-        Collection<Object> components = flightStreamPlugin.createComponents(
+    public void testPluginEnableAndDisable() throws IOException {
+        FeatureFlags.initializeFeatureFlags(settings);
+        ClusterService clusterService = mock(ClusterService.class);
+        ThreadPool threadPool = mock(ThreadPool.class);
+        Collection<Object> components = plugin.createComponents(
             null,
-            mock(ClusterService.class),
-            null,
+            clusterService,
+            threadPool,
             null,
             null,
             null,
@@ -42,33 +52,47 @@ public class FlightStreamPluginTests extends OpenSearchTestCase {
             null,
             null
         );
-        assertNotNull(components);
-        assertTrue(components.stream().anyMatch(component -> component instanceof FlightService));
-    }
 
-    public void testGetStreamManager() {}
-
-    public void testGetSettings() {}
-
-    public void testCreateComponentsWithNullArguments() {
-        Collection<Object> components = flightStreamPlugin.createComponents(
-            null,
-            mock(ClusterService.class),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null
-        );
         assertNotNull(components);
         assertFalse(components.isEmpty());
-    }
 
-    public void testGetSettingsDefaultValues() {
+        List<ExecutorBuilder<?>> executorBuilders = plugin.getExecutorBuilders(settings);
+        assertNotNull(executorBuilders);
+        assertFalse(executorBuilders.isEmpty());
 
+        StreamManager streamManager = plugin.getStreamManager();
+        assertNotNull(streamManager);
+
+        List<Setting<?>> settings = plugin.getSettings();
+        assertNotNull(settings);
+        assertFalse(settings.isEmpty());
+
+        plugin.close();
+
+        Settings disabledSettings = Settings.builder()
+            .put("node.attr.transport.stream.port", "8815")
+            .put(ARROW_STREAMS_SETTING.getKey(), false)
+            .build();
+        FeatureFlags.initializeFeatureFlags(disabledSettings);
+        FlightStreamPlugin disabledPlugin = new FlightStreamPlugin(disabledSettings);
+
+        Collection<Object> disabledPluginComponents = disabledPlugin.createComponents(
+            null,
+            clusterService,
+            threadPool,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+        );
+
+        assertTrue(disabledPluginComponents.isEmpty());
+        assertNull(disabledPlugin.getStreamManager());
+        assertTrue(disabledPlugin.getExecutorBuilders(disabledSettings).isEmpty());
+        disabledPlugin.close();
     }
 }

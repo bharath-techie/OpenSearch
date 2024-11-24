@@ -35,6 +35,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -422,8 +423,8 @@ public class OpenSearchFlightServer implements AutoCloseable {
             return this;
         }
 
-        public Builder useTls(SslContext sslContext) throws IOException {
-            this.sslContext = sslContext;
+        public Builder useTls(SslContext sslContext) {
+            this.sslContext = Objects.requireNonNull(sslContext);
             return this;
         }
 

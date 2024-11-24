@@ -20,7 +20,7 @@ import org.opensearch.OpenSearchException;
 import org.opensearch.arrow.StreamManager;
 import org.opensearch.arrow.StreamProducer;
 import org.opensearch.arrow.StreamTicket;
-import org.opensearch.arrow.query.ArrowDocIdCollector;
+import org.opensearch.arrow.ArrowDocIdCollector;
 import org.opensearch.search.SearchContextSourcePrinter;
 import org.opensearch.search.aggregations.AggregationProcessor;
 import org.opensearch.search.internal.ContextIndexSearcher;
@@ -35,6 +35,9 @@ import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 
+/**
+ * StreamSearchPhase is the search phase for streaming search.
+ */
 public class StreamSearchPhase extends QueryPhase {
 
     private static final Logger LOGGER = LogManager.getLogger(StreamSearchPhase.class);
@@ -60,6 +63,9 @@ public class StreamSearchPhase extends QueryPhase {
         }
     }
 
+    /**
+     * DefaultStreamSearchPhaseSearcher
+     */
     public static class DefaultStreamSearchPhaseSearcher extends DefaultQueryPhaseSearcher {
 
         @Override

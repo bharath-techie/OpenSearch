@@ -49,6 +49,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -746,7 +747,7 @@ public class OpenSearchFlightClient implements AutoCloseable {
         }
 
         public Builder sslContext(SslContext sslContext) {
-            this.sslContext = sslContext;
+            this.sslContext = Objects.requireNonNull(sslContext);
             return this;
         }
 
@@ -798,7 +799,7 @@ public class OpenSearchFlightClient implements AutoCloseable {
         }
 
         /** Create the client from this builder. */
-        public FlightClient build() {
+        public OpenSearchFlightClient build() {
             final NettyChannelBuilder builder;
 
             switch (location.getUri().getScheme()) {
@@ -888,7 +889,7 @@ public class OpenSearchFlightClient implements AutoCloseable {
             builder.maxTraceEvents(MAX_CHANNEL_TRACE_EVENTS)
                 .maxInboundMessageSize(maxInboundMessageSize)
                 .maxInboundMetadataSize(maxInboundMessageSize);
-            return new FlightClient(allocator, builder.build(), middleware);
+            return new OpenSearchFlightClient(allocator, builder.build(), middleware);
         }
     }
 
