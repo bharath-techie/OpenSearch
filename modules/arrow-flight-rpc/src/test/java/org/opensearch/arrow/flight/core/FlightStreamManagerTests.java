@@ -14,9 +14,9 @@ import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.opensearch.arrow.flight.bootstrap.client.FlightClientManager;
 import org.opensearch.arrow.spi.StreamReader;
 import org.opensearch.arrow.spi.StreamTicket;
-import org.opensearch.arrow.flight.bootstrap.client.FlightClientManager;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.Collections;
@@ -42,15 +42,15 @@ public class FlightStreamManagerTests extends OpenSearchTestCase {
         flightStreamManager = new FlightStreamManager(() -> allocator, clientManager);
     }
 
-    public void testGetStreamIterator() {
-        StreamTicket ticket = new StreamTicket(TICKET_ID, NODE_ID);
+    public void testGetStreamReader() {
+        StreamTicket ticket = new FlightStreamTicket(TICKET_ID, NODE_ID);
         FlightStream mockFlightStream = mock(FlightStream.class);
         VectorSchemaRoot mockRoot = mock(VectorSchemaRoot.class);
         when(flightClient.getStream(new Ticket(ticket.toBytes()))).thenReturn(mockFlightStream);
         when(mockFlightStream.getRoot()).thenReturn(mockRoot);
         when(mockRoot.getSchema()).thenReturn(new Schema(Collections.emptyList()));
 
-        StreamReader streamReader = flightStreamManager.getStreamIterator(ticket);
+        StreamReader streamReader = flightStreamManager.getStreamReader(ticket);
 
         assertNotNull(streamReader);
         assertNotNull(streamReader.getRoot());
@@ -58,15 +58,10 @@ public class FlightStreamManagerTests extends OpenSearchTestCase {
         verify(flightClient).getStream(new Ticket(ticket.toBytes()));
     }
 
-    public void testGenerateUniqueTicket() {
-        String ticket = flightStreamManager.generateUniqueTicket();
-        assertNotNull(ticket);
-    }
-
     public void testGetVectorSchemaRootWithException() {
-        StreamTicket ticket = new StreamTicket(TICKET_ID, NODE_ID);
+        StreamTicket ticket = new FlightStreamTicket(TICKET_ID, NODE_ID);
         when(flightClient.getStream(new Ticket(ticket.toBytes()))).thenThrow(new RuntimeException("Test exception"));
 
-        expectThrows(RuntimeException.class, () -> flightStreamManager.getStreamIterator(ticket));
+        expectThrows(RuntimeException.class, () -> flightStreamManager.getStreamReader(ticket));
     }
 }

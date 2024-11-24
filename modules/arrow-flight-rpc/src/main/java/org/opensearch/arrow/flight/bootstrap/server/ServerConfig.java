@@ -9,6 +9,7 @@
 package org.opensearch.arrow.flight.bootstrap.server;
 
 import org.apache.arrow.flight.Location;
+import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
@@ -102,6 +103,7 @@ public class ServerConfig {
      *
      * @param settings The OpenSearch settings to initialize the server with
      */
+    @SuppressForbidden(reason = "required for arrow allocator")
     public static void init(Settings settings) {
         System.setProperty("arrow.allocation.manager.type", ARROW_ALLOCATION_MANAGER_TYPE.get(settings));
         System.setProperty("arrow.enable_null_check_for_get", Boolean.toString(ARROW_ENABLE_NULL_CHECK_FOR_GET.get(settings)));
@@ -191,6 +193,7 @@ public class ServerConfig {
 
         public static final Setting<Boolean> NETTY_TRY_UNSAFE = Setting.boolSetting("io.netty.tryUnsafe", true, Setting.Property.NodeScope);
 
+        @SuppressForbidden(reason = "required for netty allocator configuration")
         public static void init(Settings settings) {
             System.setProperty("io.netty.allocator.numDirectArenas", Integer.toString(NETTY_ALLOCATOR_NUM_DIRECT_ARENAS.get(settings)));
             System.setProperty("io.netty.noUnsafe", Boolean.toString(NETTY_NO_UNSAFE.get(settings)));

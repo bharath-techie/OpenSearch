@@ -12,6 +12,8 @@ import org.apache.arrow.flight.OpenSearchFlightClient;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.opensearch.Version;
+import org.opensearch.arrow.flight.bootstrap.server.ServerConfig;
+import org.opensearch.arrow.flight.bootstrap.tls.SslContextProvider;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
@@ -21,8 +23,6 @@ import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
-import org.opensearch.arrow.flight.bootstrap.server.ServerConfig;
-import org.opensearch.arrow.flight.bootstrap.tls.SslContextProvider;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.net.InetAddress;

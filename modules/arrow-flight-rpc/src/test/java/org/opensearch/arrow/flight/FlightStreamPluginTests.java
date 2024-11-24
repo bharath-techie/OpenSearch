@@ -9,6 +9,8 @@
 package org.opensearch.arrow.flight;
 
 import org.opensearch.arrow.spi.StreamManager;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
@@ -23,26 +25,33 @@ import java.util.List;
 
 import static org.opensearch.common.util.FeatureFlags.ARROW_STREAMS_SETTING;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class FlightStreamPluginTests extends OpenSearchTestCase {
     private Settings settings;
     private FlightStreamPlugin plugin;
+    private ClusterService clusterService;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
         settings = Settings.builder().put("node.attr.transport.stream.port", "8815").put(ARROW_STREAMS_SETTING.getKey(), true).build();
+        clusterService = mock(ClusterService.class);
+        ClusterState clusterState = mock(ClusterState.class);
+        DiscoveryNodes nodes = mock(DiscoveryNodes.class);
+        when(clusterService.state()).thenReturn(clusterState);
+        when(clusterState.nodes()).thenReturn(nodes);
+        when(nodes.getLocalNodeId()).thenReturn("test-node");
         plugin = new FlightStreamPlugin(settings);
     }
 
     public void testPluginEnableAndDisable() throws IOException {
         FeatureFlags.initializeFeatureFlags(settings);
-        ClusterService clusterService = mock(ClusterService.class);
-        ThreadPool threadPool = mock(ThreadPool.class);
+
         Collection<Object> components = plugin.createComponents(
             null,
             clusterService,
-            threadPool,
+            mock(ThreadPool.class),
             null,
             null,
             null,
@@ -79,7 +88,7 @@ public class FlightStreamPluginTests extends OpenSearchTestCase {
         Collection<Object> disabledPluginComponents = disabledPlugin.createComponents(
             null,
             clusterService,
-            threadPool,
+            mock(ThreadPool.class),
             null,
             null,
             null,

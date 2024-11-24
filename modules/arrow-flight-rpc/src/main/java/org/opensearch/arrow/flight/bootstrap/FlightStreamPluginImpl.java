@@ -8,6 +8,8 @@
 
 package org.opensearch.arrow.flight.bootstrap;
 
+import org.opensearch.arrow.flight.BaseFlightStreamPlugin;
+import org.opensearch.arrow.flight.bootstrap.server.ServerConfig;
 import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
@@ -21,8 +23,6 @@ import org.opensearch.core.indices.breaker.CircuitBreakerService;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
-import org.opensearch.arrow.flight.BaseFlightStreamPlugin;
-import org.opensearch.arrow.flight.bootstrap.server.ServerConfig;
 import org.opensearch.plugins.SecureTransportSettingsProvider;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;

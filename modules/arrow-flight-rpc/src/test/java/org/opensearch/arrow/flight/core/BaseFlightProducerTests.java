@@ -15,9 +15,8 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.ipc.message.IpcOption;
-import org.opensearch.arrow.spi.StreamProducer;
-import org.opensearch.arrow.spi.StreamTicket;
 import org.opensearch.arrow.flight.bootstrap.client.FlightClientManager;
+import org.opensearch.arrow.spi.StreamProducer;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.concurrent.CountDownLatch;
@@ -38,14 +37,13 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     private StreamProducer.BatchedJob batchedJob;
     private static final String LOCAL_NODE_ID = "localNodeId";
     private static final FlightClientManager flightClientManager = mock(FlightClientManager.class);
-    private final Ticket ticket = new Ticket((new StreamTicket("test-ticket", LOCAL_NODE_ID)).toBytes());
+    private final Ticket ticket = new Ticket((new FlightStreamTicket("test-ticket", LOCAL_NODE_ID)).toBytes());
     private BufferAllocator allocator;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
         streamManager = mock(FlightStreamManager.class);
-        when(streamManager.getLocalNodeId()).thenReturn(LOCAL_NODE_ID);
         when(flightClientManager.getLocalNodeId()).thenReturn(LOCAL_NODE_ID);
         allocator = mock(BufferAllocator.class);
         streamProducer = mock(StreamProducer.class);
@@ -152,7 +150,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
 
     public void testGetStream_SuccessfulFlow() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(
             new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
         );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
@@ -182,14 +180,14 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(3, listener.getPutNextCount());
         assertEquals(3, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
     public void testGetStream_WithSlowClient() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(
             new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
         );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
@@ -226,14 +224,14 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(5, listener.getPutNextCount());
         assertEquals(5, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
     public void testGetStream_WithSlowClientTimeout() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(
             new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
         );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
@@ -270,14 +268,14 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(0, listener.getPutNextCount());
         assertEquals(0, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
     public void testGetStream_WithClientCancel() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(
             new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
         );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
@@ -313,14 +311,14 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(4, listener.getPutNextCount());
         assertEquals(4, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
     public void testGetStream_WithUnresponsiveClient() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(
             new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
         );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
@@ -352,14 +350,14 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(0, listener.getPutNextCount());
         assertEquals(0, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
     public void testGetStream_WithServerBackpressure() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(
             new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
         );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
@@ -391,14 +389,14 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(5, listener.getPutNextCount());
         assertEquals(5, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
     public void testGetStream_WithServerError() throws Exception {
         final VectorSchemaRoot root = mock(VectorSchemaRoot.class);
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(
             new FlightStreamManager.StreamProducerHolder(streamProducer, allocator)
         );
         when(streamProducer.createJob(any(BufferAllocator.class))).thenReturn(batchedJob);
@@ -433,13 +431,13 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(4, listener.getPutNextCount());
         assertEquals(4, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
     public void testGetStream_StreamNotFound() throws Exception {
 
-        when(streamManager.getStreamProducer(any(StreamTicket.class))).thenReturn(null);
+        when(streamManager.getStreamProducer(any(FlightStreamTicket.class))).thenReturn(null);
 
         TestServerStreamListener listener = new TestServerStreamListener();
 
@@ -449,7 +447,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertTrue(listener.getError().getMessage().contains("Stream not found"));
         assertEquals(0, listener.getPutNextCount());
 
-        verify(streamManager).removeStreamProvider(any(StreamTicket.class));
+        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
     }
 
     public void testProxyStreamProviderCreationWithDifferentNodeIDs() {

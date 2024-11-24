@@ -44,18 +44,8 @@ public class StreamManagerWrapper implements StreamManager {
     }
 
     @Override
-    public StreamReader getStreamIterator(StreamTicket ticket) {
-        return streamManager.getStreamIterator(ticket);
-    }
-
-    @Override
-    public String generateUniqueTicket() {
-        return streamManager.generateUniqueTicket();
-    }
-
-    @Override
-    public String getLocalNodeId() {
-        return streamManager.getLocalNodeId();
+    public StreamReader getStreamReader(StreamTicket ticket) {
+        return streamManager.getStreamReader(ticket);
     }
 
     @Override

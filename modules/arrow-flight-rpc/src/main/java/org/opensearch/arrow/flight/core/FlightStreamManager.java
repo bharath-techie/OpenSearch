@@ -12,18 +12,17 @@ import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
-import org.opensearch.arrow.spi.StreamReader;
+import org.opensearch.arrow.flight.bootstrap.client.FlightClientManager;
 import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.arrow.spi.StreamProducer;
+import org.opensearch.arrow.spi.StreamReader;
 import org.opensearch.arrow.spi.StreamTicket;
 import org.opensearch.common.SetOnce;
 import org.opensearch.common.cache.Cache;
 import org.opensearch.common.cache.CacheBuilder;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.tasks.TaskId;
-import org.opensearch.arrow.flight.bootstrap.client.FlightClientManager;
 
-import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
@@ -34,6 +33,7 @@ import java.util.function.Supplier;
  */
 public class FlightStreamManager implements StreamManager {
 
+    private final StreamTicketFactory ticketFactory;
     private final FlightClientManager clientManager;
     private final Supplier<BufferAllocator> allocatorSupplier;
     private final Cache<String, StreamProducerHolder> streamProducers;
@@ -54,6 +54,7 @@ public class FlightStreamManager implements StreamManager {
             .setExpireAfterWrite(expireAfter)
             .setMaximumWeight(MAX_PRODUCERS)
             .build();
+        this.ticketFactory = new StreamTicketFactory(clientManager::getLocalNodeId);
     }
 
     /**
@@ -64,38 +65,20 @@ public class FlightStreamManager implements StreamManager {
      */
     @Override
     public StreamTicket registerStream(StreamProducer provider, TaskId parentTaskId) {
-        String ticket = generateUniqueTicket();
-        streamProducers.put(ticket, new StreamProducerHolder(provider, allocatorSupplier.get()));
-        return new StreamTicket(ticket, getLocalNodeId());
+        FlightStreamTicket ticket = ticketFactory.createTicket();
+        streamProducers.put(ticket.getTicketID(), new StreamProducerHolder(provider, allocatorSupplier.get()));
+        return ticket;
     }
 
     /**
-     * Retrieves a StreamIterator for the given StreamTicket.
+     * Retrieves a StreamReader for the given StreamTicket.
      * @param ticket The StreamTicket representing the stream to retrieve.
-     * @return A StreamIterator instance for the specified stream.
+     * @return A StreamReader instance for the specified stream.
      */
     @Override
-    public StreamReader getStreamIterator(StreamTicket ticket) {
+    public StreamReader getStreamReader(StreamTicket ticket) {
         FlightStream stream = clientManager.getFlightClient(ticket.getNodeID()).getStream(new Ticket(ticket.toBytes()));
         return new FlightStreamReader(stream);
-    }
-
-    /**
-     * Generates a unique ticket string.
-     * @return A unique ticket string.
-     */
-    @Override
-    public String generateUniqueTicket() {
-        return UUID.randomUUID().toString();
-    }
-
-    /**
-     * Retrieves the local node ID.
-     * @return The local node ID.
-     */
-    @Override
-    public String getLocalNodeId() {
-        return clientManager.getLocalNodeId();
     }
 
     /**

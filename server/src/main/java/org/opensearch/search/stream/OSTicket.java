@@ -27,8 +27,8 @@ public class OSTicket implements Writeable, ToXContentFragment {
 
     private final StreamTicket streamTicket;
 
-    public OSTicket(String ticketID, String nodeID) {
-        this.streamTicket = new StreamTicket(ticketID, nodeID);
+    public OSTicket(StreamTicket ticket) {
+        this.streamTicket = ticket;
     }
 
     public OSTicket(StreamInput in) throws IOException {

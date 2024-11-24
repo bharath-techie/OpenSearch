@@ -11,8 +11,8 @@ package org.opensearch.arrow.flight.bootstrap.server;
 import org.apache.arrow.flight.FlightProducer;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.opensearch.common.settings.Settings;
 import org.opensearch.arrow.flight.bootstrap.tls.SslContextProvider;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.ThreadPool;
 

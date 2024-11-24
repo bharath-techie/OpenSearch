@@ -14,6 +14,7 @@ import org.opensearch.plugins.SecureTransportSettingsProvider;
 import java.security.AccessController;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
+import java.util.Locale;
 import java.util.function.Supplier;
 
 import io.netty.handler.ssl.ApplicationProtocolConfig;
@@ -64,8 +65,8 @@ public class DefaultSslContextProvider implements SslContextProvider {
                 (PrivilegedExceptionAction<SslContext>) () -> io.netty.handler.ssl.SslContextBuilder.forServer(
                     parameters.keyManagerFactory()
                 )
-                    .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase()))
-                    .clientAuth(ClientAuth.valueOf(parameters.clientAuth().toUpperCase()))
+                    .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase(Locale.ROOT)))
+                    .clientAuth(ClientAuth.valueOf(parameters.clientAuth().toUpperCase(Locale.ROOT)))
                     .protocols(parameters.protocols())
                     .ciphers(parameters.cipherSuites(), SupportedCipherSuiteFilter.INSTANCE)
                     .sessionCacheSize(0)
@@ -101,7 +102,7 @@ public class DefaultSslContextProvider implements SslContextProvider {
                 .get();
             return AccessController.doPrivileged(
                 (PrivilegedExceptionAction<SslContext>) () -> io.netty.handler.ssl.SslContextBuilder.forClient()
-                    .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase()))
+                    .sslProvider(SslProvider.valueOf(parameters.sslProvider().toUpperCase(Locale.ROOT)))
                     .protocols(parameters.protocols())
                     .ciphers(parameters.cipherSuites(), SupportedCipherSuiteFilter.INSTANCE)
                     .applicationProtocolConfig(

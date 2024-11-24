@@ -12,11 +12,11 @@ import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.OpenSearchFlightClient;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.util.VisibleForTesting;
+import org.opensearch.arrow.flight.bootstrap.tls.SslContextProvider;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.arrow.flight.bootstrap.tls.SslContextProvider;
 
 import java.util.Map;
 import java.util.Objects;

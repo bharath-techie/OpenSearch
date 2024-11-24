@@ -13,15 +13,15 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.opensearch.arrow.spi.StreamReader;
 
 /**
- * FlightStreamIterator is a wrapper class that adapts the FlightStream interface
- * to the StreamIterator interface.
+ * FlightStreamReader is a wrapper class that adapts the FlightStream interface
+ * to the StreamReader interface.
  */
 public class FlightStreamReader implements StreamReader {
 
     private final FlightStream flightStream;
 
     /**
-     * Constructs a FlightStreamIterator with the given FlightStream.
+     * Constructs a FlightStreamReader with the given FlightStream.
      *
      * @param flightStream The FlightStream to be adapted.
      */

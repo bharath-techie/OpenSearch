@@ -21,9 +21,9 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.arrow.flight.bootstrap.client.FlightClientManager;
 import org.opensearch.arrow.spi.StreamProducer;
 import org.opensearch.arrow.spi.StreamTicket;
-import org.opensearch.arrow.flight.bootstrap.client.FlightClientManager;
 
 import java.util.Collections;
 
@@ -64,7 +64,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
      */
     @Override
     public void getStream(CallContext context, Ticket ticket, ServerStreamListener listener) {
-        StreamTicket streamTicket = StreamTicket.fromBytes(ticket.getBytes());
+        StreamTicket streamTicket = FlightStreamTicket.fromBytes(ticket.getBytes());
         try {
             FlightStreamManager.StreamProducerHolder streamProducerHolder;
             if (streamTicket.getNodeID().equals(flightClientManager.getLocalNodeId())) {
@@ -127,7 +127,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
     @Override
     public FlightInfo getFlightInfo(CallContext context, FlightDescriptor descriptor) {
         // TODO: this api should only be used internally
-        StreamTicket streamTicket = StreamTicket.fromBytes(descriptor.getCommand());
+        StreamTicket streamTicket = FlightStreamTicket.fromBytes(descriptor.getCommand());
         FlightStreamManager.StreamProducerHolder streamProducerHolder;
         if (streamTicket.getNodeID().equals(flightClientManager.getLocalNodeId())) {
             streamProducerHolder = streamManager.getStreamProducer(streamTicket);

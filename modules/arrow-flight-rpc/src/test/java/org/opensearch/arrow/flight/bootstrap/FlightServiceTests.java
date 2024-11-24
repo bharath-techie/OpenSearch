@@ -9,12 +9,14 @@ package org.opensearch.arrow.flight.bootstrap;
 
 import org.apache.arrow.flight.Action;
 import org.apache.arrow.flight.OpenSearchFlightClient;
-import org.opensearch.cluster.service.ClusterService;
-import org.opensearch.common.settings.Settings;
 import org.opensearch.arrow.flight.bootstrap.client.FlightClientBuilder;
 import org.opensearch.arrow.flight.bootstrap.tls.DefaultSslContextProvider;
 import org.opensearch.arrow.flight.bootstrap.tls.DisabledSslContextProvider;
 import org.opensearch.arrow.flight.bootstrap.tls.SslContextProvider;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.node.DiscoveryNodes;
+import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.plugins.SecureTransportSettingsProvider;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.ThreadPool;
@@ -22,6 +24,7 @@ import org.opensearch.threadpool.ThreadPool;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class FlightServiceTests extends OpenSearchTestCase {
 
@@ -39,6 +42,12 @@ public class FlightServiceTests extends OpenSearchTestCase {
         settings = Settings.builder().put("node.attr.transport.stream.port", String.valueOf(availablePort)).build();
 
         clusterService = mock(ClusterService.class);
+        ClusterState clusterState = mock(ClusterState.class);
+        DiscoveryNodes nodes = mock(DiscoveryNodes.class);
+        when(clusterService.state()).thenReturn(clusterState);
+        when(clusterState.nodes()).thenReturn(nodes);
+        when(nodes.getLocalNodeId()).thenReturn("test-node");
+
         threadPool = mock(ThreadPool.class);
         secureTransportSettingsProvider = mock(SecureTransportSettingsProvider.class);
 
