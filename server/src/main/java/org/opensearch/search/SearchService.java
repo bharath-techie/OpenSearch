@@ -49,7 +49,7 @@ import org.opensearch.action.search.SearchType;
 import org.opensearch.action.search.UpdatePitContextRequest;
 import org.opensearch.action.search.UpdatePitContextResponse;
 import org.opensearch.action.support.TransportActions;
-import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.CheckedSupplier;

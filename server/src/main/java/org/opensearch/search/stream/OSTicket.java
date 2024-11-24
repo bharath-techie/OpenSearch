@@ -8,7 +8,7 @@
 
 package org.opensearch.search.stream;
 
-import org.opensearch.arrow.StreamTicket;
+import org.opensearch.arrow.spi.StreamTicket;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;

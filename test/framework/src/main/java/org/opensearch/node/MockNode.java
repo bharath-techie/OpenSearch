@@ -32,7 +32,7 @@
 
 package org.opensearch.node;
 
-import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterInfoService;
 import org.opensearch.cluster.MockInternalClusterInfoService;

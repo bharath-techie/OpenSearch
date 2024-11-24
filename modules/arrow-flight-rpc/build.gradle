@@ -13,11 +13,11 @@ apply plugin: 'opensearch.publish'
 
 opensearchplugin {
   description 'Arrow flight based Stream implementation'
-  classname 'org.opensearch.flight.FlightStreamPlugin'
+  classname 'org.opensearch.arrow.flight.FlightStreamPlugin'
 }
 
 dependencies {
-  implementation project(':libs:opensearch-arrow')
+  implementation project(':libs:opensearch-arrow-spi')
   implementation project(':modules:transport-netty4')
 
   implementation 'org.checkerframework:checker-qual:3.44.0'

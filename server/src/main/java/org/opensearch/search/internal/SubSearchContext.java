@@ -32,7 +32,7 @@
 package org.opensearch.search.internal;
 
 import org.apache.lucene.search.Query;
-import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.index.query.ParsedQuery;
 import org.opensearch.search.aggregations.SearchContextAggregations;

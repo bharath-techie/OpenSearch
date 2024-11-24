@@ -45,7 +45,7 @@ import org.apache.lucene.search.Query;
 import org.opensearch.Version;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
-import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.SetOnce;

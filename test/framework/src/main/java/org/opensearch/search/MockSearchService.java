@@ -32,7 +32,7 @@
 
 package org.opensearch.search;
 
-import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.util.BigArrays;
 import org.opensearch.core.indices.breaker.CircuitBreakerService;

@@ -38,7 +38,7 @@ import org.apache.lucene.search.Query;
 import org.opensearch.action.OriginalIndices;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
-import org.opensearch.arrow.StreamManager;
+import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.BigArrays;
 import org.opensearch.core.index.shard.ShardId;
