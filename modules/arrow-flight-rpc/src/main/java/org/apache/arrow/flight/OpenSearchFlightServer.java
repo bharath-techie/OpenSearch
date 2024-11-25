@@ -52,6 +52,7 @@ import io.netty.handler.ssl.ClientAuth;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 
+// TODO - add comment
 public class OpenSearchFlightServer implements AutoCloseable {
     private static final Logger logger = LogManager.getLogger(OpenSearchFlightServer.class);
 

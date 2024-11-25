@@ -92,11 +92,11 @@ public class FlightStreamManager implements StreamManager {
     }
 
     /**
-     * Removes the stream associated with the given StreamTicket.
+     * Removes the StreamProducer with the given StreamTicket.
      *
-     * @param ticket The StreamTicket of the stream to remove.
+     * @param ticket The StreamTicket against StreamProducer to remove.
      */
-    public void removeStreamProvider(StreamTicket ticket) {
+    public void removeStreamProducer(StreamTicket ticket) {
         streamProducers.invalidate(ticket.getTicketID());
     }
 

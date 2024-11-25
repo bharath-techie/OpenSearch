@@ -113,7 +113,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
             throw e;
         } finally {
             listener.completed();
-            streamManager.removeStreamProvider(streamTicket);
+            streamManager.removeStreamProducer(streamTicket);
         }
     }
 

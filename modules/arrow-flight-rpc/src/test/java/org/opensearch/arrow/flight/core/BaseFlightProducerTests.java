@@ -180,7 +180,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(3, listener.getPutNextCount());
         assertEquals(3, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
@@ -224,7 +224,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(5, listener.getPutNextCount());
         assertEquals(5, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
@@ -268,7 +268,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(0, listener.getPutNextCount());
         assertEquals(0, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
@@ -311,7 +311,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(4, listener.getPutNextCount());
         assertEquals(4, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
@@ -350,7 +350,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(0, listener.getPutNextCount());
         assertEquals(0, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
@@ -389,7 +389,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(5, listener.getPutNextCount());
         assertEquals(5, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
@@ -431,7 +431,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertEquals(4, listener.getPutNextCount());
         assertEquals(4, flushCount.get());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
         verify(root).close();
     }
 
@@ -447,7 +447,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
         assertTrue(listener.getError().getMessage().contains("Stream not found"));
         assertEquals(0, listener.getPutNextCount());
 
-        verify(streamManager).removeStreamProvider(any(FlightStreamTicket.class));
+        verify(streamManager).removeStreamProducer(any(FlightStreamTicket.class));
     }
 
     public void testProxyStreamProviderCreationWithDifferentNodeIDs() {
