@@ -44,6 +44,7 @@ public class BaseFlightProducerTests extends OpenSearchTestCase {
     public void setUp() throws Exception {
         super.setUp();
         streamManager = mock(FlightStreamManager.class);
+        when(streamManager.getStreamTicketFactory()).thenReturn(new DefaultStreamTicketFactory(() -> LOCAL_NODE_ID));
         when(flightClientManager.getLocalNodeId()).thenReturn(LOCAL_NODE_ID);
         allocator = mock(BufferAllocator.class);
         streamProducer = mock(StreamProducer.class);

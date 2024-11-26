@@ -198,7 +198,7 @@ public class StreamSearchPhase extends QueryPhase {
                 }
             }, searchContext.getTask().getParentTaskId());
             StreamSearchResult streamSearchResult = searchContext.streamSearchResult();
-            streamSearchResult.flights(List.of(new OSTicket(ticket)));
+            streamSearchResult.flights(List.of(new OSTicket(ticket.toBytes())));
             return false;
         }
     }

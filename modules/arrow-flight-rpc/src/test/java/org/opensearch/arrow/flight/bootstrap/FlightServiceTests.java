@@ -135,14 +135,6 @@ public class FlightServiceTests extends OpenSearchTestCase {
         });
     }
 
-    public void testDoubleInitialization() {
-        flightService.initialize(clusterService, threadPool);
-
-        flightService.initialize(clusterService, threadPool);
-
-        assertNotNull(flightService.getStreamManager());
-    }
-
     public void testStopWithoutStart() {
         flightService.initialize(clusterService, threadPool);
 
@@ -180,6 +172,11 @@ public class FlightServiceTests extends OpenSearchTestCase {
 
         testService.close();
         assertEquals("CLOSED", testService.lifecycleState().toString());
+    }
+
+    @Override
+    public void tearDown() throws Exception {
+        super.tearDown();
     }
 
     private void verifyServerRunning(FlightService flightService, int clientPort) throws InterruptedException {

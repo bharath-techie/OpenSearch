@@ -17,6 +17,7 @@ import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.arrow.spi.StreamProducer;
 import org.opensearch.arrow.spi.StreamReader;
 import org.opensearch.arrow.spi.StreamTicket;
+import org.opensearch.arrow.spi.StreamTicketFactory;
 import org.opensearch.common.SetOnce;
 import org.opensearch.common.cache.Cache;
 import org.opensearch.common.cache.CacheBuilder;
@@ -33,7 +34,7 @@ import java.util.function.Supplier;
  */
 public class FlightStreamManager implements StreamManager {
 
-    private final StreamTicketFactory ticketFactory;
+    private final DefaultStreamTicketFactory ticketFactory;
     private final FlightClientManager clientManager;
     private final Supplier<BufferAllocator> allocatorSupplier;
     private final Cache<String, StreamProducerHolder> streamProducers;
@@ -54,7 +55,7 @@ public class FlightStreamManager implements StreamManager {
             .setExpireAfterWrite(expireAfter)
             .setMaximumWeight(MAX_PRODUCERS)
             .build();
-        this.ticketFactory = new StreamTicketFactory(clientManager::getLocalNodeId);
+        this.ticketFactory = new DefaultStreamTicketFactory(clientManager::getLocalNodeId);
     }
 
     /**
@@ -65,7 +66,7 @@ public class FlightStreamManager implements StreamManager {
      */
     @Override
     public StreamTicket registerStream(StreamProducer provider, TaskId parentTaskId) {
-        FlightStreamTicket ticket = ticketFactory.createTicket();
+        StreamTicket ticket = ticketFactory.generateTicket();
         streamProducers.put(ticket.getTicketID(), new StreamProducerHolder(provider, allocatorSupplier.get()));
         return ticket;
     }
@@ -79,6 +80,11 @@ public class FlightStreamManager implements StreamManager {
     public StreamReader getStreamReader(StreamTicket ticket) {
         FlightStream stream = clientManager.getFlightClient(ticket.getNodeID()).getStream(new Ticket(ticket.toBytes()));
         return new FlightStreamReader(stream);
+    }
+
+    @Override
+    public StreamTicketFactory getStreamTicketFactory() {
+        return ticketFactory;
     }
 
     /**

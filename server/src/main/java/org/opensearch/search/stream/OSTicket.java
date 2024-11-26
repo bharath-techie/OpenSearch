@@ -8,6 +8,7 @@
 
 package org.opensearch.search.stream;
 
+import org.opensearch.arrow.spi.StreamManager;
 import org.opensearch.arrow.spi.StreamTicket;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.core.common.io.stream.StreamInput;
@@ -25,30 +26,28 @@ import java.nio.charset.StandardCharsets;
 @ExperimentalApi
 public class OSTicket implements Writeable, ToXContentFragment {
 
-    private final StreamTicket streamTicket;
+    private final byte[] bytes;
 
-    public OSTicket(StreamTicket ticket) {
-        this.streamTicket = ticket;
+    public OSTicket(byte[] bytes) {
+        this.bytes = bytes;
     }
 
     public OSTicket(StreamInput in) throws IOException {
-        byte[] bytes = in.readByteArray();
-        this.streamTicket = StreamTicket.fromBytes(bytes);
+        bytes = in.readByteArray();
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-        byte[] bytes = streamTicket.toBytes();
         return builder.value(new String(bytes, StandardCharsets.UTF_8));
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeByteArray(streamTicket.toBytes());
+        out.writeByteArray(bytes);
     }
 
     @Override
     public String toString() {
-        return "OSTicket{" + "ticketID='" + streamTicket.getTicketID() + '\'' + ", nodeID='" + streamTicket.getNodeID() + '\'' + '}';
+        return "OSTicket{" + new String(bytes, StandardCharsets.UTF_8) + "}";
     }
 }

@@ -64,7 +64,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
      */
     @Override
     public void getStream(CallContext context, Ticket ticket, ServerStreamListener listener) {
-        StreamTicket streamTicket = FlightStreamTicket.fromBytes(ticket.getBytes());
+        StreamTicket streamTicket = streamManager.getStreamTicketFactory().fromBytes(ticket.getBytes());
         try {
             FlightStreamManager.StreamProducerHolder streamProducerHolder;
             if (streamTicket.getNodeID().equals(flightClientManager.getLocalNodeId())) {
@@ -127,7 +127,7 @@ public class BaseFlightProducer extends NoOpFlightProducer {
     @Override
     public FlightInfo getFlightInfo(CallContext context, FlightDescriptor descriptor) {
         // TODO: this api should only be used internally
-        StreamTicket streamTicket = FlightStreamTicket.fromBytes(descriptor.getCommand());
+        StreamTicket streamTicket = streamManager.getStreamTicketFactory().fromBytes(descriptor.getCommand());
         FlightStreamManager.StreamProducerHolder streamProducerHolder;
         if (streamTicket.getNodeID().equals(flightClientManager.getLocalNodeId())) {
             streamProducerHolder = streamManager.getStreamProducer(streamTicket);

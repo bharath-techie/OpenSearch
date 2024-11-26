@@ -49,6 +49,11 @@ public class StreamManagerWrapper implements StreamManager {
     }
 
     @Override
+    public StreamTicketFactory getStreamTicketFactory() {
+        return streamManager.getStreamTicketFactory();
+    }
+
+    @Override
     public void close() throws Exception {
         streamManager.close();
     }

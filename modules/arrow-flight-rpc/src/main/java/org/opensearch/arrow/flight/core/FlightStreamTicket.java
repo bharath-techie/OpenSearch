@@ -53,7 +53,7 @@ class FlightStreamTicket implements StreamTicket {
         return Base64.getEncoder().encode(buffer.array());
     }
 
-    public static StreamTicket fromBytes(byte[] bytes) {
+    static StreamTicket fromBytes(byte[] bytes) {
         if (bytes == null || bytes.length < 4) {
             throw new IllegalArgumentException("Invalid byte array input.");
         }

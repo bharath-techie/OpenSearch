@@ -53,6 +53,24 @@ public class ProxyStreamProducer implements StreamProducer {
     }
 
     /**
+     * Provides an estimate of the total number of rows that will be produced.
+     */
+    @Override
+    public int estimatedRowCount() {
+        // TODO get it from remote flight stream
+        return -1;
+    }
+
+    /**
+     * Task action name
+     */
+    @Override
+    public String getAction() {
+        // TODO get it from remote flight stream
+        return "";
+    }
+
+    /**
      * Closes the remote FlightStream.
      */
     @Override
