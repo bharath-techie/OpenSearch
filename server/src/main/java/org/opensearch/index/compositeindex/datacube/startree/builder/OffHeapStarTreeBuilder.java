@@ -8,6 +8,9 @@
 
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.IntVector;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
@@ -65,6 +68,17 @@ public class OffHeapStarTreeBuilder extends BaseStarTreeBuilder {
         MapperService mapperService
     ) throws IOException {
         super(metaOut, dataOut, starTreeField, state, mapperService);
+//        try(
+//            BufferAllocator allocator = new RootAllocator();
+//            IntVector intVector = new IntVector("fixed-size-primitive-layout", allocator);
+//        ){
+//            intVector.allocateNew(3);
+//            intVector.set(0,1);
+//            intVector.setNull(1);
+//            intVector.set(2,2);
+//            intVector.setValueCount(3);
+//            System.out.println("Vector created in memory: " + intVector);
+//        }
         segmentDocumentFileManager = new SegmentDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);
         try {
             starTreeDocumentFileManager = new StarTreeDocsFileManager(state, starTreeField, metricAggregatorInfos, numDimensions);

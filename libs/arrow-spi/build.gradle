@@ -22,9 +22,10 @@ dependencies {
 
   runtimeOnly "com.google.flatbuffers:flatbuffers-java:${versions.flatbuffers}"
   runtimeOnly "org.slf4j:slf4j-api:${versions.slf4j}"
-  runtimeOnly "com.fasterxml.jackson.core:jackson-databind:${versions.jackson}"
+  api "com.fasterxml.jackson.core:jackson-databind:${versions.jackson}"
   api "com.fasterxml.jackson.core:jackson-annotations:${versions.jackson}"
-
+  // Add Checker Framework dependency
+  implementation "org.checkerframework:checker-qual:3.44.0"
   implementation "commons-codec:commons-codec:${versions.commonscodec}"
 }
 

@@ -93,7 +93,7 @@ public abstract class StarTreeBuilderTestCase extends OpenSearchTestCase {
     protected MergeState mergeState;
 
     public StarTreeBuilderTestCase(StarTreeFieldConfiguration.StarTreeBuildMode buildMode) {
-        this.buildMode = buildMode;
+        this.buildMode = StarTreeFieldConfiguration.StarTreeBuildMode.OFF_HEAP;
     }
 
     @ParametersFactory
@@ -209,9 +209,9 @@ public abstract class StarTreeBuilderTestCase extends OpenSearchTestCase {
     ) throws IOException {
         switch (buildMode) {
             case ON_HEAP:
-                return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
+                return new ArrowStarTreeBuilder(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
             case OFF_HEAP:
-                return new OffHeapStarTreeBuilder(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
+                return new ArrowStarTreeBuilder(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
             default:
                 throw new IllegalArgumentException("Invalid build mode: " + buildMode);
         }

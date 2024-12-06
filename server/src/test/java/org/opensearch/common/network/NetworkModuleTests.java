@@ -105,6 +105,11 @@ public class NetworkModuleTests extends OpenSearchTestCase {
                     }
 
                     @Override
+                    public Optional<Object> buildSecureServerTransportSslContext(Settings settings, Transport transport) throws SSLException {
+                        return Optional.empty();
+                    }
+
+                    @Override
                     public Optional<SSLEngine> buildSecureClientTransportEngine(Settings settings, String hostname, int port)
                         throws SSLException {
                         return Optional.empty();

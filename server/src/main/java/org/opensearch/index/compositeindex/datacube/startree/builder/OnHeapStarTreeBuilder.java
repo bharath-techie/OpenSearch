@@ -7,11 +7,21 @@
  */
 package org.opensearch.index.compositeindex.datacube.startree.builder;
 
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VarCharVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.index.OrdinalMap;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.LongValues;
+import org.opensearch.arrow.spi.Test;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeDocument;
 import org.opensearch.index.compositeindex.datacube.startree.StarTreeField;
@@ -20,6 +30,7 @@ import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDoc
 import org.opensearch.index.mapper.MapperService;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -28,6 +39,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static java.util.Arrays.asList;
 
 /**
  * On heap single tree builder
@@ -56,6 +69,7 @@ public class OnHeapStarTreeBuilder extends BaseStarTreeBuilder {
         MapperService mapperService
     ) throws IOException {
         super(metaOut, dataOut, starTreeField, segmentWriteState, mapperService);
+        Test.print();
     }
 
     @Override

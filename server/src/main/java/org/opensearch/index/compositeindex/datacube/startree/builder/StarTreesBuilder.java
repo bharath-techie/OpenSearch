@@ -29,6 +29,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.opensearch.index.compositeindex.CompositeIndexConstants.SEGMENT_DOCS_COUNT;
+
 /**
  * Builder to construct star-trees based on multiple star-tree fields.
  *
@@ -91,7 +93,7 @@ public class StarTreesBuilder implements Closeable {
 
         // Build all star-trees
         for (StarTreeField starTreeField : starTreeFields) {
-            try (StarTreeBuilder starTreeBuilder = getStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService)) {
+            try (StarTreeBuilder starTreeBuilder = getStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService, state.segmentInfo.maxDoc())) {
                 starTreeBuilder.build(fieldProducerMap, fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
             }
         }
@@ -119,6 +121,17 @@ public class StarTreesBuilder implements Closeable {
     ) throws IOException {
         logger.debug("Starting merge of {} star-trees with star-tree fields", starTreeValuesSubsPerField.size());
         long startTime = System.currentTimeMillis();
+        long segDocs = 0;
+        for (Map.Entry<String, List<StarTreeValues>> entry : starTreeValuesSubsPerField.entrySet()) {
+            List<StarTreeValues> starTreeValuesList = entry.getValue();
+            if (starTreeValuesList.isEmpty()) {
+                logger.debug("StarTreeValues is empty for all segments for field : {}", entry.getKey());
+                continue;
+            }
+            for(StarTreeValues s : starTreeValuesList) {
+                segDocs += Long.parseLong(s.getAttributes().getOrDefault(SEGMENT_DOCS_COUNT, "0"));
+            }
+        }
         for (Map.Entry<String, List<StarTreeValues>> entry : starTreeValuesSubsPerField.entrySet()) {
             List<StarTreeValues> starTreeValuesList = entry.getValue();
             if (starTreeValuesList.isEmpty()) {
@@ -126,7 +139,7 @@ public class StarTreesBuilder implements Closeable {
                 continue;
             }
             StarTreeField starTreeField = starTreeValuesList.get(0).getStarTreeField();
-            try (StarTreeBuilder builder = getStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService)) {
+            try (StarTreeBuilder builder = getStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService, segDocs)) {
                 builder.build(starTreeValuesList, fieldNumberAcrossStarTrees, starTreeDocValuesConsumer);
             }
         }
@@ -145,12 +158,16 @@ public class StarTreesBuilder implements Closeable {
         IndexOutput dataOut,
         StarTreeField starTreeField,
         SegmentWriteState state,
-        MapperService mapperService
+        MapperService mapperService,
+        long docsCount
     ) throws IOException {
         switch (starTreeField.getStarTreeConfig().getBuildMode()) {
             case ON_HEAP:
                 return new OnHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
             case OFF_HEAP:
+                if(docsCount > 300000) {
+                    return new ArrowStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
+                }
                 return new OffHeapStarTreeBuilder(metaOut, dataOut, starTreeField, state, mapperService);
             default:
                 throw new IllegalArgumentException(
