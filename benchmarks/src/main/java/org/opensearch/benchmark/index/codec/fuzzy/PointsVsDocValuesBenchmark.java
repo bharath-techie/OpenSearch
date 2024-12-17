@@ -21,6 +21,7 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Bits;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
+import org.opensearch.index.codec.composite.composite912.Composite912Codec;
 
 import java.io.File;
 import java.io.IOException;
@@ -56,7 +57,7 @@ public class PointsVsDocValuesBenchmark {
         directory = FSDirectory.open(indexDir.toPath());
         Analyzer analyzer = new StandardAnalyzer();
         IndexWriterConfig config = new IndexWriterConfig(analyzer);
-        config.setCodec(new Lucene912Codec());
+        config.setCodec(new Composite912Codec());
         writer = new IndexWriter(directory, config);
 
         // Index documents
