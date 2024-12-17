@@ -23,8 +23,10 @@ import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.codec.composite.CompositeIndexFieldInfo;
@@ -37,10 +39,17 @@ import org.opensearch.index.compositeindex.datacube.startree.fileformats.meta.St
 import org.opensearch.index.compositeindex.datacube.startree.index.CompositeIndexValues;
 import org.opensearch.index.compositeindex.datacube.startree.index.StarTreeValues;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
+import org.roaringbitmap.RangeBitmap;
+import org.roaringbitmap.RoaringBitSet;
+import org.roaringbitmap.RoaringBitmap;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,12 +72,14 @@ public class Composite912DocValuesReader extends DocValuesProducer implements Co
     private final DocValuesProducer delegate;
     private IndexInput dataIn;
     private ChecksumIndexInput metaIn;
+    private IndexInput  bitsetIn;
     private final Map<String, IndexInput> compositeIndexInputMap = new LinkedHashMap<>();
     private final Map<String, CompositeIndexMetadata> compositeIndexMetadataMap = new LinkedHashMap<>();
     private final List<String> fields;
     private DocValuesProducer compositeDocValuesProducer;
     private final List<CompositeIndexFieldInfo> compositeFieldInfos = new ArrayList<>();
     private SegmentReadState readState;
+    private RangeBitmap rangeBitmap;
 
     public Composite912DocValuesReader(DocValuesProducer producer, SegmentReadState readState) throws IOException {
         this.delegate = producer;
@@ -86,6 +97,12 @@ public class Composite912DocValuesReader extends DocValuesProducer implements Co
             Composite912DocValuesFormat.DATA_EXTENSION
         );
 
+        String bitsetFileName = IndexFileNames.segmentFileName(
+            readState.segmentInfo.name,
+            readState.segmentSuffix,
+            "rbs"
+        );
+
         boolean success = false;
         try {
 
@@ -99,6 +116,39 @@ public class Composite912DocValuesReader extends DocValuesProducer implements Co
                 readState.segmentInfo.getId(),
                 readState.segmentSuffix
             );
+
+            bitsetIn = readState.directory.openInput(bitsetFileName, readState.context);
+            CodecUtil.checkIndexHeader(
+                bitsetIn,
+                Composite912DocValuesFormat.DATA_CODEC_NAME+"bitset",
+                Composite912DocValuesFormat.VERSION_START,
+                Composite912DocValuesFormat.VERSION_CURRENT,
+                readState.segmentInfo.getId(),
+                readState.segmentSuffix
+            );
+            int serializedSize = bitsetIn.readInt();
+            long min = bitsetIn.readLong();
+            bitsetIn.getFilePointer();
+            long st = System.currentTimeMillis();
+            // Read the serialized data into a ByteBuffer
+            ByteBuffer buffer = ByteBuffer.allocate((int) (bitsetIn.length() - bitsetIn.getFilePointer()));
+            byte[] bytes = new byte[(int) (bitsetIn.length() - bitsetIn.getFilePointer())];
+            bitsetIn.readBytes(bytes, 0, (int) (bitsetIn.length() - bitsetIn.getFilePointer()));
+            buffer.put(bytes);
+            buffer.flip();
+            System.out.println("Time taken to initialize buffer : " + (System.currentTimeMillis() - st));
+            // Create the RangeBitmap from the ByteBuffer
+            this.rangeBitmap = RangeBitmap.map(buffer);
+            System.out.println("Time taken to map bitset : " + (System.currentTimeMillis() - st));
+
+            RoaringBitmap roaringBitmap = this.rangeBitmap.between(Math.min(min, -min), 1708155544-min);
+            int count = 0;
+            Iterator<Integer> iter = roaringBitmap.iterator();
+            while(iter.hasNext()) {
+                iter.next();
+                count++;
+            }
+            System.out.println("Time taken to count bitset : " + (System.currentTimeMillis() - st) + "::::::" + count);
 
             // initialize data input
             metaIn = readState.directory.openChecksumInput(metaFileName, readState.context);
@@ -207,6 +257,8 @@ public class Composite912DocValuesReader extends DocValuesProducer implements Co
                     Composite912DocValuesFormat.META_DOC_VALUES_CODEC,
                     Composite912DocValuesFormat.META_DOC_VALUES_EXTENSION
                 );
+
+
 
             } catch (Throwable t) {
                 priorE = t;

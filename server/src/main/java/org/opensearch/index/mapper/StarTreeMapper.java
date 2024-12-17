@@ -278,9 +278,7 @@ public class StarTreeMapper extends ParametrizedFieldMapper {
             List<Metric> metrics = new LinkedList<>();
             Object metricsFromInput = XContentMapValues.extractValue(METRICS, map);
             if (metricsFromInput == null) {
-                throw new IllegalArgumentException(
-                    String.format(Locale.ROOT, "metrics section is required for star tree field [%s]", fieldName)
-                );
+                metricsFromInput = new ArrayList<>();
             }
             if (metricsFromInput instanceof List<?>) {
                 List<?> metricsList = (List<?>) metricsFromInput;

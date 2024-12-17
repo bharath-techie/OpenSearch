@@ -77,7 +77,7 @@ public class CodecService {
         } else {
             // CompositeCodec still delegates to PerFieldMappingPostingFormatCodec
             // We can still support all the compression codecs when composite index is present
-            if (mapperService.isCompositeIndexPresent()) {
+            if (true) {
                 codecs.putAll(compositeCodecFactory.getCompositeIndexCodecs(mapperService, logger));
             } else {
                 codecs.put(DEFAULT_CODEC, new PerFieldMappingPostingFormatCodec(Mode.BEST_SPEED, mapperService, logger));

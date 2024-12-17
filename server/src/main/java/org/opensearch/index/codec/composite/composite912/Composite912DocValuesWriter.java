@@ -38,7 +38,10 @@ import org.opensearch.index.mapper.DocCountFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MapperService;
 
+import org.roaringbitmap.RangeBitmap;
+
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -67,9 +70,13 @@ public class Composite912DocValuesWriter extends DocValuesConsumer {
 
     public IndexOutput dataOut;
     public IndexOutput metaOut;
+
+    public IndexOutput bitsetOut;
     private final Set<String> segmentFieldSet;
     private final boolean segmentHasCompositeFields;
     private final AtomicInteger fieldNumberAcrossCompositeFields;
+    private RangeBitmap.Appender appender = null;
+    long min = 0;
 
     private final Map<String, DocValuesProducer> fieldProducerMap = new HashMap<>();
     private final Map<String, SortedSetDocValues> fieldDocIdSetIteratorMap = new HashMap<>();
@@ -132,6 +139,21 @@ public class Composite912DocValuesWriter extends DocValuesConsumer {
                 this.state.segmentSuffix
             );
 
+            String bitsetFileName = IndexFileNames.segmentFileName(
+                this.state.segmentInfo.name,
+                this.state.segmentSuffix,
+                "rbs"
+            );
+            bitsetOut = this.state.directory.createOutput(bitsetFileName, this.state.context);
+            CodecUtil.writeIndexHeader(
+                bitsetOut,
+                Composite912DocValuesFormat.DATA_CODEC_NAME+"bitset",
+                Composite912DocValuesFormat.VERSION_CURRENT,
+                this.state.segmentInfo.getId(),
+                this.state.segmentSuffix
+            );
+
+
             success = true;
         } finally {
             if (success == false) {
@@ -157,6 +179,9 @@ public class Composite912DocValuesWriter extends DocValuesConsumer {
     @Override
     public void addNumericField(FieldInfo field, DocValuesProducer valuesProducer) throws IOException {
         delegate.addNumericField(field, valuesProducer);
+        if(field.name.equals("_seq_no")) {
+            addRangeBitMapNdv(field, valuesProducer);
+        }
         // Perform this only during flush flow
         if (mergeState.get() == null && segmentHasCompositeFields) {
             createCompositeIndicesIfPossible(valuesProducer, field);
@@ -176,10 +201,75 @@ public class Composite912DocValuesWriter extends DocValuesConsumer {
     @Override
     public void addSortedNumericField(FieldInfo field, DocValuesProducer valuesProducer) throws IOException {
         delegate.addSortedNumericField(field, valuesProducer);
+        addRangeBitMap(field, valuesProducer);
         // Perform this only during flush flow
         if (mergeState.get() == null && segmentHasCompositeFields) {
             createCompositeIndicesIfPossible(valuesProducer, field);
         }
+    }
+
+    private void addRangeBitMapNdv(FieldInfo fieldInfo, DocValuesProducer valuesProducer) throws IOException {
+        NumericDocValues s = valuesProducer.getNumeric(fieldInfo);
+        long min = Long.MAX_VALUE;
+        long max = Long.MIN_VALUE;
+        while(s.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+            long val = s.longValue();
+            if(val < min) {
+                min = val;
+            }
+            if(val > max) {
+                max = val;
+            }
+        }
+        this.min = min;
+        appender = RangeBitmap.appender(max);
+        s = valuesProducer.getNumeric(fieldInfo);
+        while(s.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+            long val = s.longValue();
+            appender.add(val - min);
+        }
+        flushBitMap(min, fieldInfo.name);
+    }
+
+    private void addRangeBitMap(FieldInfo fieldInfo, DocValuesProducer valuesProducer) throws IOException {
+        SortedNumericDocValues s = valuesProducer.getSortedNumeric(fieldInfo);
+        long min = Long.MAX_VALUE;
+        long max = Long.MIN_VALUE;
+        while(s.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+            long val = s.nextValue();
+            if(val < min) {
+                min = val;
+            }
+            if(val > max) {
+                max = val;
+            }
+        }
+        this.min = min;
+        appender = RangeBitmap.appender(max);
+        s = valuesProducer.getSortedNumeric(fieldInfo);
+        while(s.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+            long val = s.nextValue();
+            appender.add(val - min);
+        }
+        flushBitMap(min, fieldInfo.name);
+    }
+
+    private void flushBitMap(long min, String name) throws IOException {
+        int headerSize = Integer.BYTES + Long.BYTES;
+        int serializedSize = appender.serializedSizeInBytes();
+        System.out.println("Field name" + name + "::::: Serialized size : " + serializedSize + "===== Docs : " + state.segmentInfo.maxDoc());
+        ByteBuffer buf = ByteBuffer.allocate(serializedSize);
+
+        bitsetOut.writeInt(serializedSize);
+        bitsetOut.writeLong(min);
+
+        // Serialize appender into ByteBuffer
+        appender.serialize(buf);
+
+        // If you need to write the serialized data to bitsetOut
+        buf.flip(); // Reset the buffer's position to 0 and set limit to current position
+        bitsetOut.writeBytes(buf.array(), buf.position(), buf.remaining());
+        appender.clear();
     }
 
     @Override
@@ -208,15 +298,17 @@ public class Composite912DocValuesWriter extends DocValuesConsumer {
             if (dataOut != null) {
                 CodecUtil.writeFooter(dataOut); // write checksum
             }
-
+            if(bitsetOut != null) {
+                CodecUtil.writeFooter(bitsetOut);
+            }
             success = true;
         } finally {
             if (success) {
-                IOUtils.close(dataOut, metaOut, compositeDocValuesConsumer);
+                IOUtils.close(dataOut, metaOut, compositeDocValuesConsumer, bitsetOut);
             } else {
-                IOUtils.closeWhileHandlingException(dataOut, metaOut, compositeDocValuesConsumer);
+                IOUtils.closeWhileHandlingException(dataOut, metaOut, compositeDocValuesConsumer, bitsetOut);
             }
-            metaOut = dataOut = null;
+            metaOut = dataOut = bitsetOut = null;
             compositeDocValuesConsumer = null;
         }
     }
