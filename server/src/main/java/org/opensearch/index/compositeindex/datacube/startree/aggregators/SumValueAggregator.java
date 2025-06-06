@@ -7,6 +7,7 @@
  */
 package org.opensearch.index.compositeindex.datacube.startree.aggregators;
 
+import org.opensearch.index.compositeindex.datacube.startree.utils.CompensatedSumFieldValueConverter;
 import org.opensearch.index.mapper.FieldValueConverter;
 import org.opensearch.index.mapper.NumberFieldMapper;
 import org.opensearch.search.aggregations.metrics.CompensatedSum;
@@ -21,87 +22,112 @@ import org.opensearch.search.aggregations.metrics.CompensatedSum;
  *
  * @opensearch.experimental
  */
-class SumValueAggregator implements ValueAggregator<Double> {
+class SumValueAggregator implements ValueAggregator<CompensatedSum> {
 
     private final FieldValueConverter fieldValueConverter;
+    private final CompensatedSumFieldValueConverter compensatedSumConverter;
     private static final FieldValueConverter VALUE_AGGREGATOR_TYPE = NumberFieldMapper.NumberType.DOUBLE;
-
-    private CompensatedSum kahanSummation = new CompensatedSum(0, 0);
 
     public SumValueAggregator(FieldValueConverter fieldValueConverter) {
         this.fieldValueConverter = fieldValueConverter;
+        this.compensatedSumConverter = new CompensatedSumFieldValueConverter();
     }
 
     @Override
     public FieldValueConverter getAggregatedValueType() {
-        return VALUE_AGGREGATOR_TYPE;
+        return compensatedSumConverter;
     }
 
     @Override
-    public Double getInitialAggregatedValueForSegmentDocValue(Long segmentDocValue) {
-        kahanSummation.reset(0, 0);
+    public CompensatedSum getInitialAggregatedValueForSegmentDocValue(Long segmentDocValue) {
+        CompensatedSum kahanSummation = new CompensatedSum(0, 0);
         // add takes care of the sum and compensation internally
         if (segmentDocValue != null) {
             kahanSummation.add(fieldValueConverter.toDoubleValue(segmentDocValue));
         } else {
-            kahanSummation.add(getIdentityMetricValue());
+            kahanSummation.add(getIdentityMetricValue().value());
         }
-        return kahanSummation.value();
+        return kahanSummation;
     }
 
     // we have overridden this method because the reset with sum and compensation helps us keep
     // track of precision and avoids a potential loss in accuracy of sums.
     @Override
-    public Double mergeAggregatedValueAndSegmentValue(Double value, Long segmentDocValue) {
-        assert value == null || kahanSummation.value() == value;
+    public CompensatedSum mergeAggregatedValueAndSegmentValue(CompensatedSum value, Long segmentDocValue) {
+        CompensatedSum kahanSummation = new CompensatedSum(0, 0);
+        if (value == null) {
+            value = new CompensatedSum(0, 0);
+        }
+        kahanSummation.reset(value.value(), value.delta());
         // add takes care of the sum and compensation internally
         if (segmentDocValue != null) {
             kahanSummation.add(fieldValueConverter.toDoubleValue(segmentDocValue));
         } else {
-            kahanSummation.add(getIdentityMetricValue());
+            kahanSummation.add(getIdentityMetricValue().value());
         }
-        return kahanSummation.value();
+        return kahanSummation;
     }
+    // @Override
+    // public CompensatedSum mergeAggregatedValueAndSegmentValue(CompensatedSum value, Long segmentDocValue) {
+    // // Create new CompensatedSum with the previous value and delta
+    // CompensatedSum kahanSummation = new CompensatedSum(
+    // value != null ? value.value() : 0.0,
+    // value != null ? value.delta() : 0.0
+    // );
+    //
+    // // Add the new value to it
+    // if (segmentDocValue != null) {
+    // kahanSummation.add(fieldValueConverter.toDoubleValue(segmentDocValue));
+    // } else {
+    // kahanSummation.add(getIdentityMetricValue().value());
+    // }
+    // return kahanSummation;
+    // }
 
     @Override
-    public Double mergeAggregatedValues(Double value, Double aggregatedValue) {
-        assert aggregatedValue == null || kahanSummation.value() == aggregatedValue;
-        // add takes care of the sum and compensation internally
+    public CompensatedSum mergeAggregatedValues(CompensatedSum value, CompensatedSum aggregatedValue) {
+        CompensatedSum kahanSummation = new CompensatedSum(0, 0);
+        if (aggregatedValue != null) {
+            kahanSummation.reset(aggregatedValue.value(), aggregatedValue.delta());
+        }
         if (value != null) {
-            kahanSummation.add(value);
+            kahanSummation.add(value.value(), value.delta());
         } else {
-            kahanSummation.add(getIdentityMetricValue());
+            kahanSummation.add(getIdentityMetricValue().value());
         }
-        return kahanSummation.value();
+        return kahanSummation;
     }
 
     @Override
-    public Double getInitialAggregatedValue(Double value) {
-        kahanSummation.reset(0, 0);
+    public CompensatedSum getInitialAggregatedValue(CompensatedSum value) {
+        CompensatedSum kahanSummation = new CompensatedSum(0, 0);
         // add takes care of the sum and compensation internally
-        if (value != null) {
-            kahanSummation.add(value);
+        if (value == null) {
+            kahanSummation.add(getIdentityMetricValue().value());
         } else {
-            kahanSummation.add(getIdentityMetricValue());
+            kahanSummation.add(value.value(), value.delta());
         }
-        return kahanSummation.value();
+        return kahanSummation;
     }
 
     @Override
-    public Double toAggregatedValueType(Long value) {
+    public CompensatedSum toAggregatedValueType(Long value) {
+        CompensatedSum kahanSummation = new CompensatedSum(0, 0);
         try {
             if (value == null) {
-                return getIdentityMetricValue();
+                kahanSummation.add(getIdentityMetricValue().value());
+                return kahanSummation;
             }
-            return VALUE_AGGREGATOR_TYPE.toDoubleValue(value);
+            kahanSummation.add(VALUE_AGGREGATOR_TYPE.toDoubleValue(value));
+            return kahanSummation;
         } catch (Exception e) {
             throw new IllegalStateException("Cannot convert " + value + " to sortable aggregation type", e);
         }
     }
 
     @Override
-    public Double getIdentityMetricValue() {
+    public CompensatedSum getIdentityMetricValue() {
         // in present aggregations, if the metric behind sum is missing, we treat it as 0
-        return 0D;
+        return new CompensatedSum(0, 0);
     }
 }

@@ -21,28 +21,47 @@ public class StaticValueAggregatorTests extends OpenSearchTestCase {
         double expected = 1;
 
         // initializing our sum aggregator to derive exact sum using kahan summation
-        double aggregatedValue = getAggregatedValue(numbers);
-        assertEquals(expected, aggregatedValue, 0);
+        CompensatedSum aggregatedSum = getAggregatedValue(numbers);
+        assertEquals(expected, aggregatedSum.value(), 0);
 
         // assert kahan summation plain logic with our aggregated value
         double actual = kahanSum(numbers);
-        assertEquals(actual, aggregatedValue, 0);
+        assertEquals(actual, aggregatedSum.value(), 0);
 
         // assert that normal sum fails for this case
         double normalSum = normalSum(numbers);
         assertNotEquals(expected, normalSum, 0);
         assertNotEquals(actual, normalSum, 0);
-        assertNotEquals(aggregatedValue, normalSum, 0);
-
+        assertNotEquals(aggregatedSum.value(), normalSum, 0);
     }
 
-    private static double getAggregatedValue(double[] numbers) {
-        // explicitly took double to test for most precision
-        // hard to run similar tests for different data types dynamically as inputs and precision vary
+    private static CompensatedSum getAggregatedValue(double[] numbers) {
         SumValueAggregator aggregator = new SumValueAggregator(NumberFieldMapper.NumberType.DOUBLE);
-        double aggregatedValue = aggregator.getInitialAggregatedValueForSegmentDocValue(NumericUtils.doubleToSortableLong(numbers[0]));
-        aggregatedValue = aggregator.mergeAggregatedValueAndSegmentValue(aggregatedValue, NumericUtils.doubleToSortableLong(numbers[1]));
-        aggregatedValue = aggregator.mergeAggregatedValueAndSegmentValue(aggregatedValue, NumericUtils.doubleToSortableLong(numbers[2]));
+
+        // First number
+        long sortableLong1 = NumericUtils.doubleToSortableLong(numbers[0]);
+        double backToDouble1 = NumberFieldMapper.NumberType.DOUBLE.toDoubleValue(sortableLong1);
+        System.out.println("Original: " + numbers[0] + ", After conversion: " + backToDouble1);
+
+        CompensatedSum aggregatedValue = aggregator.getInitialAggregatedValueForSegmentDocValue(sortableLong1);
+        System.out.println("After first aggregation: " + aggregatedValue.value() + ", compensation: " + aggregatedValue.delta());
+
+        // Second number
+        long sortableLong2 = NumericUtils.doubleToSortableLong(numbers[1]);
+        double backToDouble2 = NumberFieldMapper.NumberType.DOUBLE.toDoubleValue(sortableLong2);
+        System.out.println("Original: " + numbers[1] + ", After conversion: " + backToDouble2);
+
+        aggregatedValue = aggregator.mergeAggregatedValueAndSegmentValue(aggregatedValue, sortableLong2);
+        System.out.println("After second aggregation: " + aggregatedValue.value() + ", compensation: " + aggregatedValue.delta());
+
+        // Third number
+        long sortableLong3 = NumericUtils.doubleToSortableLong(numbers[2]);
+        double backToDouble3 = NumberFieldMapper.NumberType.DOUBLE.toDoubleValue(sortableLong3);
+        System.out.println("Original: " + numbers[2] + ", After conversion: " + backToDouble3);
+
+        aggregatedValue = aggregator.mergeAggregatedValueAndSegmentValue(aggregatedValue, sortableLong3);
+        System.out.println("Final result: " + aggregatedValue.value() + ", compensation: " + aggregatedValue.delta());
+
         return aggregatedValue;
     }
 
@@ -129,5 +148,4 @@ public class StaticValueAggregatorTests extends OpenSearchTestCase {
         }
         assertEquals(expected, aggregatedValue, 0);
     }
-
 }

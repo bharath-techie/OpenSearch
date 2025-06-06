@@ -21,6 +21,7 @@ import org.opensearch.index.compositeindex.datacube.startree.node.StarTreeNodeTy
 import org.opensearch.index.compositeindex.datacube.startree.utils.SequentialDocValuesIterator;
 import org.opensearch.index.mapper.CompositeMappedFieldType;
 import org.opensearch.index.mapper.FieldValueConverter;
+import org.opensearch.search.aggregations.metrics.CompensatedSum;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -137,6 +138,8 @@ public class StarTreeTestUtils {
             StarTreeDocument resultStarTreeDocument = starTreeDocuments[i];
             StarTreeDocument expectedStarTreeDocument = expectedStarTreeDocuments[i];
 
+            System.out.println("result : " + resultStarTreeDocument);
+            System.out.println("expected  : " + expectedStarTreeDocument);
             assertNotNull(resultStarTreeDocument.dimensions);
             assertNotNull(resultStarTreeDocument.metrics);
 
@@ -150,6 +153,18 @@ public class StarTreeTestUtils {
             for (int mi = 0; mi < resultStarTreeDocument.metrics.length; mi++) {
                 if (expectedStarTreeDocument.metrics[mi] instanceof Long) {
                     assertEquals(((Long) expectedStarTreeDocument.metrics[mi]).doubleValue(), resultStarTreeDocument.metrics[mi]);
+                } else if (resultStarTreeDocument.metrics[mi] instanceof CompensatedSum) {
+                    if (expectedStarTreeDocument.metrics[mi] instanceof CompensatedSum) {
+                        assertEquals(expectedStarTreeDocument.metrics[mi], resultStarTreeDocument.metrics[mi]);
+                    } else {
+                        assertEquals((expectedStarTreeDocument.metrics[mi]), ((CompensatedSum) resultStarTreeDocument.metrics[mi]).value());
+                    }
+                } else if (expectedStarTreeDocument.metrics[mi] instanceof CompensatedSum) {
+                    if (resultStarTreeDocument.metrics[mi] instanceof CompensatedSum) {
+                        assertEquals(expectedStarTreeDocument.metrics[mi], resultStarTreeDocument.metrics[mi]);
+                    } else {
+                        assertEquals(((CompensatedSum) expectedStarTreeDocument.metrics[mi]).value(), resultStarTreeDocument.metrics[mi]);
+                    }
                 } else {
                     assertEquals(expectedStarTreeDocument.metrics[mi], resultStarTreeDocument.metrics[mi]);
                 }
