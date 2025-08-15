@@ -7,6 +7,7 @@
  */
 
 package org.opensearch.datafusion.core;
+
 /**
  * Session context for datafusion
  */
@@ -27,6 +28,9 @@ public class SessionContext implements AutoCloseable {
      */
     public static native void closeContext(long contextId);
 
+    /**
+     * Creates a new session context.
+     */
     public SessionContext() {
         this.ptr = createContext();
     }
