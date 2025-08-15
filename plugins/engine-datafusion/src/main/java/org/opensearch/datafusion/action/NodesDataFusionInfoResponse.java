@@ -30,11 +30,7 @@ public class NodesDataFusionInfoResponse extends BaseNodesResponse<NodeDataFusio
      * @param nodes The list of node DataFusion info.
      * @param failures The list of failed node exceptions.
      */
-    public NodesDataFusionInfoResponse(
-        ClusterName clusterName,
-        List<NodeDataFusionInfo> nodes,
-        List<FailedNodeException> failures
-    ) {
+    public NodesDataFusionInfoResponse(ClusterName clusterName, List<NodeDataFusionInfo> nodes, List<FailedNodeException> failures) {
         super(clusterName, nodes, failures);
     }
 
@@ -75,8 +71,8 @@ public class NodesDataFusionInfoResponse extends BaseNodesResponse<NodeDataFusio
         builder.startObject("nodes");
         for (NodeDataFusionInfo nodeInfo : getNodes()) {
             builder.field(nodeInfo.getNode().getId());
-//            builder.field("name", nodeInfo.getNode().getName());
-//            builder.field("transport_address", nodeInfo.getNode().getAddress().toString());
+            // builder.field("name", nodeInfo.getNode().getName());
+            // builder.field("transport_address", nodeInfo.getNode().getAddress().toString());
             nodeInfo.toXContent(builder, params);
         }
         builder.endObject();

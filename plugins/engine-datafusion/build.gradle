@@ -27,14 +27,15 @@ opensearchplugin {
 }
 
 dependencies {
+    api project(':libs:opensearch-vectorized-exec-spi')
     implementation "org.apache.logging.log4j:log4j-api:${versions.log4j}"
     implementation "org.apache.logging.log4j:log4j-core:${versions.log4j}"
     testImplementation "junit:junit:${versions.junit}"
     testImplementation "org.hamcrest:hamcrest:${versions.hamcrest}"
     testImplementation "org.mockito:mockito-core:${versions.mockito}"
 
-    // Add CSV codec for testing
-    testImplementation project(':libs:opensearch-dataformat-csv') // TODO : adding implementation results in cycle dependency
+    // Add CSV plugin for testing
+    // testImplementation project(':plugins:dataformat-csv')
 }
 
 // Task to build the Rust JNI library
@@ -53,7 +54,22 @@ task buildRustLibrary(type: Exec) {
     def buildType = project.hasProperty('rustRelease') ? 'release' : 'debug'
     def targetDir = "target/${buildType}"
 
-    def cargoArgs = ['cargo', 'build']
+  // Find cargo executable - try common locations
+  def cargoExecutable = 'cargo'
+  def possibleCargoPaths = [
+    System.getenv('HOME') + '/.cargo/bin/cargo',
+    '/usr/local/bin/cargo',
+    'cargo'
+  ]
+
+  for (String path : possibleCargoPaths) {
+    if (new File(path).exists()) {
+      cargoExecutable = path
+      break
+    }
+  }
+
+    def cargoArgs = [cargoExecutable, 'build']
     if (buildType == 'release') {
         cargoArgs.add('--release')
     }
@@ -97,6 +113,12 @@ compileJava.dependsOn copyNativeLibrary
 
 // Ensure processResources depends on copyNativeLibrary
 processResources.dependsOn copyNativeLibrary
+sourcesJar.dependsOn copyNativeLibrary
+
+// Ensure filepermissions task depends on copyNativeLibrary
+tasks.named('filepermissions').configure {
+    dependsOn copyNativeLibrary
+}
 
 // Clean task should also clean Rust artifacts
 clean {

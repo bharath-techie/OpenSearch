@@ -14,11 +14,11 @@ import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
 import org.opensearch.common.util.concurrent.ConcurrentMapLong;
 import org.opensearch.datafusion.core.GlobalRuntimeEnv;
-import org.opensearch.datafusion.spi.DataSourceCodec;
-import org.opensearch.datafusion.spi.DataSourceRegistry;
-import org.opensearch.datafusion.spi.RecordBatchStream;
+import org.opensearch.vectorized.execution.spi.DataSourceCodec;
+import org.opensearch.vectorized.execution.spi.RecordBatchStream;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -32,9 +32,14 @@ public class DataFusionService extends AbstractLifecycleComponent {
     private final DataSourceRegistry dataSourceRegistry;
     private final GlobalRuntimeEnv globalRuntimeEnv;
 
-    public DataFusionService() {
-        this.dataSourceRegistry = DataSourceRegistry.getInstance();
-        String version = DataFusionJNI.getVersion();
+    /**
+     * Creates a new DataFusion service instance.
+     */
+    public DataFusionService(Map<String, DataSourceCodec> dataSourceCodecs) {
+        this.dataSourceRegistry = new DataSourceRegistry(dataSourceCodecs);
+
+        // to verify jni
+        String version = DataFusionQueryJNI.getVersionInfo();
         this.globalRuntimeEnv = new GlobalRuntimeEnv();
     }
 
@@ -43,14 +48,15 @@ public class DataFusionService extends AbstractLifecycleComponent {
         logger.info("Starting DataFusion service");
         try {
             // Initialize the data source registry
-            dataSourceRegistry.initialize();
-
             // Test that at least one data source is available
             if (!dataSourceRegistry.hasCodecs()) {
                 logger.warn("No data sources available");
             } else {
-                logger.info("DataFusion service started successfully with {} data sources: {}",
-                    dataSourceRegistry.getCodecNames().size(), dataSourceRegistry.getCodecNames());
+                logger.info(
+                    "DataFusion service started successfully with {} data sources: {}",
+                    dataSourceRegistry.getCodecNames().size(),
+                    dataSourceRegistry.getCodecNames()
+                );
 
             }
         } catch (Exception e) {
@@ -71,9 +77,6 @@ public class DataFusionService extends AbstractLifecycleComponent {
                 logger.warn("Error closing session context {}", sessionId, e);
             }
         }
-
-        // Shutdown the engine registry
-        dataSourceRegistry.shutdown();
         sessionEngines.clear();
         globalRuntimeEnv.close();
         logger.info("DataFusion service stopped");
@@ -95,12 +98,15 @@ public class DataFusionService extends AbstractLifecycleComponent {
     public CompletableFuture<Void> registerDirectory(String directoryPath, List<String> fileNames) {
         DataSourceCodec engine = dataSourceRegistry.getDefaultEngine();
         if (engine == null) {
-            return CompletableFuture.failedFuture(
-                new IllegalStateException("No DataFusion engine available"));
+            return CompletableFuture.failedFuture(new IllegalStateException("No DataFusion engine available"));
         }
 
-        logger.debug("Registering directory {} with {} files using engine {}",
-            directoryPath, fileNames.size(), engine.getClass().getSimpleName());
+        logger.debug(
+            "Registering directory {} with {} files using engine {}",
+            directoryPath,
+            fileNames.size(),
+            engine.getClass().getSimpleName()
+        );
 
         return engine.registerDirectory(directoryPath, fileNames, globalRuntimeEnv.getPointer());
     }
@@ -114,21 +120,21 @@ public class DataFusionService extends AbstractLifecycleComponent {
         long runtimeEnvironmentId = globalRuntimeEnv.getPointer();
         DataSourceCodec codec = dataSourceRegistry.getDefaultEngine();
         if (codec == null) {
-            return CompletableFuture.failedFuture(
-                new IllegalArgumentException("Runtime environment not found: " + runtimeEnvironmentId));
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Runtime environment not found: " + runtimeEnvironmentId));
         }
 
-        logger.debug("Creating session context for runtime environment {} using engine {}",
-            runtimeEnvironmentId, codec.getClass().getSimpleName());
+        logger.debug(
+            "Creating session context for runtime environment {} using engine {}",
+            runtimeEnvironmentId,
+            codec.getClass().getSimpleName()
+        );
 
-        return codec.createSessionContext(runtimeEnvironmentId)
-            .thenApply(sessionId -> {
-                // Track which engine created this session context
-                sessionEngines.put(sessionId, codec);
-                logger.debug("Created session context {} with engine {}",
-                    sessionId, codec.getClass().getSimpleName());
-                return sessionId;
-            });
+        return codec.createSessionContext(runtimeEnvironmentId).thenApply(sessionId -> {
+            // Track which engine created this session context
+            sessionEngines.put(sessionId, codec);
+            logger.debug("Created session context {} with engine {}", sessionId, codec.getClass().getSimpleName());
+            return sessionId;
+        });
     }
 
     /**
@@ -141,12 +147,15 @@ public class DataFusionService extends AbstractLifecycleComponent {
     public CompletableFuture<RecordBatchStream> executeSubstraitQuery(long sessionContextId, byte[] substraitPlanBytes) {
         DataSourceCodec engine = sessionEngines.get(sessionContextId);
         if (engine == null) {
-            return CompletableFuture.failedFuture(
-                new IllegalArgumentException("Session context not found: " + sessionContextId));
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Session context not found: " + sessionContextId));
         }
 
-        logger.debug("Executing substrait query for session {} with plan size {} bytes using engine {}",
-            sessionContextId, substraitPlanBytes.length, engine.getClass().getSimpleName());
+        logger.debug(
+            "Executing substrait query for session {} with plan size {} bytes using engine {}",
+            sessionContextId,
+            substraitPlanBytes.length,
+            engine.getClass().getSimpleName()
+        );
 
         return engine.executeSubstraitQuery(sessionContextId, substraitPlanBytes);
     }
@@ -164,8 +173,7 @@ public class DataFusionService extends AbstractLifecycleComponent {
             return CompletableFuture.completedFuture(null);
         }
 
-        logger.debug("Closing session context {} using engine {}",
-            sessionContextId, engine.getClass().getSimpleName());
+        logger.debug("Closing session context {} using engine {}", sessionContextId, engine.getClass().getSimpleName());
 
         return engine.closeSessionContext(sessionContextId);
     }
@@ -179,7 +187,7 @@ public class DataFusionService extends AbstractLifecycleComponent {
         version.append("{\"codecs\":[");
 
         boolean first = true;
-        for (String engineName : dataSourceRegistry.getCodecNames()) {
+        for (String engineName : this.dataSourceRegistry.getCodecNames()) {
             if (!first) {
                 version.append(",");
             }

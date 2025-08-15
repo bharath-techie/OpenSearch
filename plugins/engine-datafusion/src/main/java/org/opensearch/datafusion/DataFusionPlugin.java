@@ -23,6 +23,7 @@ import org.opensearch.datafusion.action.TransportNodesDataFusionInfoAction;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.plugins.ActionPlugin;
+import org.opensearch.plugins.DataSourceAwarePlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.rest.RestController;
@@ -30,18 +31,20 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
+import org.opensearch.vectorized.execution.spi.DataSourceCodec;
 import org.opensearch.watcher.ResourceWatcherService;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 /**
  * Main plugin class for OpenSearch DataFusion integration.
  *
  */
-public class DataFusionPlugin extends Plugin implements ActionPlugin {
+public class DataFusionPlugin extends Plugin implements ActionPlugin, DataSourceAwarePlugin {
 
     private DataFusionService dataFusionService;
     private final boolean isDataFusionEnabled;
@@ -73,23 +76,24 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin {
      */
     @Override
     public Collection<Object> createComponents(
-            Client client,
-            ClusterService clusterService,
-            ThreadPool threadPool,
-            ResourceWatcherService resourceWatcherService,
-            ScriptService scriptService,
-            NamedXContentRegistry xContentRegistry,
-            Environment environment,
-            NodeEnvironment nodeEnvironment,
-            NamedWriteableRegistry namedWriteableRegistry,
-            IndexNameExpressionResolver indexNameExpressionResolver,
-            Supplier<RepositoriesService> repositoriesServiceSupplier
+        Client client,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        ResourceWatcherService resourceWatcherService,
+        ScriptService scriptService,
+        NamedXContentRegistry xContentRegistry,
+        Environment environment,
+        NodeEnvironment nodeEnvironment,
+        NamedWriteableRegistry namedWriteableRegistry,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<RepositoriesService> repositoriesServiceSupplier,
+        Map<String, DataSourceCodec> dataSourceCodecs
     ) {
         if (!isDataFusionEnabled) {
             return Collections.emptyList();
         }
-
-        dataFusionService = new DataFusionService();
+        dataFusionService = new DataFusionService(dataSourceCodecs);
+        // return Collections.emptyList();
         return Collections.singletonList(dataFusionService);
     }
 
@@ -106,20 +110,18 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin {
      */
     @Override
     public List<RestHandler> getRestHandlers(
-            Settings settings,
-            RestController restController,
-            ClusterSettings clusterSettings,
-            IndexScopedSettings indexScopedSettings,
-            SettingsFilter settingsFilter,
-            IndexNameExpressionResolver indexNameExpressionResolver,
-            Supplier<DiscoveryNodes> nodesInCluster
+        Settings settings,
+        RestController restController,
+        ClusterSettings clusterSettings,
+        IndexScopedSettings indexScopedSettings,
+        SettingsFilter settingsFilter,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<DiscoveryNodes> nodesInCluster
     ) {
         if (!isDataFusionEnabled) {
             return Collections.emptyList();
         }
-        return List.of(
-            new DataFusionAction()
-        );
+        return List.of(new DataFusionAction());
     }
 
     /**
@@ -131,8 +133,11 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin {
         if (!isDataFusionEnabled) {
             return Collections.emptyList();
         }
-        return List.of(
-            new ActionHandler<>(NodesDataFusionInfoAction.INSTANCE, TransportNodesDataFusionInfoAction.class)
-        );
+        return List.of(new ActionHandler<>(NodesDataFusionInfoAction.INSTANCE, TransportNodesDataFusionInfoAction.class));
+    }
+
+    @Override
+    public void registerDataSources(Map<String, DataSourceCodec> dataSourceCodecs) {
+        dataFusionService = new DataFusionService(dataSourceCodecs);
     }
 }
