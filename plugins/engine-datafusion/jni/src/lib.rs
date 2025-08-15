@@ -9,6 +9,7 @@
 use jni::objects::JClass;
 use jni::sys::{jlong, jstring};
 use jni::JNIEnv;
+use std::sync::Arc;
 
 use datafusion::execution::context::SessionContext;
 
@@ -20,7 +21,7 @@ use datafusion::prelude::SessionConfig;
 
 /// Create a new DataFusion session context
 #[no_mangle]
-pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_createContext(
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createContext(
     _env: JNIEnv,
     _class: JClass,
 ) -> jlong {
@@ -32,7 +33,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_createContex
 
 /// Close and cleanup a DataFusion context
 #[no_mangle]
-pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_closeContext(
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_closeContext(
     _env: JNIEnv,
     _class: JClass,
     context_id: jlong,
@@ -42,7 +43,17 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_closeContext
 
 /// Get version information
 #[no_mangle]
-pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_getVersion(
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_getVersionInfo(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let version_info = format!(r#"{{"version": "{}", "codecs": ["CsvDataSourceCodec"]}}"#, DATAFUSION_VERSION);
+    env.new_string(version_info).expect("Couldn't create Java string").as_raw()
+}
+
+/// Get version information (legacy method name)
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_getVersion(
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -50,7 +61,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_getVersion(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_createGlobalRuntime(
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createGlobalRuntime(
     _env: JNIEnv,
     _class: JClass,
 ) -> jlong {
@@ -77,14 +88,25 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_createGlobal
 }
 
 #[no_mangle]
-pub extern "system" fn Java_org_opensearch_datafusion_DataFusionJNI_closeGlobalRuntime(
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createSessionContext(
     _env: JNIEnv,
     _class: JClass,
-    runtime_env_id: jlong,
+    runtime_id: jlong,
+) -> jlong {
+    let runtimeEnv = unsafe { &mut *(runtime_id as *mut RuntimeEnv) };
+    let config = SessionConfig::new().with_repartition_aggregations(true);
+    let context = SessionContext::new_with_config_rt(config, Arc::new(runtimeEnv.clone()));
+    let ctx = Box::into_raw(Box::new(context)) as jlong;
+    ctx
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_closeSessionContext(
+    _env: JNIEnv,
+    _class: JClass,
+    context_id: jlong,
 ) {
-    // Convert raw pointer back to a Box
-    let _ = unsafe { Box::from_raw(runtime_env_id as *mut RuntimeEnv) };
-    // Box automatically drops here, cleaning up the runtime
+    let _ = unsafe { Box::from_raw(context_id as *mut SessionContext) };
 }
 
 

@@ -8,15 +8,10 @@
 
 package org.opensearch.datafusion;
 
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.Assume;
-import org.opensearch.datafusion.core.SessionContext;
 import org.opensearch.test.OpenSearchTestCase;
 
+import java.util.Collections;
 import java.util.List;
-
-import static org.junit.Assert.*;
 
 /**
  * Unit tests for DataFusionService
@@ -29,14 +24,13 @@ public class TestDataFusionServiceTests extends OpenSearchTestCase {
 
     private DataFusionService service;
 
-    @Before
+    @Override
     public void setUp() throws Exception {
         super.setUp();
-        service = new DataFusionService();
+        service = new DataFusionService(Collections.emptyMap());
         service.doStart();
     }
 
-    @Test
     public void testGetVersion() {
         String version = service.getVersion();
         assertNotNull(version);
@@ -45,13 +39,17 @@ public class TestDataFusionServiceTests extends OpenSearchTestCase {
         assertTrue("Version should contain CsvDataSourceCodec", version.contains("CsvDataSourceCodec"));
     }
 
-    @Test
     public void testCreateAndCloseContext() {
-        service.registerDirectory("/somedir", List.of("some.csv"));
+        service.registerDirectory("/Users/gbh/Documents", List.of("parquet-nested.csv"));
         long contextId = service.createSessionContext().join();
         // Create context
         assertTrue(contextId > 0);
 
         service.getVersion();
+    }
+
+    public void testCodecDiscovery() {
+        // Test that the CSV codec can be discovered via SPI
+        // TODO : test with dummy plugin and dummy codec
     }
 }
