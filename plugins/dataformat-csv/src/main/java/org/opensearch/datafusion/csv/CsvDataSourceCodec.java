@@ -27,7 +27,10 @@ public class CsvDataSourceCodec implements DataSourceCodec {
     private static final Logger logger = LogManager.getLogger(CsvDataSourceCodec.class);
     private static final AtomicLong runtimeIdGenerator = new AtomicLong(0);
     private static final AtomicLong sessionIdGenerator = new AtomicLong(0);
-    private final ConcurrentHashMap<Long, Long> sessionContexts = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, SessionContext> sessionContexts = new ConcurrentHashMap<>();
+    private ListingTableManager listingTableManager = ListingTableManager.getInstance();
+    // Currently I'm mapping contextID --> sessionContext and contextID --> ListingTable
+
 
     // JNI library loading
     static {
@@ -46,11 +49,9 @@ public class CsvDataSourceCodec implements DataSourceCodec {
             try {
                 logger.debug("Registering directory: {} with {} files", directoryPath, fileNames.size());
 
-                // Convert file names to arrays for JNI
-                String[] fileArray = fileNames.toArray(new String[0]);
+                // We can do this as well:
+                listingTableManager.createListingTable(directoryPath, fileNames);
 
-                // Call native method to register directory
-                nativeRegisterDirectory("csv_table", directoryPath, fileArray, runtimeId);
                 return null;
             } catch (Exception e) {
                 logger.error("Failed to register directory: " + directoryPath, e);
@@ -71,8 +72,10 @@ public class CsvDataSourceCodec implements DataSourceCodec {
                 String[] configValues = { "1024", "4" };
 
                 // Create native session context
-                long nativeContextPtr = nativeCreateSessionContext(configKeys, configValues);
-                sessionContexts.put(sessionId, nativeContextPtr);
+                // We need to do this operation Atomically:
+
+                SessionContext sessionContext = new SessionContext(sessionId);
+                sessionContexts.put(sessionId, sessionContext);
 
                 logger.info("Created session context with ID: {}", sessionId);
                 return sessionId;
@@ -84,26 +87,29 @@ public class CsvDataSourceCodec implements DataSourceCodec {
     }
 
     @Override
-    public CompletableFuture<RecordBatchStream> executeSubstraitQuery(long sessionContextId, byte[] substraitPlanBytes) {
+    public CompletableFuture<RecordBatchStream> executeSubstraitQuery(long contextId, byte[] substraitPlanBytes) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                logger.debug("Executing Substrait query for session: {}", sessionContextId);
+                logger.debug("Executing Substrait query for session: {}", contextId);
 
-                Long nativeContextPtr = sessionContexts.get(sessionContextId);
-                if (nativeContextPtr == null) {
-                    throw new IllegalArgumentException("Invalid session context ID: " + sessionContextId);
+                SessionContext sessionContext = sessionContexts.get(contextId);
+                if (sessionContext == null || sessionContext.isClosed()) {
+                    throw new IllegalArgumentException("Invalid session context ID: " + contextId);
                 }
 
-                // Execute query and get native stream pointer
-                long nativeStreamPtr = nativeExecuteSubstraitQuery(nativeContextPtr, substraitPlanBytes);
+                sessionContext.attachListingTable();
+                long nativeStreamPtr = sessionContext.executeSubstraitQuery(substraitPlanBytes);
+                if (nativeStreamPtr == 0) {
+                    throw new RuntimeException("Failed to execute Substrait query");
+                }
 
                 // Create Java wrapper for the native stream
                 RecordBatchStream stream = new CsvRecordBatchStream(nativeStreamPtr);
 
-                logger.info("Successfully executed Substrait query for session: {}", sessionContextId);
+                logger.info("Successfully executed Substrait query for session: {}", contextId);
                 return stream;
             } catch (Exception e) {
-                logger.error("Failed to execute Substrait query for session: " + sessionContextId, e);
+                logger.error("Failed to execute Substrait query for session: " + contextId, e);
                 throw new CompletionException("Failed to execute Substrait query", e);
             }
         });
@@ -115,9 +121,9 @@ public class CsvDataSourceCodec implements DataSourceCodec {
             try {
                 logger.debug("Closing session context: {}", sessionContextId);
 
-                Long nativeContextPtr = sessionContexts.remove(sessionContextId);
-                if (nativeContextPtr != null) {
-                    nativeCloseSessionContext(nativeContextPtr);
+                SessionContext sessionContext = sessionContexts.remove(sessionContextId);
+                if (sessionContext != null) {
+                    sessionContext.close();
                     logger.info("Successfully closed session context: {}", sessionContextId);
                 } else {
                     logger.warn("Session context not found: {}", sessionContextId);
@@ -132,11 +138,10 @@ public class CsvDataSourceCodec implements DataSourceCodec {
     }
 
     // Native method declarations - these will be implemented in the JNI library
-    private static native void nativeRegisterDirectory(String tableName, String directoryPath, String[] files, long runtimeId);
+    private static native long nativeRegisterDirectory(String tableName, String directoryPath, String[] files, long runtimeId);
 
-    private static native long nativeCreateSessionContext(String[] configKeys, String[] configValues);
 
-    private static native long nativeExecuteSubstraitQuery(long sessionContextPtr, byte[] substraitPlan);
+
 
     private static native void nativeCloseSessionContext(long sessionContextPtr);
 }
