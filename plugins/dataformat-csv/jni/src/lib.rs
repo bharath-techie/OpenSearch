@@ -22,6 +22,8 @@ mod stream;
 mod substrait;
 mod util;
 mod csv_exec;
+mod listing_table;
+mod searcher;
 
 use context::SessionContextManager;
 use runtime::RuntimeManager;

@@ -10,18 +10,13 @@ package org.opensearch.datafusion.csv;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.apache.lucene.search.ReferenceManager;
 import org.apache.lucene.store.AlreadyClosedException;
-import org.opensearch.common.lease.Releasables;
-import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
-import org.opensearch.index.engine.Engine;
-import org.opensearch.index.engine.EngineException;
 import org.opensearch.vectorized.execution.spi.DataSourceCodec;
 import org.opensearch.vectorized.execution.spi.RecordBatchStream;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -37,10 +32,13 @@ public class CsvDataSourceCodec implements DataSourceCodec {
     private static final AtomicLong runtimeIdGenerator = new AtomicLong(0);
     private static final AtomicLong sessionIdGenerator = new AtomicLong(0);
     private final ConcurrentHashMap<Long, SessionContextSupplier> sessionContextSuppliers = new ConcurrentHashMap<>();
-    // This should come from the Constructor
-    private ListingTableManager listingTableManager = new ListingTableManager(new ListingTable());
-    // Currently I'm mapping contextID --> sessionContext and contextID --> ListingTable
+    // This should come from the Constructor? Should we move this to the DataFusionEngine?
+    private final ListingReferenceManager listingReferenceManager;
 
+
+    public CsvDataSourceCodec(String path) {
+        listingReferenceManager = new ListingReferenceManager(new ListingTable(path, new String[0]));
+    }
 
     // JNI library loading
     static {
@@ -60,7 +58,7 @@ public class CsvDataSourceCodec implements DataSourceCodec {
                 logger.debug("Registering directory: {} with {} files", directoryPath, fileNames.size());
 
                 // We can do this as well:
-                listingTableManager.createListingTable(directoryPath, fileNames);
+                listingReferenceManager.createListingTable(directoryPath, fileNames);
 
                 return null;
             } catch (Exception e) {
@@ -107,12 +105,12 @@ public class CsvDataSourceCodec implements DataSourceCodec {
                     throw new IllegalArgumentException("Invalid session context ID: " + contextId);
                 }
 
-                SessionContext sessionContext = sessionContextSupplier.acquireSessionContext();
-                if (sessionContext == null) {
+                Searcher searcher = sessionContextSupplier.acquireSessionContext();
+                if (searcher == null) {
                     throw new IllegalStateException("Failed to acquire session context");
                 }
 
-                long nativeStreamPtr = sessionContext.executeSubstraitQuery(substraitPlanBytes);
+                long nativeStreamPtr = searcher.executeSubstraitQuery(substraitPlanBytes);
                 if (nativeStreamPtr == 0) {
                     throw new RuntimeException("Failed to execute Substrait query");
                 }
@@ -153,12 +151,12 @@ public class CsvDataSourceCodec implements DataSourceCodec {
 
     public SessionContextSupplier acquireSessionContextSupplier(long contextId, long globalRunTimeId) {
         try {
-            ListingTable listingTable = listingTableManager.acquireListingTable();
+            ListingTable listingTable = listingReferenceManager.acquireListingTable();
             SessionContextSupplier reader = new SessionContextSupplier() {
 
                 @Override
-                protected SessionContext acquireSessionContextInternal() {
-                    return new SessionContext(
+                protected Searcher acquireSessionContextInternal() {
+                    return new Searcher(
                         contextId,
                         listingTable,
                         globalRunTimeId,
@@ -169,7 +167,7 @@ public class CsvDataSourceCodec implements DataSourceCodec {
                 @Override
                 protected void doClose() {
                     try {
-                        listingTableManager.release(listingTable);
+                        listingReferenceManager.release(listingTable);
                     } catch (IOException e) {
                         throw new UncheckedIOException("Failed to close", e);
                     } catch (AlreadyClosedException e) {

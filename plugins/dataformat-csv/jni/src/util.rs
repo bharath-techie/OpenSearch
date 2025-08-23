@@ -5,7 +5,10 @@
 use jni::JNIEnv;
 use jni::objects::{JObjectArray, JString};
 use std::collections::HashMap;
+use std::fs;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
+use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
 
 /// Parse a string map from JNI arrays
 pub fn parse_string_map(
@@ -57,7 +60,37 @@ pub fn parse_string_arr(
     Ok(rust_strings)
 }
 
+pub fn parse_string(
+    env: &mut JNIEnv,
+    file: JString
+) -> Result<String> {
+    let rust_str: String = env.get_string(&file)
+        .expect("Couldn't get java string")
+        .into();
+
+    Ok(rust_str)
+}
+
 /// Throw a Java exception
 pub fn throw_exception(env: &mut JNIEnv, message: &str) {
     let _ = env.throw_new("java/lang/RuntimeException", message);
+}
+
+pub fn create_object_meta_from_filenames(base_path: &str, filenames: Vec<&str>) -> Vec<ObjectMeta> {
+    filenames.into_iter().map(|filename| {
+        let full_path = format!("{}/{}", base_path.trim_end_matches('/'), filename);
+        let file_size = fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
+        let modified = fs::metadata(&full_path)
+            .and_then(|m| m.modified())
+            .map(|t| DateTime::<Utc>::from(t))
+            .unwrap_or_else(|_| Utc::now());
+
+        ObjectMeta {
+            location: ObjectPath::from(filename),
+            last_modified: modified,
+            size: file_size as usize,
+            e_tag: None,
+            version: None,
+        }
+    }).collect()
 }

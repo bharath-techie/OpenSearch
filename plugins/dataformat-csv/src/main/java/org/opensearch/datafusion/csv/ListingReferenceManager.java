@@ -10,14 +10,13 @@ package org.opensearch.datafusion.csv;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
-public class ListingTableManager {
+public class ListingReferenceManager {
 
     private ListingTable currentListingTable;
 
     // How to create it the very first time?
-    public ListingTableManager(ListingTable listingTable){
+    public ListingReferenceManager(ListingTable listingTable){
         this.currentListingTable = listingTable;
     }
 

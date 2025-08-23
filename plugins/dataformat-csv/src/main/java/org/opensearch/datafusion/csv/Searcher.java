@@ -14,20 +14,19 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
-class SessionContext implements Closeable {
+class Searcher implements Closeable {
     private Long ptr;
     private Long contextId;
     private long globalRunTimeId;
     private boolean isClose = false;
-    private ListingTable listingTable;
+
     Closeable onClose;
 
 
-    SessionContext(Long contextId, ListingTable listingTable, Long globalRunTimeId, Closeable onClose) {
+    Searcher(Long contextId, ListingTable listingTable, Long globalRunTimeId, Closeable onClose) {
         this.contextId = contextId;
         this.globalRunTimeId = globalRunTimeId;
-        this.ptr = nativeCreateSessionContext(constants.configKeys, constants.configValues);
-        this.listingTable = listingTable;
+        this.ptr = nativeCreateSessionContext(constants.configKeys, constants.configValues, listingTable.getPtr());
         this.onClose = onClose;
     }
 
@@ -36,14 +35,14 @@ class SessionContext implements Closeable {
     }
 
 
-
     public long executeSubstraitQuery(byte[] substraitPlanBytes) {
-        return nativeExecuteSubstraitQuery(this.ptr, listingTable.getPtr(), substraitPlanBytes);
+        return nativeExecuteSubstraitQuery(this.ptr, substraitPlanBytes);
     }
 
     @Override
     public void close() throws IOException {
         try {
+            destroySessionContext(this.ptr);
             onClose.close();
         } catch(IOException e) {
             throw new UncheckedIOException("failed to close", e);
@@ -54,8 +53,8 @@ class SessionContext implements Closeable {
         }
     }
 
-    private static native long nativeCreateSessionContext(String[] configKeys, String[] configValues);
+    private static native long nativeCreateSessionContext(String[] configKeys, String[] configValues, long listingTablePtr);
     private static native void destroySessionContext(long ptr);
-    private static native long nativeExecuteSubstraitQuery(long sessionContextPtr, long currentListingTablePtr, byte[] substraitPlan);
+    private static native long nativeExecuteSubstraitQuery(long sessionContextPtr, byte[] substraitPlan);
 
 }

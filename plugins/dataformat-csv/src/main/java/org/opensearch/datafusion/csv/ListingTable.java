@@ -13,7 +13,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class ListingTable implements Closeable {
+class ListingTable implements Closeable {
     private Long ptr;
     private AtomicInteger refCount = new AtomicInteger(0);
 

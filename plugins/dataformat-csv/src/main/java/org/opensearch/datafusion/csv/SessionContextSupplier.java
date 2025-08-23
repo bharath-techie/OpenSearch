@@ -15,9 +15,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public abstract class SessionContextSupplier implements Releasable {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    public final SessionContext acquireSessionContext(){
-        final SessionContext sessionContext = acquireSessionContextInternal();
-        return sessionContext;
+    public final Searcher acquireSessionContext(){
+        final Searcher searcher = acquireSessionContextInternal();
+        return searcher;
     }
 
     @Override
@@ -30,5 +30,5 @@ public abstract class SessionContextSupplier implements Releasable {
     }
 
     protected abstract void doClose();
-    protected abstract SessionContext acquireSessionContextInternal();
+    protected abstract Searcher acquireSessionContextInternal();
 }

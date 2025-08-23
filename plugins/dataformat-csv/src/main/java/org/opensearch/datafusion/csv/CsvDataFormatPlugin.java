@@ -36,7 +36,7 @@ public class CsvDataFormatPlugin extends Plugin implements DataSourcePlugin {
     public Optional<Map<String, DataSourceCodec>> getDataSourceCodecs() {
         Map<String, DataSourceCodec> codecs = new HashMap<>();
         // TODO : version it correctly - similar to lucene codecs?
-        codecs.put("csv-v1", new CsvDataSourceCodec());
+        codecs.put("csv-v1", new CsvDataSourceCodec("csv"));
         return Optional.of(codecs);
         // return Optional.empty();
     }
