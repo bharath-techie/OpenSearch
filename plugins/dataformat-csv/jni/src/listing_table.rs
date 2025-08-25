@@ -43,7 +43,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_ListingTable_createLis
     };
 
 
-    // Write the code for the Listing Table creation
+    // How to throw the expect code error?
     let table_path: String = env
         .get_string(&directory_path)
         .expect("Couldn't get java String")
@@ -61,7 +61,8 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_ListingTable_createLis
     let table_path = ListingTableUrl::parse(table_path).unwrap();
 
     // Initiate the listing table with the files
-    let list_file_cache = runtime_arc.cache_manager.get_list_files_cache();
+    let list_file_cache = runtime_arc.cache_manager.get_list_files_cache()
+        .expect("Cache should be present");
     list_file_cache.put(table_path.prefix(), Arc::new(files_meta));
 
     let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime_arc));

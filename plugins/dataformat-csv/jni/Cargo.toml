@@ -43,7 +43,7 @@ object_store = "=0.12.3"
 url = "2.0"
 
 # Substrait support
-substrait = "0.47"
+substrait = { version = "0.58", features = ["serde"] }
 prost = "0.13"
 
 # Temporary directory support

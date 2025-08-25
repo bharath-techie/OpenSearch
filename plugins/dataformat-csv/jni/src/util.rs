@@ -7,6 +7,7 @@ use jni::objects::{JObjectArray, JString};
 use std::collections::HashMap;
 use std::fs;
 use anyhow::Result;
+use arrow_array::StringArray;
 use chrono::{DateTime, Utc};
 use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
 
@@ -76,8 +77,9 @@ pub fn throw_exception(env: &mut JNIEnv, message: &str) {
     let _ = env.throw_new("java/lang/RuntimeException", message);
 }
 
-pub fn create_object_meta_from_filenames(base_path: &str, filenames: Vec<&str>) -> Vec<ObjectMeta> {
+pub fn create_object_meta_from_filenames(base_path: &str, filenames: Vec<String>) -> Vec<ObjectMeta> {
     filenames.into_iter().map(|filename| {
+        let filename = filename.as_str();
         let full_path = format!("{}/{}", base_path.trim_end_matches('/'), filename);
         let file_size = fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
         let modified = fs::metadata(&full_path)
@@ -88,7 +90,7 @@ pub fn create_object_meta_from_filenames(base_path: &str, filenames: Vec<&str>) 
         ObjectMeta {
             location: ObjectPath::from(filename),
             last_modified: modified,
-            size: file_size as usize,
+            size: file_size,
             e_tag: None,
             version: None,
         }

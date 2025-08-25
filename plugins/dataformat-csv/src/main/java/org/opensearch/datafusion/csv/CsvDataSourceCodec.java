@@ -16,7 +16,6 @@ import org.opensearch.vectorized.execution.spi.RecordBatchStream;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -31,7 +30,7 @@ public class CsvDataSourceCodec implements DataSourceCodec {
     private static final Logger logger = LogManager.getLogger(CsvDataSourceCodec.class);
     private static final AtomicLong runtimeIdGenerator = new AtomicLong(0);
     private static final AtomicLong sessionIdGenerator = new AtomicLong(0);
-    private final ConcurrentHashMap<Long, SessionContextSupplier> sessionContextSuppliers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, SearcherSupplier> sessionContextSuppliers = new ConcurrentHashMap<>();
     // This should come from the Constructor? Should we move this to the DataFusionEngine?
     private final ListingReferenceManager listingReferenceManager;
 
@@ -82,8 +81,8 @@ public class CsvDataSourceCodec implements DataSourceCodec {
                 // Create native session context
                 // We need to do this operation Atomically:
 
-                SessionContextSupplier sessionContextSupplier = acquireSessionContextSupplier(sessionId, globalRuntimeEnvId);
-                sessionContextSuppliers.put(sessionId, sessionContextSupplier);
+                SearcherSupplier searcherSupplier = acquireSessionContextSupplier(sessionId, globalRuntimeEnvId);
+                sessionContextSuppliers.put(sessionId, searcherSupplier);
 
                 logger.info("Created session context with ID: {}", sessionId);
                 return sessionId;
@@ -100,12 +99,12 @@ public class CsvDataSourceCodec implements DataSourceCodec {
             try {
                 logger.debug("Executing Substrait query for session: {}", contextId);
 
-                SessionContextSupplier sessionContextSupplier = sessionContextSuppliers.get(contextId);
-                if (sessionContextSupplier == null ) {
+                SearcherSupplier searcherSupplier = sessionContextSuppliers.get(contextId);
+                if (searcherSupplier == null ) {
                     throw new IllegalArgumentException("Invalid session context ID: " + contextId);
                 }
 
-                Searcher searcher = sessionContextSupplier.acquireSessionContext();
+                Searcher searcher = searcherSupplier.acquireSearcher();
                 if (searcher == null) {
                     throw new IllegalStateException("Failed to acquire session context");
                 }
@@ -133,9 +132,9 @@ public class CsvDataSourceCodec implements DataSourceCodec {
             try {
                 logger.debug("Closing session context: {}", sessionContextId);
 
-                SessionContextSupplier sessionContextSupplier = sessionContextSuppliers.remove(sessionContextId);
-                if (sessionContextSupplier != null) {
-                    sessionContextSupplier.close();
+                SearcherSupplier searcherSupplier = sessionContextSuppliers.remove(sessionContextId);
+                if (searcherSupplier != null) {
+                    searcherSupplier.close();
                     logger.info("Successfully closed session context: {}", sessionContextId);
                 } else {
                     logger.warn("Session context not found: {}", sessionContextId);
@@ -149,13 +148,13 @@ public class CsvDataSourceCodec implements DataSourceCodec {
         });
     }
 
-    public SessionContextSupplier acquireSessionContextSupplier(long contextId, long globalRunTimeId) {
+    public SearcherSupplier acquireSessionContextSupplier(long contextId, long globalRunTimeId) {
         try {
             ListingTable listingTable = listingReferenceManager.acquireListingTable();
-            SessionContextSupplier reader = new SessionContextSupplier() {
+            SearcherSupplier reader = new SearcherSupplier() {
 
                 @Override
-                protected Searcher acquireSessionContextInternal() {
+                protected Searcher acquireSearcherInternal() {
                     return new Searcher(
                         contextId,
                         listingTable,

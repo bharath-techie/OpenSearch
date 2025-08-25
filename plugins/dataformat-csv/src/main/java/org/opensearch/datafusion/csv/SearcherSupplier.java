@@ -12,11 +12,11 @@ import org.opensearch.common.lease.Releasable;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public abstract class SessionContextSupplier implements Releasable {
+public abstract class SearcherSupplier implements Releasable {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    public final Searcher acquireSessionContext(){
-        final Searcher searcher = acquireSessionContextInternal();
+    public final Searcher acquireSearcher(){
+        final Searcher searcher = acquireSearcherInternal();
         return searcher;
     }
 
@@ -30,5 +30,5 @@ public abstract class SessionContextSupplier implements Releasable {
     }
 
     protected abstract void doClose();
-    protected abstract Searcher acquireSessionContextInternal();
+    protected abstract Searcher acquireSearcherInternal();
 }

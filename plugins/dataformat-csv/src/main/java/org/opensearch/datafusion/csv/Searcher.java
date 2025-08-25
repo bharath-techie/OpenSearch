@@ -40,7 +40,7 @@ class Searcher implements Closeable {
     }
 
     @Override
-    public void close() throws IOException {
+    public void close() {
         try {
             destroySessionContext(this.ptr);
             onClose.close();
