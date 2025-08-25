@@ -8,7 +8,6 @@
 
 package org.opensearch.index.engine.exec.composite;
 
-import org.opensearch.index.engine.DataFormatPlugin;
 import org.opensearch.index.engine.exec.DataFormat;
 import org.opensearch.index.engine.exec.FileMetadata;
 import org.opensearch.index.engine.exec.IndexingExecutionEngine;
@@ -18,6 +17,7 @@ import org.opensearch.index.engine.exec.Writer;
 import org.opensearch.index.engine.exec.coord.Any;
 import org.opensearch.index.engine.exec.coord.DocumentWriterPool;
 import org.opensearch.index.engine.exec.text.TextEngine;
+import org.opensearch.plugins.DataSourcePlugin;
 import org.opensearch.plugins.PluginsService;
 
 import java.io.IOException;
@@ -36,7 +36,7 @@ public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine
         this.dataFormat = dataformat;
         try {
             for (DataFormat dataFormat : dataformat.getDataFormats()) {
-                DataFormatPlugin plugin = pluginsService.filterPlugins(DataFormatPlugin.class).stream()
+                DataSourcePlugin plugin = pluginsService.filterPlugins(DataSourcePlugin.class).stream()
                     .filter(curr -> curr.getDataFormat().equals(dataFormat))
                     .findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("dataformat [" + dataFormat + "] is not registered."));
