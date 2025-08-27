@@ -7,9 +7,10 @@
  */
 use std::pin::Pin;
 use std::sync::Arc;
-use datafusion::datasource::listing::ListingTable;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass};
@@ -18,6 +19,7 @@ use substrait::proto::Plan;
 // How prost Message get's linked to plan::Decode?
 use prost::Message;
 use tokio::runtime::Runtime;
+use crate::shard_view::ShardView;
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeExecuteSubstraitQuery(
@@ -76,14 +78,52 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeCreateS
     mut env: JNIEnv,
     _class: JClass,
     runtime_ptr: jlong,
-    listing_table_ptr: jlong,
+    shard_view_ptr: jlong,
     runtime_env_ptr: jlong,
 ) {
 
-    let listing_table = unsafe {
-        let boxed = &*(runtime_env_ptr as *const Pin<Arc<ListingTable>>);
+    let shard_view = unsafe {
+        let boxed = &*(shard_view_ptr as *const Pin<ShardView>);
         (**boxed).clone()
     };
 
-    let session_context = SessionContext::new();
+    let table_path = shard_view.table_path();
+    let files_meta = shard_view.files_meta();
+
+    let runtime_arc = unsafe {
+        let boxed = &*(runtime_env_ptr as *const Pin<Arc<RuntimeEnv>>);
+        (**boxed).clone()
+    };
+
+    let list_file_cache = runtime_arc.cache_manager.get_list_files_cache()
+        .expect("Cache should be present");
+    list_file_cache.put(table_path.prefix(), Arc::new(files_meta));
+
+    let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime_arc));
+
+
+    // Create default parquet options
+    let file_format = ParquetFormat::new();
+    let listing_options = ListingOptions::new(Arc::new(file_format))
+        .with_file_extension(".parquet");
+
+
+    let runtime = unsafe { &mut *(runtime_ptr as *mut Runtime) };
+    runtime.block_on(async {
+        let resolved_schema = listing_options
+            .infer_schema(&ctx.state(), &table_path)
+            .await.unwrap();
+
+
+        let config = ListingTableConfig::new(table_path)
+            .with_listing_options(listing_options)
+            .with_schema(resolved_schema);
+
+        // Create a new TableProvider
+        let provider = Arc::new(ListingTable::try_new(config).unwrap());
+
+        // Return back after wrapping in Box
+        Box::into_raw(Box::new(provider)) as jlong
+    });
+
 }

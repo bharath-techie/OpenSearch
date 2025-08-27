@@ -14,6 +14,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
+
 class Searcher implements Closeable {
     private Long ptr;
     private Long contextId;
@@ -23,10 +24,10 @@ class Searcher implements Closeable {
     Closeable onClose;
 
 
-    Searcher(Long contextId, ListingTable listingTable, Long globalRunTimeId, Closeable onClose) {
+    Searcher(Long contextId, ShardView shardView, Long globalRunTimeId, Closeable onClose) {
         this.contextId = contextId;
         this.globalRunTimeId = globalRunTimeId;
-        this.ptr = nativeCreateSessionContext(constants.configKeys, constants.configValues, listingTable.getPtr());
+        this.ptr = nativeCreateSessionContext(constants.configKeys, constants.configValues, shardView.getCachePtr());
         this.onClose = onClose;
     }
 
@@ -53,7 +54,7 @@ class Searcher implements Closeable {
         }
     }
 
-    private static native long nativeCreateSessionContext(String[] configKeys, String[] configValues, long listingTablePtr);
+    private static native long nativeCreateSessionContext(String[] configKeys, String[] configValues, long shardViewPtr);
     private static native void destroySessionContext(long ptr);
     private static native long nativeExecuteSubstraitQuery(long sessionContextPtr, byte[] substraitPlan);
 

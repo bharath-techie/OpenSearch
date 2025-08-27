@@ -24,6 +24,7 @@ mod util;
 mod csv_exec;
 mod listing_table;
 mod searcher;
+mod shard_view;
 
 use context::SessionContextManager;
 use runtime::RuntimeManager;

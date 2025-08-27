@@ -28,11 +28,15 @@ import java.util.concurrent.atomic.AtomicLong;
 public class CsvDataSourceCodec implements DataSourceCodec {
 
     private static final Logger logger = LogManager.getLogger(CsvDataSourceCodec.class);
+    private final String shardPath = "Shard-0";
     private static final AtomicLong runtimeIdGenerator = new AtomicLong(0);
     private static final AtomicLong sessionIdGenerator = new AtomicLong(0);
     private final ConcurrentHashMap<Long, SearcherSupplier> sessionContextSuppliers = new ConcurrentHashMap<>();
     // This should come from the Constructor? Should we move this to the DataFusionEngine?
     private final ListingReferenceManager listingReferenceManager;
+
+    // Ideally this should be maintained by the Engine...
+    private final ShardViewReferenceManager shardViewReferenceManager = new ShardViewReferenceManager();
 
 
     public CsvDataSourceCodec(String path) {
@@ -150,14 +154,14 @@ public class CsvDataSourceCodec implements DataSourceCodec {
 
     public SearcherSupplier acquireSessionContextSupplier(long contextId, long globalRunTimeId) {
         try {
-            ListingTable listingTable = listingReferenceManager.acquireListingTable();
+            ShardView  shardView = shardViewReferenceManager.acquireShardView(this.shardPath);
             SearcherSupplier reader = new SearcherSupplier() {
 
                 @Override
                 protected Searcher acquireSearcherInternal() {
                     return new Searcher(
                         contextId,
-                        listingTable,
+                        shardView,
                         globalRunTimeId,
                         () -> { }
                     );
@@ -166,7 +170,7 @@ public class CsvDataSourceCodec implements DataSourceCodec {
                 @Override
                 protected void doClose() {
                     try {
-                        listingReferenceManager.release(listingTable);
+                        shardViewReferenceManager.release(shardView);
                     } catch (IOException e) {
                         throw new UncheckedIOException("Failed to close", e);
                     } catch (AlreadyClosedException e) {
