@@ -9,17 +9,21 @@ use std::pin::Pin;
 use std::sync::Arc;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
-use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::cache::cache_manager::CacheManagerConfig;
+use datafusion::execution::cache::cache_unit::DefaultListFilesCache;
+use datafusion::execution::cache::CacheAccessor;
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
 use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass};
+use jni::objects::{JByteArray, JClass, JObject};
 use jni::sys::{jbyteArray, jlong};
 use substrait::proto::Plan;
 // How prost Message get's linked to plan::Decode?
 use prost::Message;
 use tokio::runtime::Runtime;
 use crate::shard_view::ShardView;
+use crate::util::{set_object_result_error, set_object_result_ok};
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeExecuteSubstraitQuery(
@@ -27,7 +31,8 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeExecute
     _class: JClass,
     runtime_ptr: jlong,
     session_context_ptr: jlong,
-    substrait_bytes: jbyteArray
+    substrait_bytes: jbyteArray,
+    callback: JObject,
 ) {
     let ctx = unsafe { &mut *(session_context_ptr as *mut SessionContext) };
     // Convert Java byte array to Rust Vec<u8>
@@ -67,6 +72,28 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeExecute
 
         let dataframe = ctx.execute_logical_plan(logical_plan)
             .await.expect("Failed to run Logical Plan");
+
+        let task_ctx = dataframe.task_ctx();
+        let execution_plan = dataframe.create_physical_plan().await?;
+
+        match execution_plan.execute(0, task_ctx) {
+            Ok(stream) => {
+                let boxed_stream = Box::new(stream);
+                let stream_ptr = Box::into_raw(boxed_stream);
+                set_object_result_ok(
+                    &mut env,
+                    callback,
+                    stream_ptr
+                );
+            },
+            Err(e) => {
+                set_object_result_error(
+                    &mut env,
+                    callback,
+                    &e
+                );
+            }
+        }
     });
     // Create DataFrame from the converted logical plan
 
@@ -79,8 +106,8 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeCreateS
     _class: JClass,
     runtime_ptr: jlong,
     shard_view_ptr: jlong,
-    runtime_env_ptr: jlong,
-) {
+    global_runtime_env_ptr: jlong,
+) -> jlong {
 
     let shard_view = unsafe {
         let boxed = &*(shard_view_ptr as *const Pin<ShardView>);
@@ -90,16 +117,22 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeCreateS
     let table_path = shard_view.table_path();
     let files_meta = shard_view.files_meta();
 
-    let runtime_arc = unsafe {
-        let boxed = &*(runtime_env_ptr as *const Pin<Arc<RuntimeEnv>>);
-        (**boxed).clone()
-    };
+    // Will use it once the global RunTime is defined
+    // let runtime_arc = unsafe {
+    //     let boxed = &*(runtime_env_ptr as *const Pin<Arc<RuntimeEnv>>);
+    //     (**boxed).clone()
+    // };
 
-    let list_file_cache = runtime_arc.cache_manager.get_list_files_cache()
-        .expect("Cache should be present");
+    let list_file_cache = Arc::new(DefaultListFilesCache::default());
     list_file_cache.put(table_path.prefix(), Arc::new(files_meta));
 
-    let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime_arc));
+    let runtime_env = RuntimeEnvBuilder::new()
+        .with_cache_manager(CacheManagerConfig::default()
+            .with_list_files_cache(Some(list_file_cache))).build().unwrap();
+
+
+
+    let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime_env));
 
 
     // Create default parquet options
@@ -121,9 +154,11 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_Searcher_nativeCreateS
 
         // Create a new TableProvider
         let provider = Arc::new(ListingTable::try_new(config).unwrap());
-
+        let shard_id = shard_view.table_path().prefix().filename().expect("Conversion to Str failed");
+        ctx.register_parquet(shard_id, provider, ParquetFormat::default())
+            .await.expect("Failed to attach the Table");
         // Return back after wrapping in Box
-        Box::into_raw(Box::new(provider)) as jlong
+        Box::into_raw(Box::new(ctx)) as jlong
     });
 
 }

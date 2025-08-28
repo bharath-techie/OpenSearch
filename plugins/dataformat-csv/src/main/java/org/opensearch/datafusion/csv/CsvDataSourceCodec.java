@@ -33,14 +33,13 @@ public class CsvDataSourceCodec implements DataSourceCodec {
     private static final AtomicLong sessionIdGenerator = new AtomicLong(0);
     private final ConcurrentHashMap<Long, SearcherSupplier> sessionContextSuppliers = new ConcurrentHashMap<>();
     // This should come from the Constructor? Should we move this to the DataFusionEngine?
-    private final ListingReferenceManager listingReferenceManager;
 
     // Ideally this should be maintained by the Engine...
-    private final ShardViewReferenceManager shardViewReferenceManager = new ShardViewReferenceManager();
+    private final ShardViewReferenceManager shardViewReferenceManager;
 
 
-    public CsvDataSourceCodec(String path) {
-        listingReferenceManager = new ListingReferenceManager(new ListingTable(path, new String[0]));
+    public CsvDataSourceCodec(String path) throws IOException {
+        shardViewReferenceManager = new ShardViewReferenceManager(path, new String[0]);
     }
 
     // JNI library loading
@@ -61,7 +60,7 @@ public class CsvDataSourceCodec implements DataSourceCodec {
                 logger.debug("Registering directory: {} with {} files", directoryPath, fileNames.size());
 
                 // We can do this as well:
-                listingReferenceManager.createListingTable(directoryPath, fileNames);
+                shardViewReferenceManager.swapShardViewReference(directoryPath, fileNames.toArray(new String[0]));
 
                 return null;
             } catch (Exception e) {

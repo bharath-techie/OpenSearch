@@ -13,27 +13,25 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class ShardViewReferenceManager {
     // catalog vs cacheptr
-
-    private final ConcurrentHashMap<String, ShardView> currentShardViews = new ConcurrentHashMap<>();
+    private final String directoryPath;
+    private ShardView currentShardView;
 
     public ShardView acquireShardView(String path) {
-        ShardView shardView = currentShardViews.get(path);
-        if (shardView == null) {
-            throw new RuntimeException("ShardView not found for path: " + path);
+        if (currentShardView == null) {
+            throw new RuntimeException("Invalid state of ShardView: " + path);
         }
-        shardView.incRef();
-        return shardView;
+        currentShardView.incRef();
+        return currentShardView;
     }
 
-    public void createShardView(String path, String[] files) throws IOException {
-        ShardView shardView = new ShardView(path, files);
-        currentShardViews.put(path, shardView);
+    public ShardViewReferenceManager(String path, String[] files) throws IOException {
+        this.directoryPath = path;
+        this.currentShardView = new ShardView(path, files);
     }
 
     public void swapShardViewReference(String path, String[] files) throws IOException {
-        ShardView currentShardView = currentShardViews.get(path);
         this.release(currentShardView);
-        createShardView(path, files);
+        currentShardView = new ShardView(path, files);
     }
 
     public void release(ShardView reference) throws IOException {

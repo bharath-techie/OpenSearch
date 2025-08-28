@@ -23,9 +23,8 @@ public class CsvDataSourceCodecTests extends OpenSearchTestCase {
         codec.registerDirectory("/Users/abandeji/Public/work-dump/testing_supplier", files, 1L).join();
 
         // Create session context
-        SearcherSupplier sp = codec.acquireSessionContextSupplier(1L, 1L);
-        Searcher searcher = sp.acquireSearcher();
-
+        SearcherSupplier searcherSupplier = codec.acquireSessionContextSupplier(1L, 1L);
+        Searcher searcher = searcherSupplier.acquireSearcher();
         searcher.executeSubstraitQuery(null);
     }
 }
