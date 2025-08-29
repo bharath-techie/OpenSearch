@@ -12,6 +12,7 @@ import org.opensearch.plugins.DataSourcePlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.vectorized.execution.spi.DataSourceCodec;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -36,7 +37,12 @@ public class CsvDataFormatPlugin extends Plugin implements DataSourcePlugin {
     public Optional<Map<String, DataSourceCodec>> getDataSourceCodecs() {
         Map<String, DataSourceCodec> codecs = new HashMap<>();
         // TODO : version it correctly - similar to lucene codecs?
-        codecs.put("csv-v1", new CsvDataSourceCodec("csv"));
+        try {
+            codecs.put("csv-v1", new CsvDataSourceCodec("csv"));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
         return Optional.of(codecs);
         // return Optional.empty();
     }

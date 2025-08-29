@@ -2,16 +2,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-use jni::JNIEnv;
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use datafusion::arrow::array::RecordBatch;
 use jni::objects::{JObject, JObjectArray, JString};
+use jni::sys::jlong;
+use jni::JNIEnv;
+use object_store::{path::Path as ObjectPath, ObjectMeta};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use anyhow::Result;
-use arrow_array::StringArray;
-use chrono::{DateTime, Utc};
-use jni::sys::jlong;
-use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
 
 /// Set error message from a result using a Consumer<String> Java callback
 pub fn set_error_message_batch<Err: Error>(env: &mut JNIEnv, callback: JObject, result: Result<Vec<RecordBatch>, Err>) {

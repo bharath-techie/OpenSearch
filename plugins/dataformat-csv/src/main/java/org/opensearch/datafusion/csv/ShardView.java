@@ -24,7 +24,7 @@ public class ShardView implements Closeable {
     public ShardView(String directoryPath, String[] files) {
         this.directoryPath = directoryPath;
         this.files = files;
-        this.cachePtr = createShardViewCache(directoryPath, files);
+        this.cachePtr = createShardView(directoryPath, files);
         incRef();
     }
 
@@ -48,8 +48,8 @@ public class ShardView implements Closeable {
 
     }
 
-    private static native long createShardViewCache(String path, String[] files);
-    private static native void destroyShardViewCache(long ptr);
+    private static native long createShardView(String path, String[] files);
+    private static native void destroyShardView(long ptr);
 
     @Override
     public void close() throws IOException {
@@ -57,7 +57,7 @@ public class ShardView implements Closeable {
             throw new IllegalStateException("Listing table has been already closed");
         }
 
-        destroyShardViewCache(this.cachePtr);
+        destroyShardView(this.cachePtr);
         this.cachePtr = -1;
     }
 }

@@ -1,1 +1,2 @@
 jni/target/
+src/main/resources/*.dylib

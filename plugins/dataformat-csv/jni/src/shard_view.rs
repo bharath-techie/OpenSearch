@@ -5,16 +5,13 @@
  * this file be licensed under the Apache-2.0 license or a
  * compatible open source license.
  */
-use std::sync::Arc;
+use crate::util::{create_object_meta_from_filenames, parse_string_arr};
 use datafusion::datasource::listing::ListingTableUrl;
-use datafusion::execution::cache::cache_manager::ListFilesCache;
-use datafusion::execution::cache::cache_unit::DefaultListFilesCache;
-use datafusion::execution::cache::CacheAccessor;
-use jni::JNIEnv;
 use jni::objects::{JClass, JObjectArray, JString};
 use jni::sys::jlong;
+use jni::JNIEnv;
 use object_store::ObjectMeta;
-use crate::util::{create_object_meta_from_filenames, parse_string_arr};
+use std::sync::Arc;
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_csv_ShardView_createShardView(
@@ -44,22 +41,23 @@ pub extern "system" fn Java_org_opensearch_datafusion_csv_ShardView_destroyShard
 
 pub struct ShardView {
     table_path: ListingTableUrl,
-    files_meta: Vec<ObjectMeta>
+    files_meta: Arc<Vec<ObjectMeta>>
 }
 
 impl ShardView {
     pub fn new(table_path: ListingTableUrl, files_meta: Vec<ObjectMeta>) -> Self {
+        let files_meta = Arc::new(files_meta);
         ShardView {
             table_path,
             files_meta
         }
     }
 
-    pub fn table_path(self) -> ListingTableUrl {
-        self.table_path
+    pub fn table_path(&self) -> ListingTableUrl {
+        self.table_path.clone()
     }
 
-    pub fn files_meta(self) -> Vec<ObjectMeta> {
-        self.files_meta
+    pub fn files_meta(&self) -> Arc<Vec<ObjectMeta>> {
+        self.files_meta.clone()
     }
 }

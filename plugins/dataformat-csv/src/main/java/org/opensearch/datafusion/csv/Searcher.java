@@ -9,10 +9,12 @@
 package org.opensearch.datafusion.csv;
 
 import org.apache.lucene.store.AlreadyClosedException;
+import org.opensearch.vectorized.execution.spi.RecordBatchStream;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.concurrent.CompletableFuture;
 
 
 class Searcher implements Closeable {
@@ -25,10 +27,12 @@ class Searcher implements Closeable {
 
 
     Searcher(Long contextId, ShardView shardView, Long globalRunTimeId, Closeable onClose) {
+        System.out.println("Searcher starting");
         this.contextId = contextId;
         this.globalRunTimeId = globalRunTimeId;
-        this.ptr = nativeCreateSessionContext(constants.configKeys, constants.configValues, shardView.getCachePtr());
+        this.ptr = nativeCreateSessionContext(0L, shardView.getCachePtr(), 0L);
         this.onClose = onClose;
+        System.out.println("Created SessionContext");
     }
 
     public boolean isClosed() {
@@ -37,6 +41,7 @@ class Searcher implements Closeable {
 
 
     public long executeSubstraitQuery(byte[] substraitPlanBytes) {
+        CompletableFuture<RecordBatchStream> result = new CompletableFuture<>();
         return nativeExecuteSubstraitQuery(this.ptr, substraitPlanBytes);
     }
 
@@ -54,8 +59,11 @@ class Searcher implements Closeable {
         }
     }
 
-    private static native long nativeCreateSessionContext(String[] configKeys, String[] configValues, long shardViewPtr);
+    private static native long nativeCreateSessionContext(long runtimePtr, long shardViewPtr, long globalRunTimePtr);
     private static native void destroySessionContext(long ptr);
-    private static native long nativeExecuteSubstraitQuery(long sessionContextPtr, byte[] substraitPlan);
+    private static native long nativeExecuteSubstraitQuery(
+        long sessionContextPtr,
+        byte[] substraitPlan
+    );
 
 }

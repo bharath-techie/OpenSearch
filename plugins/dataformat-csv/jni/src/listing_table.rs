@@ -8,6 +8,7 @@
 use crate::util::{create_object_meta_from_filenames, parse_string_arr};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl};
+use datafusion::datasource::TableProvider;
 use datafusion::execution::cache::CacheAccessor;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -16,7 +17,6 @@ use jni::sys::jlong;
 use jni::JNIEnv;
 use std::pin::Pin;
 use std::sync::Arc;
-use datafusion::datasource::{provider, TableProvider};
 use tokio::runtime::Runtime;
 
 #[no_mangle]

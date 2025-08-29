@@ -9,7 +9,6 @@
 package org.opensearch.datafusion.csv;
 
 import java.io.IOException;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class ShardViewReferenceManager {
     // catalog vs cacheptr
@@ -26,7 +25,10 @@ public class ShardViewReferenceManager {
 
     public ShardViewReferenceManager(String path, String[] files) throws IOException {
         this.directoryPath = path;
+        System.out.println("Starting Creation of View");
         this.currentShardView = new ShardView(path, files);
+
+        System.out.println("Endning Creation of View");
     }
 
     public void swapShardViewReference(String path, String[] files) throws IOException {
