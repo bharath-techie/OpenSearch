@@ -110,6 +110,7 @@ import org.opensearch.indices.replication.checkpoint.ReferencedSegmentsPublisher
 import org.opensearch.indices.replication.checkpoint.SegmentReplicationCheckpointPublisher;
 import org.opensearch.node.remotestore.RemoteStoreNodeAttribute;
 import org.opensearch.plugins.IndexStorePlugin;
+import org.opensearch.plugins.PluginsService;
 import org.opensearch.plugins.SearchEnginePlugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
@@ -208,6 +209,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     private volatile TimeValue refreshInterval;
     private volatile boolean shardLevelRefreshEnabled;
     private final SearchEnginePlugin searchEnginePlugin;
+    private final PluginsService pluginsService;
 
     @InternalApi
     public IndexService(
@@ -253,7 +255,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         Consumer<IndexShard> replicator,
         Function<ShardId, ReplicationStats> segmentReplicationStatsProvider,
         Supplier<Integer> clusterDefaultMaxMergeAtOnceSupplier,
-        SearchEnginePlugin searchEnginePlugin
+        SearchEnginePlugin searchEnginePlugin,
+        PluginsService pluginsService
     ) {
         super(indexSettings);
         this.allowExpensiveQueries = allowExpensiveQueries;
@@ -360,6 +363,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
             }
         }
         this.searchEnginePlugin = searchEnginePlugin;
+        this.pluginsService = pluginsService;
     }
 
     @InternalApi
@@ -401,7 +405,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         RecoverySettings recoverySettings,
         RemoteStoreSettings remoteStoreSettings,
         Supplier<Integer> clusterDefaultMaxMergeAtOnce,
-        SearchEnginePlugin searchEnginePlugin
+        SearchEnginePlugin searchEnginePlugin,
+        PluginsService pluginsService
     ) {
         this(
             indexSettings,
@@ -446,7 +451,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
             s -> {},
             (shardId) -> ReplicationStats.empty(),
             clusterDefaultMaxMergeAtOnce,
-            searchEnginePlugin
+            searchEnginePlugin,
+            pluginsService
         );
     }
 
@@ -796,7 +802,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                 clusterService.getClusterApplierService(),
                 this.indexSettings.isSegRepEnabledOrRemoteNode() ? mergedSegmentPublisher : null,
                 this.indexSettings.isSegRepEnabledOrRemoteNode() ? referencedSegmentsPublisher : null,
-                this.searchEnginePlugin.createEngine()
+                this.searchEnginePlugin.createEngine(),
+                pluginsService
             );
             eventListener.indexShardStateChanged(indexShard, null, indexShard.state(), "shard created");
             eventListener.afterIndexShardCreated(indexShard);

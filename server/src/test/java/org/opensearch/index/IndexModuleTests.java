@@ -270,6 +270,7 @@ public class IndexModuleTests extends OpenSearchTestCase {
             s -> {},
             null,
             () -> TieredMergePolicyProvider.DEFAULT_MAX_MERGE_AT_ONCE,
+            null,
             null
         );
     }
