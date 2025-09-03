@@ -1101,7 +1101,8 @@ public class IndicesService extends AbstractLifecycleComponent
             this.remoteStoreSettings,
             replicator,
             segmentReplicationStatsProvider,
-            this::getClusterDefaultMaxMergeAtOnce
+            this::getClusterDefaultMaxMergeAtOnce,
+            this.pluginsService
         );
     }
 
