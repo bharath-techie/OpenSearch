@@ -110,6 +110,7 @@ import org.opensearch.indices.replication.checkpoint.ReferencedSegmentsPublisher
 import org.opensearch.indices.replication.checkpoint.SegmentReplicationCheckpointPublisher;
 import org.opensearch.node.remotestore.RemoteStoreNodeAttribute;
 import org.opensearch.plugins.IndexStorePlugin;
+import org.opensearch.plugins.PluginsService;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
 import org.opensearch.search.aggregations.support.ValuesSourceRegistry;
@@ -206,6 +207,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     private final Object refreshMutex = new Object();
     private volatile TimeValue refreshInterval;
     private volatile boolean shardLevelRefreshEnabled;
+    private final PluginsService pluginsService;
 
     @InternalApi
     public IndexService(
@@ -250,7 +252,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         CompositeIndexSettings compositeIndexSettings,
         Consumer<IndexShard> replicator,
         Function<ShardId, ReplicationStats> segmentReplicationStatsProvider,
-        Supplier<Integer> clusterDefaultMaxMergeAtOnceSupplier
+        Supplier<Integer> clusterDefaultMaxMergeAtOnceSupplier,
+        PluginsService pluginsService
     ) {
         super(indexSettings);
         this.allowExpensiveQueries = allowExpensiveQueries;
@@ -350,6 +353,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                 startIndexLevelRefreshTask();
             }
         }
+        this.pluginsService = pluginsService;
     }
 
     @InternalApi
@@ -390,7 +394,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         boolean shardLevelRefreshEnabled,
         RecoverySettings recoverySettings,
         RemoteStoreSettings remoteStoreSettings,
-        Supplier<Integer> clusterDefaultMaxMergeAtOnce
+        Supplier<Integer> clusterDefaultMaxMergeAtOnce,
+        PluginsService pluginsService
     ) {
         this(
             indexSettings,
@@ -434,7 +439,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
             null,
             s -> {},
             (shardId) -> ReplicationStats.empty(),
-            clusterDefaultMaxMergeAtOnce
+            clusterDefaultMaxMergeAtOnce,
+            pluginsService
         );
     }
 
@@ -782,7 +788,8 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                 refreshMutex,
                 clusterService.getClusterApplierService(),
                 this.indexSettings.isSegRepEnabledOrRemoteNode() ? mergedSegmentPublisher : null,
-                this.indexSettings.isSegRepEnabledOrRemoteNode() ? referencedSegmentsPublisher : null
+                this.indexSettings.isSegRepEnabledOrRemoteNode() ? referencedSegmentsPublisher : null,
+                pluginsService
             );
             eventListener.indexShardStateChanged(indexShard, null, indexShard.state(), "shard created");
             eventListener.afterIndexShardCreated(indexShard);
