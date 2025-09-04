@@ -14,11 +14,10 @@ import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.index.engine.ReadEngine;
 import org.opensearch.index.engine.EngineReaderManager;
 import org.opensearch.index.engine.EngineSearcher;
-import org.opensearch.index.engine.SearcherOperations;
 import org.opensearch.index.engine.exec.FileMetadata;
-import org.opensearch.index.engine.exec.coord.CatalogSnapshot;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
@@ -34,7 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
-public interface DataSourceAwarePlugin<S extends EngineSearcher,R> {
+public interface SearchEnginePlugin<Q,S extends EngineSearcher<Q>,R> extends SearchPlugin{
 
     /**
      * Make dataSourceCodecs available for the DataSourceAwarePlugin(s)
@@ -60,5 +59,5 @@ public interface DataSourceAwarePlugin<S extends EngineSearcher,R> {
 
     EngineReaderManager<R> getReaderManager();
 
-    SearcherOperations<S, R> createEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot) throws IOException;
+    ReadEngine<?,?,?,?,?> createEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot) throws IOException;
 }
