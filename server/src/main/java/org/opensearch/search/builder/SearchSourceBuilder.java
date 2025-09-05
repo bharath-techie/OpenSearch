@@ -137,6 +137,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public static final ParseField POINT_IN_TIME = new ParseField("pit");
     public static final ParseField SEARCH_PIPELINE = new ParseField("search_pipeline");
     public static final ParseField VERBOSE_SEARCH_PIPELINE = new ParseField("verbose_pipeline");
+    public static final ParseField SUBSTRAIT_BYTES = new ParseField("substrait_bytes");
 
     public static SearchSourceBuilder fromXContent(XContentParser parser) throws IOException {
         return fromXContent(parser, true);
@@ -228,7 +229,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     private String searchPipeline;
 
     private boolean verbosePipeline = false;
-
+    private byte[] substraitBytes = null;
     /**
      * Constructs a new search source builder.
      */
@@ -307,6 +308,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         }
         if (in.getVersion().onOrAfter(Version.V_2_19_0)) {
             verbosePipeline = in.readBoolean();
+        }
+        if(in.getVersion().onOrAfter(Version.CURRENT)) {
+            substraitBytes = in.readByteArray();
         }
     }
 
@@ -394,6 +398,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         if (out.getVersion().onOrAfter(Version.V_2_19_0)) {
             out.writeBoolean(verbosePipeline);
         }
+        if(out.getVersion().onOrAfter(Version.CURRENT)) {
+            out.writeBytes(substraitBytes);
+        }
     }
 
     /**
@@ -404,6 +411,10 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public SearchSourceBuilder query(QueryBuilder query) {
         this.queryBuilder = query;
         return this;
+    }
+
+    public byte[] getSubstraitBytes() {
+        return substraitBytes;
     }
 
     /**
