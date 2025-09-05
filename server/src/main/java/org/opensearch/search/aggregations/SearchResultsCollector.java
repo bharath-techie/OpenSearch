@@ -8,7 +8,10 @@
 
 package org.opensearch.search.aggregations;
 
+import org.opensearch.common.annotation.ExperimentalApi;
+
 // TODO : account for sub collectors
+@ExperimentalApi
 public interface SearchResultsCollector<T> {
     void collect(T value);
 }
