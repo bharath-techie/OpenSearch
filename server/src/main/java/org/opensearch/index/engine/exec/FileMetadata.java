@@ -8,4 +8,13 @@
 
 package org.opensearch.index.engine.exec;
 
+import org.opensearch.common.annotation.ExperimentalApi;
+
+/**
+ * Metadata for a file.
+ * 
+ * @param df the data format
+ * @param fileName the file name
+ */
+@ExperimentalApi
 public record FileMetadata(DataFormat df, String fileName) { }

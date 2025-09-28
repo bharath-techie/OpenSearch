@@ -8,8 +8,15 @@
 
 package org.opensearch.datafusion.search;
 
-// Functional interface to execute search and get iterator
+/**
+ * Functional interface to execute search and get iterator.
+ */
 @FunctionalInterface
 public interface SearchExecutor {
+    /**
+     * Executes the search.
+     * 
+     * @return the search result iterator
+     */
     SearchResultIterator execute();
 }

@@ -13,6 +13,9 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.engine.exec.text.TextDF;
 
+/**
+ * Interface for data format implementations.
+ */
 @ExperimentalApi
 public interface DataFormat {
     Setting<Settings> dataFormatSettings();
@@ -23,6 +26,9 @@ public interface DataFormat {
 
     void configureStore();
 
+    /**
+     * Lucene data format implementation.
+     */
     static class LuceneDataFormat implements DataFormat {
         @Override
         public Setting<Settings> dataFormatSettings() {

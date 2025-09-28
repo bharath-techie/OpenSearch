@@ -11,6 +11,11 @@ package org.opensearch.index.engine.exec;
 import java.io.IOException;
 import java.util.Optional;
 
+/**
+ * Interface for document writers.
+ * 
+ * @param <P> the document input type
+ */
 public interface Writer<P extends DocumentInput<?>> {
     WriteResult addDoc(P d) throws IOException;
 

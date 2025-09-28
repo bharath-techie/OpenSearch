@@ -13,6 +13,7 @@ import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 
 import java.io.IOException;
 
+/** Lucene reader manager */
 public class LuceneReaderManager implements EngineReaderManager<OpenSearchDirectoryReader> {
     private final ReferenceManager<OpenSearchDirectoryReader> referenceManager;
 

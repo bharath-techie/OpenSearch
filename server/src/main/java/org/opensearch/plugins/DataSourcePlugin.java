@@ -15,6 +15,9 @@ import org.opensearch.vectorized.execution.search.spi.DataSourceCodec;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * Plugin interface for data source implementations.
+ */
 public interface DataSourcePlugin {
     default Optional<Map<org.opensearch.vectorized.execution.search.DataFormat, DataSourceCodec>> getDataSourceCodecs() {
         return Optional.empty();

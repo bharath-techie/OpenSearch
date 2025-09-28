@@ -6,8 +6,7 @@
  * compatible open source license.
  */
 
-package org.opensearch.index.engine.exec.coord;
-
-/** Writer pool */
-public class WriterPool {
-}
+/**
+ * Index engine execution components.
+ */
+package org.opensearch.index.engine.exec;

@@ -22,6 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
+/** Datafusion reader manager */
 public class DatafusionReaderManager implements EngineReaderManager<DatafusionReader>, CatalogSnapshotAwareRefreshListener {
     private DatafusionReader current;
     private String path;
@@ -29,6 +30,11 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
 //    private final Lock refreshLock = new ReentrantLock();
 //    private final List<ReferenceManager.RefreshListener> refreshListeners = new CopyOnWriteArrayList();
 
+    /**
+     * Constructor
+     * @param path The path string
+     * @param files The file metadata collection
+     */
     public DatafusionReaderManager(String path, Collection<FileMetadata> files) throws IOException {
         this.current = new DatafusionReader(path, files);
         this.path = path;

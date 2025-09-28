@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+/** Text engine */
 public class TextEngine implements IndexingExecutionEngine<TextDF> {
 
     private final AtomicLong counter = new AtomicLong();
@@ -60,6 +61,7 @@ public class TextEngine implements IndexingExecutionEngine<TextDF> {
         return refreshResult;
     }
 
+    /** Text input */
     public static class TextInput implements DocumentInput<String> {
         private final StringBuilder sb = new StringBuilder();
         private final TextWriter writer;
@@ -91,6 +93,7 @@ public class TextEngine implements IndexingExecutionEngine<TextDF> {
 
 
 
+    /** Text writer */
     public static class TextWriter implements Writer<TextInput> {
 
         private final StringBuilder sb = new StringBuilder();

@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/** Refresh result */
 public class RefreshResult {
     private Map<DataFormat, List<FileMetadata>> refreshedFiles = new HashMap<>();
 
