@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+/** Indexing execution coordinator */
 public class IndexingExecutionCoordinator {
 
     private final CompositeIndexingExecutionEngine engine;
@@ -89,6 +90,7 @@ public class IndexingExecutionCoordinator {
 
 
 
+    /** Releasable reference */
     public static abstract class ReleasableRef<T> implements AutoCloseable {
         private T t;
 

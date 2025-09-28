@@ -79,6 +79,11 @@ public class DataFusionQueryJNI {
      */
     public static native long createGlobalRuntime();
 
+    /**
+     * Creates a Tokio runtime.
+     * 
+     * @return the runtime pointer
+     */
     public static native long createTokioRuntime();
 
     /**
@@ -111,12 +116,25 @@ public class DataFusionQueryJNI {
      * Execute a Substrait query plan
      * @param cachePtr the session context ID
      * @param substraitPlan the serialized Substrait query plan
+     * @param runtimePtr the runtime pointer
      * @return stream pointer for result iteration
      */
     public static native long executeSubstraitQuery(long cachePtr, byte[] substraitPlan, long runtimePtr);
 
+    /**
+     * Creates a DataFusion reader.
+     * 
+     * @param path the directory path
+     * @param files the file names
+     * @return the reader pointer
+     */
     public static native long createDatafusionReader(String path, String[] files);
 
+    /**
+     * Closes a DataFusion reader.
+     * 
+     * @param ptr the reader pointer
+     */
     public static native void closeDatafusionReader(long ptr);
 
     /**

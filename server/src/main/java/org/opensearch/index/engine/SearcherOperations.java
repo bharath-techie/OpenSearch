@@ -13,6 +13,7 @@ import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 
 import java.util.function.Function;
 
+/** Searcher operations */
 public interface SearcherOperations<S extends EngineSearcher, R> {
     /**
      * Acquires a point-in-time reader that can be used to create {@link Engine.Searcher}s on demand.

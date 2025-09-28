@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+/** Composite data format writer */
 public class CompositeDataFormatWriter implements Writer<CompositeDataFormatWriter.CompositeDocumentInput> {
 
     List<Writer<? extends DocumentInput>> writers = new ArrayList<>();
@@ -73,6 +74,9 @@ public class CompositeDataFormatWriter implements Writer<CompositeDataFormatWrit
         return new CompositeDocumentInput(writers.stream().map(Writer::newDocumentInput).collect(Collectors.toList()), this, postWrite);
     }
 
+    /**
+     * Composite document input
+     */
     @ExperimentalApi
     public static class CompositeDocumentInput implements DocumentInput<List<? extends DocumentInput<?>>> {
         List<? extends DocumentInput<?>> inputs;

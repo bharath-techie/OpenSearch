@@ -12,6 +12,7 @@ import org.apache.lucene.search.ReferenceManager;
 
 import java.io.IOException;
 
+/** Engine reader manager */
 public interface EngineReaderManager<T> {
     T acquire() throws IOException;
 

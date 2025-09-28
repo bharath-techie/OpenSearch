@@ -12,7 +12,18 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.engine.exec.DataFormat;
 
+/**
+ * CSV data format implementation.
+ */
 public class CsvDataFormat implements DataFormat {
+
+    /**
+     * Creates a new CSV data format.
+     */
+    public CsvDataFormat() {
+        // Default constructor
+    }
+
     @Override
     public Setting<Settings> dataFormatSettings() {
         return null;

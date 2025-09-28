@@ -17,11 +17,16 @@ import java.io.UncheckedIOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
+/** Datafusion searcher supplier */
 public abstract class DatafusionSearcherSupplier extends EngineSearcherSupplier<DatafusionSearcher> {
 
     private final Function<DatafusionSearcher, DatafusionSearcher> wrapper;
     private final AtomicBoolean released = new AtomicBoolean(false);
 
+    /**
+     * Constructor
+     * @param wrapper The wrapper function for datafusion searcher
+     */
     public DatafusionSearcherSupplier(Function<DatafusionSearcher, DatafusionSearcher> wrapper) {
         this.wrapper = wrapper;
     }

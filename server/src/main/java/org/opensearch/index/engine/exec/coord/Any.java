@@ -14,6 +14,7 @@ import org.opensearch.index.engine.exec.DataFormat;
 
 import java.util.List;
 
+/** Any data format */
 public class Any implements DataFormat {
 
     private List<DataFormat> dataFormats;

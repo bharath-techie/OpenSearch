@@ -11,6 +11,7 @@ package org.opensearch.index.engine.exec;
 import java.util.ArrayList;
 import java.util.List;
 
+/** Refresh input */
 public class RefreshInput {
 
     private List<FileMetadata> files;

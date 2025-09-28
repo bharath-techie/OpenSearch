@@ -82,6 +82,7 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
      * @param namedWriteableRegistry The named writeable registry.
      * @param indexNameExpressionResolver The index name expression resolver instance.
      * @param repositoriesServiceSupplier The supplier for the repositories service.
+     * @param dataSourceCodecs The data source codecs map.
      * @return Collection of created components
      */
     @Override
@@ -118,6 +119,10 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
 
     /**
      * Create engine per shard per format with initial view of catalog
+     * @param dataFormat The data format
+     * @param formatCatalogSnapshot The format catalog snapshot
+     * @return The search execution engine
+     * @throws IOException If an I/O error occurs
      */
     // TODO : one engine per format, does that make sense ?
     // TODO : Engine shouldn't just be SearcherOperations, it can be more ?
