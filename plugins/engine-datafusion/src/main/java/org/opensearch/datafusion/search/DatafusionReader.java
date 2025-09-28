@@ -19,15 +19,29 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.opensearch.datafusion.DataFusionQueryJNI.closeDatafusionReader;
 
-// JNI from java to rust
-// substrait
-// Harcode --> file --> register as the table with the same name
+/**
+ * DataFusion reader for JNI operations.
+ */
 public class DatafusionReader implements Closeable {
+    /**
+     * The directory path.
+     */
     public String directoryPath;
+    /**
+     * The file metadata collection.
+     */
     public Collection<FileMetadata> files;
+    /**
+     * The cache pointer.
+     */
     public long cachePtr;
     private AtomicInteger refCount = new AtomicInteger(0);
 
+    /**
+     * Constructor
+     * @param directoryPath The directory path
+     * @param files The file metadata collection
+     */
     public DatafusionReader(String directoryPath, Collection<FileMetadata> files) {
         this.directoryPath = directoryPath;
         this.files = files;
@@ -36,14 +50,27 @@ public class DatafusionReader implements Closeable {
         incRef();
     }
 
+    /**
+     * Gets the cache pointer.
+     * 
+     * @return the cache pointer
+     */
     public long getCachePtr() {
         return cachePtr;
     }
 
+    /**
+     * Increments the reference count.
+     */
     public void incRef() {
         refCount.getAndIncrement();
     }
 
+    /**
+     * Decrements the reference count.
+     * 
+     * @throws IOException if an I/O error occurs
+     */
     public void decRef() throws IOException {
         if(refCount.get() == 0) {
             throw new IllegalStateException("Listing table has been already closed");

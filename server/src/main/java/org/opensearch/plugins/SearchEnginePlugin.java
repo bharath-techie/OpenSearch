@@ -10,6 +10,7 @@ package org.opensearch.plugins;
 
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
@@ -31,6 +32,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
+/**
+ * Plugin interface for search engine implementations.
+ */
+@ExperimentalApi
 public interface SearchEnginePlugin extends SearchPlugin{
 
     /**

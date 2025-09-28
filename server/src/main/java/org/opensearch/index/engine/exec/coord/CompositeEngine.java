@@ -32,6 +32,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Composite engine
+ */
 @ExperimentalApi
 public class CompositeEngine {
 
@@ -148,6 +151,9 @@ public class CompositeEngine {
 
 
 
+    /**
+     * Releasable reference
+     */
     @ExperimentalApi
     public static abstract class ReleasableRef<T> implements AutoCloseable {
         private T t;

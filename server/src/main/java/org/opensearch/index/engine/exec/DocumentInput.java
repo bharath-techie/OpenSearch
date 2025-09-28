@@ -12,6 +12,11 @@ import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.mapper.MappedFieldType;
 
 import java.io.IOException;
+/**
+ * Interface for document input.
+ * 
+ * @param <T> the input type
+ */
 @ExperimentalApi
 public interface DocumentInput<T> extends AutoCloseable {
 

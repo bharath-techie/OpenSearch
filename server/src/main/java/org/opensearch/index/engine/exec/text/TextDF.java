@@ -13,6 +13,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.engine.exec.DataFormat;
 
 
+/** Text data format */
 public class TextDF implements DataFormat {
     @Override
     public Setting<Settings> dataFormatSettings() {

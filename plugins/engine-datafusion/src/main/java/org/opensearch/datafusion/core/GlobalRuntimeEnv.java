@@ -37,6 +37,7 @@ public class GlobalRuntimeEnv implements AutoCloseable {
         return ptr;
     }
 
+    /** Gets the Tokio runtime pointer */
     public long getTokioRuntimePtr() {
         return tokio_runtime_ptr;
     }

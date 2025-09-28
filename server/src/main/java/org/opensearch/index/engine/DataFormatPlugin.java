@@ -13,6 +13,9 @@ import org.opensearch.index.engine.exec.IndexingExecutionEngine;
 
 import javax.xml.crypto.Data;
 
+/**
+ * Plugin interface for data format implementations.
+ */
 public interface DataFormatPlugin  {
 
     <T extends DataFormat> IndexingExecutionEngine<T> indexingEngine();

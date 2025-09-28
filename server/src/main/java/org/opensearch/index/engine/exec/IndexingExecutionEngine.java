@@ -15,6 +15,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
+/** Indexing execution engine */
 public interface IndexingExecutionEngine<T extends DataFormat> {
     List<String> supportedFieldTypes();
 

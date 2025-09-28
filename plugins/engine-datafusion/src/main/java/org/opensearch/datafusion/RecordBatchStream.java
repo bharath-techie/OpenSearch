@@ -39,6 +39,7 @@ public class RecordBatchStream {
     /**
      * Creates a new RecordBatchStream for the given stream pointer
      * @param streamId the stream pointer
+     * @param runtimePtr the runtime pointer
      * @param allocator memory allocator for Arrow vectors
      */
     public RecordBatchStream(long streamId, long runtimePtr, BufferAllocator allocator) {

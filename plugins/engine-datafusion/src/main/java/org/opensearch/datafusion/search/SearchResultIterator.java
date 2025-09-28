@@ -10,7 +10,9 @@ package org.opensearch.datafusion.search;
 
 import java.util.Iterator;
 
-// Interface for the iterator that Datafusion expects
+/**
+ * Interface for the iterator that DataFusion expects.
+ */
 public interface SearchResultIterator extends Iterator<Record> {
     // Basic Iterator methods
     boolean hasNext();

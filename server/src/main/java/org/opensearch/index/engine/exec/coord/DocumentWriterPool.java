@@ -16,6 +16,7 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.function.Supplier;
 
+/** Document writer pool */
 public class DocumentWriterPool {
 
     private Queue<CompositeDataFormatWriter> writers = new ConcurrentLinkedDeque<>();

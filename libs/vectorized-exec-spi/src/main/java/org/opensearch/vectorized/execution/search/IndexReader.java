@@ -8,5 +8,14 @@
 
 package org.opensearch.vectorized.execution.search;
 
+/**
+ * Provides read access to vectorized execution indices.
+ */
 public class IndexReader {
+    
+    /**
+     * Creates a new IndexReader.
+     */
+    public IndexReader() {
+    }
 }
