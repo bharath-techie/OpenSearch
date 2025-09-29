@@ -35,6 +35,8 @@ public class DataFusionService extends AbstractLifecycleComponent {
 
     /**
      * Creates a new DataFusion service instance.
+     * 
+     * @param dataSourceCodecs the data source codecs map
      */
     public DataFusionService(Map<DataFormat, DataSourceCodec> dataSourceCodecs) {
         this.dataSourceRegistry = new DataSourceRegistry(dataSourceCodecs);
@@ -161,10 +163,20 @@ public class DataFusionService extends AbstractLifecycleComponent {
         return engine.executeSubstraitQuery(sessionContextId, substraitPlanBytes);
     }
 
+    /**
+     * Gets the runtime pointer.
+     * 
+     * @return the runtime pointer
+     */
     public long getRuntimePointer() {
         return globalRuntimeEnv.getPointer();
     }
 
+    /**
+     * Gets the Tokio runtime pointer.
+     * 
+     * @return the Tokio runtime pointer
+     */
     public long getTokioRuntimePointer() {
         return globalRuntimeEnv.getTokioRuntimePtr();
     }

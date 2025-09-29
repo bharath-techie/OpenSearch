@@ -27,6 +27,11 @@ public class DataSourceRegistry {
 
     private final ConcurrentHashMap<DataFormat, DataSourceCodec> codecs = new ConcurrentHashMap<>();
 
+    /**
+     * Creates a new DataSourceRegistry.
+     * 
+     * @param dataSourceCodecMap the data source codec map
+     */
     public DataSourceRegistry(Map<DataFormat, DataSourceCodec> dataSourceCodecMap) {
         codecs.putAll(dataSourceCodecMap);
     }

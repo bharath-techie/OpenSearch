@@ -8,5 +8,17 @@
 
 package org.opensearch.index.engine.exec;
 
+import org.opensearch.common.annotation.ExperimentalApi;
+
+/**
+ * Result of a write operation.
+ * 
+ * @param success whether the write was successful
+ * @param e exception if write failed
+ * @param version document version
+ * @param term document term
+ * @param seqNo sequence number
+ */
+@ExperimentalApi
 public record WriteResult(boolean success, Exception e, long version, long term, long seqNo) {
 }

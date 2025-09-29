@@ -12,6 +12,9 @@ import org.opensearch.index.engine.exec.coord.CatalogSnapshot;
 
 import java.io.IOException;
 
+/**
+ * Listener for catalog snapshot aware refresh operations.
+ */
 public interface CatalogSnapshotAwareRefreshListener {
     /**
      * Called before refresh operation.

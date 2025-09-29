@@ -8,5 +8,14 @@
 
 package org.opensearch.vectorized.execution.search;
 
+/**
+ * Provides search capabilities across vectorized execution catalogs.
+ */
 public class CatalogSearcher {
+    
+    /**
+     * Creates a new CatalogSearcher.
+     */
+    public CatalogSearcher() {
+    }
 }

@@ -25,6 +25,12 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class CsvDataSourceCodec implements DataSourceCodec {
 
+    /**
+     * Creates a new CsvDataSourceCodec.
+     */
+    public CsvDataSourceCodec() {
+    }
+
     private static final Logger logger = LogManager.getLogger(CsvDataSourceCodec.class);
     private static final AtomicLong runtimeIdGenerator = new AtomicLong(0);
     private static final AtomicLong sessionIdGenerator = new AtomicLong(0);

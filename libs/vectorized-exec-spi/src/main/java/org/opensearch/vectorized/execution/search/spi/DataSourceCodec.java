@@ -8,6 +8,7 @@
 
 package org.opensearch.vectorized.execution.search.spi;
 
+import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.vectorized.execution.search.DataFormat;
 
 import java.util.List;
@@ -18,6 +19,7 @@ import java.util.concurrent.CompletableFuture;
  * Implementations provide access to different data formats (CSV, Parquet, etc.)
  * through the DataFusion query engine.
  */
+@ExperimentalApi
 public interface DataSourceCodec {
 
     /**

@@ -22,10 +22,17 @@ import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
+/** Datafusion searcher */
 public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, RecordBatchStream> {
     private final String source;
     private DatafusionReader reader;
     private Closeable closeable;
+    /**
+     * Constructor
+     * @param source The source string
+     * @param reader The datafusion reader
+     * @param close The closeable resource
+     */
     public DatafusionSearcher(String source, DatafusionReader reader, Closeable close) {
         this.source = source;
         this.reader = reader;
@@ -54,6 +61,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
         return DataFusionQueryJNI.executeSubstraitQuery(reader.getCachePtr(), datafusionQuery.getSubstraitBytes(), contextPtr);
     }
 
+    /** Gets the reader */
     public DatafusionReader getReader() {
         return reader;
     }

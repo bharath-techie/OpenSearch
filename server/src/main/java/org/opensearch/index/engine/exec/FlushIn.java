@@ -8,6 +8,7 @@
 
 package org.opensearch.index.engine.exec;
 
+/** Flush input */
 public interface FlushIn {
 
 }

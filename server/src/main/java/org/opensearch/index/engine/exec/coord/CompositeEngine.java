@@ -13,6 +13,7 @@ import org.opensearch.common.annotation.ExperimentalApi;
 
 import org.apache.lucene.search.ReferenceManager;
 import org.opensearch.index.engine.CatalogSnapshotAwareRefreshListener;
+import org.opensearch.index.engine.DataFormatPlugin;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineException;
 import org.opensearch.index.engine.SearchExecEngine;
@@ -23,6 +24,7 @@ import org.opensearch.index.engine.exec.composite.CompositeDataFormatWriter;
 import org.opensearch.index.engine.exec.composite.CompositeIndexingExecutionEngine;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MapperService;
+import org.opensearch.plugins.DataSourcePlugin;
 import org.opensearch.plugins.SearchEnginePlugin;
 import org.opensearch.plugins.PluginsService;
 
@@ -32,6 +34,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Composite engine
+ */
 @ExperimentalApi
 public class CompositeEngine {
 
@@ -43,7 +48,8 @@ public class CompositeEngine {
 
     public CompositeEngine(MapperService mapperService, PluginsService pluginsService) throws IOException {
         List<SearchEnginePlugin> searchEnginePlugins = pluginsService.filterPlugins(SearchEnginePlugin.class);
-        this.engine = new CompositeIndexingExecutionEngine(pluginsService, new Any(List.of(DataFormat.TEXT)));
+        // How to bring the Dataformat here? Currently this means only Text and LuceneFormat can be used
+        this.engine = new CompositeIndexingExecutionEngine(pluginsService);
 
         // Refresh here so that catalog snapshot gets initialized
         // TODO : any better way to do this ?
@@ -54,7 +60,9 @@ public class CompositeEngine {
             for(org.opensearch.vectorized.execution.search.DataFormat dataFormat : searchEnginePlugin.getSupportedFormats()) {
                 SearchExecEngine<?,?,?,?> searchExecEngine = searchEnginePlugin.createEngine(dataFormat,
                     catalogSnapshot.getSearchableFiles(dataFormat.toString()));
-                readEngines.getOrDefault(dataFormat, new ArrayList<>()).add(searchExecEngine);
+                List<SearchExecEngine<?, ?, ?, ?>> readEngine = readEngines.getOrDefault(dataFormat, new ArrayList<>());
+                readEngine.add(searchExecEngine);
+                readEngines.put(dataFormat, readEngine);
                 // TODO : figure out how to do internal and external refresh listeners
                 // Maybe external refresh should be managed in opensearch core and plugins should always give
                 // internal refresh managers
@@ -148,6 +156,9 @@ public class CompositeEngine {
 
 
 
+    /**
+     * Releasable reference
+     */
     @ExperimentalApi
     public static abstract class ReleasableRef<T> implements AutoCloseable {
         private T t;

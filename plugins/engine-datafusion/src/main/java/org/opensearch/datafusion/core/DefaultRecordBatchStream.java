@@ -14,6 +14,7 @@ import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
 
 import java.util.concurrent.CompletableFuture;
 
+/** Default record batch stream */
 public class DefaultRecordBatchStream implements RecordBatchStream {
 
     private static final Logger logger = LogManager.getLogger(DefaultRecordBatchStream.class);

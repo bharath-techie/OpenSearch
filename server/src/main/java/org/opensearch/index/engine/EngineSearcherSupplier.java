@@ -14,6 +14,9 @@ import org.opensearch.common.lease.Releasable;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * Engine searcher supplier
+ */
 @ExperimentalApi
 public abstract class EngineSearcherSupplier<T extends EngineSearcher> implements Releasable {
     private final AtomicBoolean released = new AtomicBoolean(false);
