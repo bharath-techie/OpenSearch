@@ -65,7 +65,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
      */
     public DatafusionEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService) throws IOException {
         this.dataFormat = dataFormat;
-        this.datafusionReaderManager = new DatafusionReaderManager("TODO://FigureOutPath", formatCatalogSnapshot);
+        this.datafusionReaderManager = new DatafusionReaderManager("/Users/abandeji/Public/workplace/OpenSearch/build/testclusters/runTask-0/data/nodes/0/indices/7xU89OS-Tn2_nO7CboVqMg/0/parquet", formatCatalogSnapshot);
         this.datafusionService = dataFusionService;
     }
 

@@ -60,7 +60,9 @@ public class CompositeEngine {
             for(org.opensearch.vectorized.execution.search.DataFormat dataFormat : searchEnginePlugin.getSupportedFormats()) {
                 SearchExecEngine<?,?,?,?> searchExecEngine = searchEnginePlugin.createEngine(dataFormat,
                     catalogSnapshot.getSearchableFiles(dataFormat.toString()));
-                readEngines.getOrDefault(dataFormat, new ArrayList<>()).add(searchExecEngine);
+                List<SearchExecEngine<?, ?, ?, ?>> readEngine = readEngines.getOrDefault(dataFormat, new ArrayList<>());
+                readEngine.add(searchExecEngine);
+                readEngines.put(dataFormat, readEngine);
                 // TODO : figure out how to do internal and external refresh listeners
                 // Maybe external refresh should be managed in opensearch core and plugins should always give
                 // internal refresh managers
