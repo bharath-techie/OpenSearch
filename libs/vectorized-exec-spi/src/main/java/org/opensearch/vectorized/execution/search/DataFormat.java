@@ -16,8 +16,18 @@ import org.opensearch.common.annotation.ExperimentalApi;
 @ExperimentalApi
 public enum DataFormat {
     /** CSV Format*/
-    CSV,
+    CSV("csv"),
 
     /** Text Format */
-    Text
+    Text("text");
+
+    private final String name;
+
+    DataFormat(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
 }

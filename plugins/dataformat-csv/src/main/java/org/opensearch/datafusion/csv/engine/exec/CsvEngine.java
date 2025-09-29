@@ -79,7 +79,7 @@ public class CsvEngine implements IndexingExecutionEngine<CsvDataFormat> {
 
         /**
          * Creates a new CsvInput.
-         * 
+         *
          * @param writer the CSV writer
          */
         public CsvInput(CsvWriter writer) {
@@ -123,7 +123,7 @@ public class CsvEngine implements IndexingExecutionEngine<CsvDataFormat> {
 
         /**
          * Creates a new CsvWriter.
-         * 
+         *
          * @param currentFile the file name
          * @param engine the CSV engine
          * @throws IOException if an I/O error occurs
@@ -179,7 +179,7 @@ public class CsvEngine implements IndexingExecutionEngine<CsvDataFormat> {
 
         /**
          * Writes CSV headers.
-         * 
+         *
          * @param headers the header list
          */
         public void writeHeaders(List<String> headers) {
