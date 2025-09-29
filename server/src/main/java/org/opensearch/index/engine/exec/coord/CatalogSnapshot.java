@@ -17,6 +17,9 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Catalog snapshot
+ */
 @ExperimentalApi
 public class CatalogSnapshot extends AbstractRefCounted {
 

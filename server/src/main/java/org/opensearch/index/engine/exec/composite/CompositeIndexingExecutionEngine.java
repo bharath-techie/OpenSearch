@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/** Composite indexing execution engine */
 public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine<Any> {
 
     final DocumentWriterPool pool;

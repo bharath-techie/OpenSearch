@@ -14,6 +14,7 @@ import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import java.util.function.Function;
 
 // Dummy impl
+/** Engine Lucene */
 public class EngineLucene implements SearcherOperations<Engine.Searcher, ReferenceManager<OpenSearchDirectoryReader>>{
     @Override
     public EngineSearcherSupplier<Engine.Searcher> acquireSearcherSupplier(Function<Engine.Searcher, Engine.Searcher> wrapper) throws EngineException {

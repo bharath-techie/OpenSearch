@@ -6,8 +6,7 @@
  * compatible open source license.
  */
 
-package org.opensearch.index.engine.exec.coord;
-
-/** Writer pool */
-public class WriterPool {
-}
+/**
+ * Vectorized execution search components.
+ */
+package org.opensearch.vectorized.execution.search;

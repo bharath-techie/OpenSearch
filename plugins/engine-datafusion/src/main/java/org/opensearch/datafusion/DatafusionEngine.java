@@ -46,6 +46,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
 
+/**
+ * DataFusion search execution engine.
+ */
 public class DatafusionEngine extends SearchExecEngine<DatafusionContext, DatafusionSearcher,
     DatafusionReaderManager, DatafusionQuery> {
 
@@ -55,6 +58,12 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     private DatafusionReaderManager datafusionReaderManager;
     private DataFusionService datafusionService;
 
+    /**
+     * Constructor
+     * @param dataFormat The data format
+     * @param formatCatalogSnapshot The format catalog snapshot
+     * @param dataFusionService The DataFusion service
+     */
     public DatafusionEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService) throws IOException {
         this.dataFormat = dataFormat;
         this.datafusionReaderManager = new DatafusionReaderManager("/Users/abandeji/Public/workplace/OpenSearch/build/testclusters/runTask-0/data/nodes/0/indices/7xU89OS-Tn2_nO7CboVqMg/0/parquet", formatCatalogSnapshot);

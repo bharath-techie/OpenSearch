@@ -15,10 +15,15 @@ import java.util.List;
 import java.util.ArrayList;
 
 /**
- * DataFusion-specific query phase searcher using Substrait queries
- *
+ * DataFusion-specific query phase searcher using Substrait queries.
  */
 public class DatafusionQueryPhaseSearcher implements GenericQueryPhaseSearcher<DatafusionContext,DatafusionSearcher, DatafusionQuery> {
+
+    /**
+     * Creates a new DatafusionQueryPhaseSearcher.
+     */
+    public DatafusionQueryPhaseSearcher() {
+    }
 
     // How to pass table providers that search other engines such as Lucene ?
     @Override

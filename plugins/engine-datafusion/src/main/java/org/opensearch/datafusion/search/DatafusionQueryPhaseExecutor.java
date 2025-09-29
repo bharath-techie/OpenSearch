@@ -23,6 +23,16 @@ import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
  */
 public class DatafusionQueryPhaseExecutor implements QueryPhaseExecutor<DatafusionContext> {
 
+    /**
+     * Constructor
+     */
+    public DatafusionQueryPhaseExecutor() {
+    }
+
+    /**
+     * {@inheritDoc}
+     * @param context The datafusion context
+     */
     @Override
     public boolean execute(DatafusionContext context) throws QueryPhaseExecutionException {
         if (!canHandle(context)) {
@@ -40,6 +50,10 @@ public class DatafusionQueryPhaseExecutor implements QueryPhaseExecutor<Datafusi
         return queryPhase.executeInternal(context, context.getEngineSearcher(), query);
     }
 
+    /**
+     * {@inheritDoc}
+     * @param context The datafusion context
+     */
     @Override
     public boolean canHandle(DatafusionContext context) {
         return context != null &&

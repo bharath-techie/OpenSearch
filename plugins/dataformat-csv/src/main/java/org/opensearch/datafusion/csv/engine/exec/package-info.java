@@ -6,8 +6,7 @@
  * compatible open source license.
  */
 
-package org.opensearch.index.engine.exec.coord;
-
-/** Writer pool */
-public class WriterPool {
-}
+/**
+ * CSV engine execution components.
+ */
+package org.opensearch.datafusion.csv.engine.exec;

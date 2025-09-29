@@ -16,8 +16,13 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.util.List;
 
+/**
+ * Engine searcher interface for query execution.
+ * 
+ * @param <Q> query type
+ * @param <C> collector type
+ */
 @ExperimentalApi
-// TODO make this <Query, Collector> generic type
 public interface EngineSearcher<Q,C> extends Releasable {
 
     /**
