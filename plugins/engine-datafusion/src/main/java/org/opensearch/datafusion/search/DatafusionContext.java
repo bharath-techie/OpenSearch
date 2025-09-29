@@ -16,6 +16,7 @@ import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.action.search.SearchType;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.BigArrays;
+import org.opensearch.index.IndexService;
 import org.opensearch.index.cache.bitset.BitsetFilterCache;
 import org.opensearch.index.engine.EngineSearcher;
 import org.opensearch.index.mapper.MappedFieldType;
@@ -68,8 +69,13 @@ public class DatafusionContext extends SearchContext {
     private final SearchShardTask task;
     private final DatafusionEngine readEngine;
     private final DatafusionSearcher engineSearcher;
+    private final IndexShard indexShard;
+    private final QuerySearchResult queryResult;
+    private final FetchSearchResult fetchResult;
+    private final IndexService indexService;
+    private final QueryShardContext queryShardContext;
     private DatafusionQuery datafusionQuery;
-
+    private Map<String, Object[]> dfResults;
     /**
      * Constructor
      * @param readerContext The reader context
@@ -80,13 +86,26 @@ public class DatafusionContext extends SearchContext {
     public DatafusionContext(
         ReaderContext readerContext,
         ShardSearchRequest request,
+        SearchShardTarget searchShardTarget,
         SearchShardTask task,
         DatafusionEngine engine) {
         this.readerContext = readerContext;
+        this.indexShard = readerContext.indexShard();
         this.request = request;
         this.task = task;
         this.readEngine = engine;
         this.engineSearcher = engine.acquireSearcher("search");//null;//TODO readerContext.contextEngineSearcher();
+        this.queryResult = new QuerySearchResult(readerContext.id(), searchShardTarget, request);
+        this.fetchResult = new FetchSearchResult(readerContext.id(), searchShardTarget);
+        this.indexService = readerContext.indexService();
+        this.queryShardContext = indexService.newQueryShardContext(
+            request.shardId().id(),
+            null, // TOOD : index searcher is null
+            request::nowInMillis,
+            searchShardTarget.getClusterAlias(),
+            false, // reevaluate the usage
+            false // specific to lucene
+        );
     }
 
     /**
@@ -175,7 +194,7 @@ public class DatafusionContext extends SearchContext {
 
     @Override
     public ShardSearchRequest request() {
-        return null;
+        return request;
     }
 
     @Override
@@ -346,7 +365,7 @@ public class DatafusionContext extends SearchContext {
 
     @Override
     public IndexShard indexShard() {
-        return null;
+        return this.indexShard;
     }
 
     @Override
@@ -671,7 +690,7 @@ public class DatafusionContext extends SearchContext {
 
     @Override
     public QuerySearchResult queryResult() {
-        return null;
+        return this.queryResult;
     }
 
     @Override
@@ -681,7 +700,7 @@ public class DatafusionContext extends SearchContext {
 
     @Override
     public FetchSearchResult fetchResult() {
-        return null;
+        return this.fetchResult;
     }
 
     @Override
@@ -719,7 +738,7 @@ public class DatafusionContext extends SearchContext {
 
     @Override
     public QueryShardContext getQueryShardContext() {
-        return null;
+        return queryShardContext;
     }
 
     @Override
@@ -762,5 +781,13 @@ public class DatafusionContext extends SearchContext {
      */
     public ContextEngineSearcher<DatafusionQuery, RecordBatchStream> contextEngineSearcher() {
         return new ContextEngineSearcher<>(this.engineSearcher, this);
+    }
+
+    public void setDFResults(Map<String, Object[]> dfResults) {
+        this.dfResults = dfResults;
+    }
+
+    public Map<String, Object[]> getDFResults() {
+        return dfResults;
     }
 }
