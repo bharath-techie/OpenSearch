@@ -56,5 +56,6 @@ public interface SearchEnginePlugin extends SearchPlugin{
 
     List<DataFormat> getSupportedFormats();
 
-    SearchExecEngine<?,?,?,?> createEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, ShardPath shardPath) throws IOException;
+    SearchExecEngine<?,?,?,?> createEngine(DataSourceCodec dataFormat, Collection<FileMetadata> formatCatalogSnapshot, ShardPath shardPath) throws IOException;
+
 }
