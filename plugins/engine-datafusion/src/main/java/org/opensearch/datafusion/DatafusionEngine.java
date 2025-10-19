@@ -17,7 +17,6 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.util.BigArrays;
-import org.opensearch.datafusion.core.DefaultRecordBatchStream;
 import org.opensearch.datafusion.search.DatafusionContext;
 import org.opensearch.datafusion.search.DatafusionQuery;
 import org.opensearch.datafusion.search.DatafusionQueryPhaseExecutor;
@@ -35,15 +34,16 @@ import org.opensearch.index.shard.ShardPath;
 import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.aggregations.SearchResultsCollector;
 import org.opensearch.search.internal.ReaderContext;
-import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.internal.ShardSearchRequest;
 import org.opensearch.search.query.QueryPhaseExecutor;
-import org.opensearch.vectorized.execution.search.DataFormat;
 import org.opensearch.search.query.GenericQueryPhaseSearcher;
+import org.opensearch.vectorized.execution.search.spi.ConfigUpdateListener;
+import org.opensearch.vectorized.execution.search.spi.DataSourceCodec;
+import org.opensearch.vectorized.execution.search.spi.EngineConfig;
+import org.opensearch.vectorized.execution.search.spi.SessionConfig;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -55,12 +55,24 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
 
     private static final Logger logger = LogManager.getLogger(DatafusionEngine.class);
 
-    private DataFormat dataFormat;
+    private DataSourceCodec dataSourceCodec;
+    private EngineConfig datafusionConfig;
     private DatafusionReaderManager datafusionReaderManager;
     private DataFusionService datafusionService;
 
-    public DatafusionEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService, ShardPath shardPath) throws IOException {
-        this.dataFormat = dataFormat;
+    public DatafusionEngine(DataSourceCodec dataSourceCodec, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService, ShardPath shardPath) throws IOException {
+        this.dataSourceCodec = dataSourceCodec;
+        this.datafusionConfig = new DatafusionConfig();
+
+        // Add All the settings into the DatafusionConfig
+        datafusionConfig = dataSourceCodec.updateEngineConfig(datafusionConfig);
+        dataSourceCodec.attachListener(new ConfigUpdateListener() {
+            @Override
+            public void onSessionConfigUpdate(SessionConfig sessionConfig) {
+
+            }
+
+        });
 
         this.datafusionReaderManager = new DatafusionReaderManager(shardPath.getDataPath().toString(), formatCatalogSnapshot, dataFormat.getName());
         this.datafusionService = dataFusionService;

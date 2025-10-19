@@ -40,6 +40,7 @@ import org.opensearch.vectorized.execution.search.spi.DataSourceCodec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 import static org.mockito.Mockito.when;
 import org.apache.arrow.vector.FieldVector;
@@ -101,7 +102,32 @@ public class DataFusionServiceTests extends OpenSearchTestCase {
         Map<String, Object[]> finalRes = new HashMap<>();
         DatafusionSearcher datafusionSearcher = null;
         try {
-            DatafusionEngine engine = new DatafusionEngine(DataFormat.CSV, List.of(new FileMetadata(new TextDF(), "hits_data.parquet")), service);
+            DatafusionEngine engine = new DatafusionEngine(new DataSourceCodec() {
+                @Override
+                public CompletableFuture<Void> registerDirectory(String directoryPath, List<String> fileNames, long runtimeId) {
+                    return null;
+                }
+
+                @Override
+                public CompletableFuture<Long> createSessionContext(long globalRuntimeEnvId) {
+                    return null;
+                }
+
+                @Override
+                public CompletableFuture<org.opensearch.vectorized.execution.search.spi.RecordBatchStream> executeSubstraitQuery(long sessionContextId, byte[] substraitPlanBytes) {
+                    return null;
+                }
+
+                @Override
+                public CompletableFuture<Void> closeSessionContext(long sessionContextId) {
+                    return null;
+                }
+
+                @Override
+                public DataFormat getDataFormat() {
+                    return null;
+                }
+            }, List.of(new FileMetadata(new TextDF().name(), "hits_data.parquet")), service);
             datafusionSearcher = engine.acquireSearcher("Search");
 
 

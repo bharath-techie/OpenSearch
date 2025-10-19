@@ -119,6 +119,7 @@ public class DataFusionQueryJNI {
 
     public static native void closeDatafusionReader(long ptr);
 
+    public static native long createDefaultDataSourceConfig();
     /**
      * Register a directory with CSV files
      * @param contextId the session context ID

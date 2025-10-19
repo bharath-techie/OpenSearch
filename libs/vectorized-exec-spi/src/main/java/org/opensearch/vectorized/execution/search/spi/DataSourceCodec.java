@@ -60,4 +60,13 @@ public interface DataSourceCodec {
      * Returns the data format name
      */
     DataFormat getDataFormat();
+
+    /**
+     * Override the engine config with the session config
+     * @return a CompletableFuture containing the overridden engine config
+     */
+    EngineConfig updateEngineConfig(EngineConfig config);
+
+    void attachListener(ConfigUpdateListener listener);
+
 }

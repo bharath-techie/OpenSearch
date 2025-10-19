@@ -10,8 +10,11 @@ package com.parquet.parquetdataformat.engine.read;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.vectorized.execution.search.DataFormat;
+import org.opensearch.vectorized.execution.search.spi.ConfigUpdateListener;
 import org.opensearch.vectorized.execution.search.spi.DataSourceCodec;
+import org.opensearch.vectorized.execution.search.spi.EngineConfig;
 import org.opensearch.vectorized.execution.search.spi.RecordBatchStream;
 
 import java.util.List;
@@ -34,6 +37,11 @@ public class ParquetDataSourceCodec implements DataSourceCodec {
     private static final AtomicLong runtimeIdGenerator = new AtomicLong(0);
     private static final AtomicLong sessionIdGenerator = new AtomicLong(0);
     private final ConcurrentHashMap<Long, Long> sessionContexts = new ConcurrentHashMap<>();
+    private ParquetConfig parquetConfig;
+
+    ParquetDataSourceCodec(ClusterService clusterService) {
+        parquetConfig = new ParquetConfig(clusterService);
+    }
 
     // JNI library loading
     static {
@@ -140,4 +148,16 @@ public class ParquetDataSourceCodec implements DataSourceCodec {
     public DataFormat getDataFormat() {
         return DataFormat.CSV;
     }
+
+    @Override
+    public EngineConfig updateEngineConfig(EngineConfig config) {
+        return parquetConfig.updateEngineConfig(config);
+    }
+
+
+    @Override
+    public void attachListener(ConfigUpdateListener listener) {
+        parquetConfig.registerListener(listener);
+    }
+
 }
