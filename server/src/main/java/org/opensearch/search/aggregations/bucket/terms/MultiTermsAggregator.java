@@ -722,7 +722,7 @@ public class MultiTermsAggregator extends DeferableBucketAggregator implements S
         BucketOrder reduceOrder;
         if (isKeyOrder(order) == false) {
             reduceOrder = InternalOrder.key(true);
-            //buckets.sort(reduceOrder.comparator());
+            buckets.sort(reduceOrder.comparator());
         } else {
             reduceOrder = order;
         }

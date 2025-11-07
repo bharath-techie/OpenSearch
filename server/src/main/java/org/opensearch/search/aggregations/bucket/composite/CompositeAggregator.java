@@ -769,6 +769,11 @@ public final class CompositeAggregator extends BucketsAggregator implements Shar
             ));
             row++;
         }
+
+        // Sort the buckets similar to buildAggregations
+        CollectionUtil.introSort(buckets, InternalComposite.InternalBucket::compareKey);
+        buckets = buckets.subList(0, Math.min(size, buckets.size()));
+
         CompositeKey lastBucket = buckets.isEmpty() ? null : buckets.getLast().getRawKey();
         return List.of(
             new InternalComposite(
