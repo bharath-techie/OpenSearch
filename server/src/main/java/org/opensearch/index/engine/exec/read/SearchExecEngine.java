@@ -21,7 +21,9 @@ import java.io.IOException;
 import java.util.Map;
 
 /**
- * Simplified search execution engine interface
+ * The Search execution engine interface
+ * @param <Q> The engine searcher {@link EngineSearcher}
+ * @param <R> The engine reader manager {@link EngineReaderManager}
  */
 @ExperimentalApi
 public interface SearchExecEngine<Q extends EngineSearcher, R> {
