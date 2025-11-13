@@ -46,13 +46,12 @@ import java.util.function.Function;
  */
 public class DatafusionEngine implements SearchExecEngine {
 
-    private final DataFusionSearcherOperations searcherOperations = new DataFusionSearcherOperations();
-
     private static final Logger logger = LogManager.getLogger(DatafusionEngine.class);
 
     private DataFormat dataFormat;
     private DatafusionReaderManager datafusionReaderManager;
     private DatafusionService datafusionService;
+    private final DataFusionSearcherOperations searcherOperations;
 
     public DatafusionEngine(
         DataFormat dataFormat,
@@ -61,7 +60,7 @@ public class DatafusionEngine implements SearchExecEngine {
         ShardPath shardPath
     ) throws IOException {
         this.dataFormat = dataFormat;
-
+        this.searcherOperations = new DataFusionSearcherOperations();
         this.datafusionReaderManager = new DatafusionReaderManager(
             shardPath.getDataPath().toString(),
             formatCatalogSnapshot,
