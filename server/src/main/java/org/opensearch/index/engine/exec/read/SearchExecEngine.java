@@ -24,7 +24,7 @@ import java.util.Map;
  * Simplified search execution engine interface
  */
 @ExperimentalApi
-public interface SearchExecEngine {
+public interface SearchExecEngine<Q extends EngineSearcher, R> {
 
     SearchContext createContext(
         ReaderContext readerContext,
@@ -36,5 +36,5 @@ public interface SearchExecEngine {
 
     Map<String, Object[]> execute(SearchContext context) throws IOException;
 
-    SearcherOperations<?, ?> getSearcherOperations();
+    SearcherOperations<Q, R> getSearcherOperations();
 }

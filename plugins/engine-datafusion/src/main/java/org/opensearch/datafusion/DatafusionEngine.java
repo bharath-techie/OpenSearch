@@ -23,10 +23,8 @@ import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineException;
 import org.opensearch.index.engine.exec.engine.FileMetadata;
 import org.opensearch.index.engine.exec.format.DataFormat;
-import org.opensearch.index.engine.exec.read.CatalogSnapshotAwareRefreshListener;
+import org.opensearch.index.engine.exec.read.*;
 import org.opensearch.index.engine.exec.bridge.SearcherOperations;
-import org.opensearch.index.engine.exec.read.EngineSearcherSupplier;
-import org.opensearch.index.engine.exec.read.SearchExecEngine;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.internal.ReaderContext;
@@ -44,7 +42,7 @@ import java.util.function.Function;
 /**
  * Base Datafusion engine for search
  */
-public class DatafusionEngine implements SearchExecEngine {
+public class DatafusionEngine implements SearchExecEngine<DatafusionSearcher, DatafusionReaderManager> {
 
     private static final Logger logger = LogManager.getLogger(DatafusionEngine.class);
 
@@ -83,7 +81,7 @@ public class DatafusionEngine implements SearchExecEngine {
     }
 
     @Override
-    public SearcherOperations<?, ?> getSearcherOperations() {
+    public SearcherOperations<DatafusionSearcher, DatafusionReaderManager> getSearcherOperations() {
         return searcherOperations;
     }
 
