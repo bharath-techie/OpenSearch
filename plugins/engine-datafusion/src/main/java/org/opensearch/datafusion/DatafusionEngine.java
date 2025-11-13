@@ -24,11 +24,13 @@ import org.opensearch.index.engine.EngineException;
 import org.opensearch.index.engine.exec.engine.FileMetadata;
 import org.opensearch.index.engine.exec.format.DataFormat;
 import org.opensearch.index.engine.exec.read.CatalogSnapshotAwareRefreshListener;
+import org.opensearch.index.engine.exec.bridge.SearcherOperations;
 import org.opensearch.index.engine.exec.read.EngineSearcherSupplier;
 import org.opensearch.index.engine.exec.read.SearchExecEngine;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.internal.ReaderContext;
+import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.internal.ShardSearchRequest;
 
 import java.io.IOException;
@@ -42,7 +44,9 @@ import java.util.function.Function;
 /**
  * Base Datafusion engine for search
  */
-public class DatafusionEngine extends SearchExecEngine<DatafusionContext, DatafusionSearcher, DatafusionReaderManager> {
+public class DatafusionEngine implements SearchExecEngine {
+
+    private final DataFusionSearcherOperations searcherOperations = new DataFusionSearcherOperations();
 
     private static final Logger logger = LogManager.getLogger(DatafusionEngine.class);
 
@@ -67,7 +71,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     }
 
     @Override
-    public DatafusionContext createContext(
+    public SearchContext createContext(
         ReaderContext readerContext,
         ShardSearchRequest request,
         SearchShardTarget searchShardTarget,
@@ -75,92 +79,21 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         BigArrays bigArrays
     ) throws IOException {
         DatafusionContext datafusionContext = new DatafusionContext(readerContext, request, searchShardTarget, task, this, bigArrays);
-        // Parse source
-        datafusionContext.datafusionQuery(new DatafusionQuery(null/*TODO*/, new ArrayList<>()));
+        datafusionContext.datafusionQuery(new DatafusionQuery(null, new ArrayList<>()));
         return datafusionContext;
     }
 
     @Override
-    public EngineSearcherSupplier<DatafusionSearcher> acquireSearcherSupplier(Function<DatafusionSearcher, DatafusionSearcher> wrapper)
-        throws EngineException {
-        return acquireSearcherSupplier(wrapper, Engine.SearcherScope.EXTERNAL);
+    public SearcherOperations<?, ?> getSearcherOperations() {
+        return searcherOperations;
     }
 
     @Override
-    public EngineSearcherSupplier<DatafusionSearcher> acquireSearcherSupplier(
-        Function<DatafusionSearcher, DatafusionSearcher> wrapper,
-        Engine.SearcherScope scope
-    ) throws EngineException {
-        // TODO : wrapper is ignored
-        EngineSearcherSupplier<DatafusionSearcher> searcher = null;
-        // TODO : refcount needs to be revisited - add proper tests for exception etc
-        try {
-            DatafusionReader reader = datafusionReaderManager.acquire();
-            searcher = new DatafusionSearcherSupplier(null) {
-                @Override
-                protected DatafusionSearcher acquireSearcherInternal(String source) {
-                    return new DatafusionSearcher(source, reader, () -> {});
-                }
-
-                @Override
-                protected void doClose() {
-                    try {
-                        reader.decRef();
-                    } catch (IOException e) {
-                        throw new UncheckedIOException(e);
-                    }
-                }
-            };
-        } catch (Exception ex) {
-            // TODO
-        }
-        return searcher;
+    public Map<String, Object[]> execute(SearchContext context) {
+        return execute((DatafusionContext) context);
     }
 
-    @Override
-    public DatafusionSearcher acquireSearcher(String source) throws EngineException {
-        return acquireSearcher(source, Engine.SearcherScope.EXTERNAL);
-    }
-
-    @Override
-    public DatafusionSearcher acquireSearcher(String source, Engine.SearcherScope scope) throws EngineException {
-        return acquireSearcher(source, scope, Function.identity());
-    }
-
-    @Override
-    public DatafusionSearcher acquireSearcher(
-        String source,
-        Engine.SearcherScope scope,
-        Function<DatafusionSearcher, DatafusionSearcher> wrapper
-    ) throws EngineException {
-        DatafusionSearcherSupplier releasable = null;
-        try {
-            DatafusionSearcherSupplier searcherSupplier = releasable = (DatafusionSearcherSupplier) acquireSearcherSupplier(wrapper, scope);
-            DatafusionSearcher searcher = searcherSupplier.acquireSearcher(source);
-            releasable = null;
-            return new DatafusionSearcher(source, searcher.getReader(), () -> Releasables.close(searcher, searcherSupplier));
-        } finally {
-            Releasables.close(releasable);
-        }
-    }
-
-    @Override
-    public DatafusionReaderManager getReferenceManager(Engine.SearcherScope scope) {
-        return datafusionReaderManager;
-    }
-
-    @Override
-    public CatalogSnapshotAwareRefreshListener getRefreshListener(Engine.SearcherScope scope) {
-        return datafusionReaderManager;
-    }
-
-    @Override
-    public boolean assertSearcherIsWarmedUp(String source, Engine.SearcherScope scope) {
-        return false;
-    }
-
-    @Override
-    public Map<String, Object[]> execute(DatafusionContext context) {
+    private Map<String, Object[]> execute(DatafusionContext context) {
         Map<String, Object[]> finalRes = new HashMap<>();
         try {
             DatafusionSearcher datafusionSearcher = context.getEngineSearcher();
@@ -171,6 +104,86 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             logger.error("Failed to execute Substrait query plan", exception);
         }
         return finalRes;
+    }
+
+    private class DataFusionSearcherOperations implements SearcherOperations<DatafusionSearcher, DatafusionReaderManager> {
+
+        @Override
+        public EngineSearcherSupplier<DatafusionSearcher> acquireSearcherSupplier(Function<DatafusionSearcher, DatafusionSearcher> wrapper)
+            throws EngineException {
+            return acquireSearcherSupplier(wrapper, Engine.SearcherScope.EXTERNAL);
+        }
+
+        @Override
+        public EngineSearcherSupplier<DatafusionSearcher> acquireSearcherSupplier(
+            Function<DatafusionSearcher, DatafusionSearcher> wrapper,
+            Engine.SearcherScope scope
+        ) throws EngineException {
+            EngineSearcherSupplier<DatafusionSearcher> searcher = null;
+            try {
+                DatafusionReader reader = datafusionReaderManager.acquire();
+                searcher = new DatafusionSearcherSupplier(null) {
+                    @Override
+                    protected DatafusionSearcher acquireSearcherInternal(String source) {
+                        return new DatafusionSearcher(source, reader, () -> {});
+                    }
+
+                    @Override
+                    protected void doClose() {
+                        try {
+                            reader.decRef();
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        }
+                    }
+                };
+            } catch (Exception ex) {
+                // TODO
+            }
+            return searcher;
+        }
+
+        @Override
+        public DatafusionSearcher acquireSearcher(String source) throws EngineException {
+            return acquireSearcher(source, Engine.SearcherScope.EXTERNAL);
+        }
+
+        @Override
+        public DatafusionSearcher acquireSearcher(String source, Engine.SearcherScope scope) throws EngineException {
+            return acquireSearcher(source, scope, Function.identity());
+        }
+
+        @Override
+        public DatafusionSearcher acquireSearcher(
+            String source,
+            Engine.SearcherScope scope,
+            Function<DatafusionSearcher, DatafusionSearcher> wrapper
+        ) throws EngineException {
+            DatafusionSearcherSupplier releasable = null;
+            try {
+                DatafusionSearcherSupplier searcherSupplier = releasable = (DatafusionSearcherSupplier) acquireSearcherSupplier(wrapper, scope);
+                DatafusionSearcher searcher = searcherSupplier.acquireSearcher(source);
+                releasable = null;
+                return new DatafusionSearcher(source, searcher.getReader(), () -> Releasables.close(searcher, searcherSupplier));
+            } finally {
+                Releasables.close(releasable);
+            }
+        }
+
+        @Override
+        public DatafusionReaderManager getReferenceManager(Engine.SearcherScope scope) {
+            return datafusionReaderManager;
+        }
+
+        @Override
+        public CatalogSnapshotAwareRefreshListener getRefreshListener(Engine.SearcherScope scope) {
+            return datafusionReaderManager;
+        }
+
+        @Override
+        public boolean assertSearcherIsWarmedUp(String source, Engine.SearcherScope scope) {
+            return false;
+        }
     }
 
 }

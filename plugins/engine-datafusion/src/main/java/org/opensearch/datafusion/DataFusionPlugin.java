@@ -97,12 +97,12 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
      * Creates a shard specific read engine
      */
     @Override
-    public SearchExecEngine<?, ?, ?> createEngine(
+    public SearchExecEngine createEngine(
         DataFormat dataFormat,
         Collection<FileMetadata> formatCatalogSnapshot,
         ShardPath shardPath
     ) throws IOException {
-        return null;
+        return new DatafusionEngine(dataFormat, formatCatalogSnapshot, datafusionService, shardPath);
     }
 
 }
