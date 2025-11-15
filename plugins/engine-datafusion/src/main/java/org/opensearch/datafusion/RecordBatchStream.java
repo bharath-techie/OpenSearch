@@ -124,7 +124,7 @@ public class RecordBatchStream {
      * @throws Exception if an error occurs during cleanup
      */
     public void close() throws Exception {
-        closeStream(streamPointer);
+        DataFusionQueryJNI.freeStream(streamPointer);
         dictionaryProvider.close();
         if (initialized) {
             vectorSchemaRoot.close();

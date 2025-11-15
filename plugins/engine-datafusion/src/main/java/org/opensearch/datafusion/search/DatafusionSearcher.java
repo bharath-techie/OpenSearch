@@ -40,7 +40,10 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
     public void search(DatafusionQuery datafusionQuery, List<SearchResultsCollector<RecordBatchStream>> collectors) throws IOException {
         // TODO : call search here to native
         // TODO : change RunTimePtr
-        long nativeStreamPtr = DataFusionQueryJNI.executeSubstraitQuery(reader.getCachePtr(), datafusionQuery.toString(), datafusionQuery.getSubstraitBytes(), 0);
+//        long startTime = System.currentTimeMillis();
+//        System.out.println("==== query started");
+        long nativeStreamPtr = DataFusionQueryJNI.executeSubstraitQuery(reader.getCachePtr(), datafusionQuery.toString(), datafusionQuery.getSubstraitBytes());
+        //System.out.println("Time taken for execute query   1 : " + (System.currentTimeMillis() - startTime));
         RecordBatchStream stream = new DefaultRecordBatchStream(nativeStreamPtr);
         while(stream.hasNext()) {
             for(SearchResultsCollector<RecordBatchStream> collector : collectors) {
@@ -51,7 +54,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
     @Override
     public long search(DatafusionQuery datafusionQuery, Long contextPtr) {
-        return DataFusionQueryJNI.executeSubstraitQuery(reader.getCachePtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes(), contextPtr);
+        return DataFusionQueryJNI.executeSubstraitQuery(reader.getCachePtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes());
     }
 
     public DatafusionReader getReader() {

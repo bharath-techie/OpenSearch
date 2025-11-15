@@ -8,9 +8,12 @@
 
 package org.opensearch.datafusion.core;
 
+import org.opensearch.datafusion.DataFusionQueryJNI;
+
 import static org.opensearch.datafusion.DataFusionQueryJNI.closeGlobalRuntime;
 import static org.opensearch.datafusion.DataFusionQueryJNI.createGlobalRuntime;
 import static org.opensearch.datafusion.DataFusionQueryJNI.createTokioRuntime;
+import static org.opensearch.datafusion.DataFusionQueryJNI.startRuntimeMonitoring;
 
 /**
  * Global runtime environment for DataFusion operations.
@@ -25,8 +28,11 @@ public class GlobalRuntimeEnv implements AutoCloseable {
      * Creates a new global runtime environment.
      */
     public GlobalRuntimeEnv() {
+        int cpuThreads = Runtime.getRuntime().availableProcessors();
+        DataFusionQueryJNI.initRuntimeManager(cpuThreads);
         this.ptr = createGlobalRuntime();
         this.tokio_runtime_ptr = createTokioRuntime();
+        startRuntimeMonitoring(this.tokio_runtime_ptr);
     }
 
     /**

@@ -23,6 +23,12 @@ public class DataFusionQueryJNI {
         loadNativeLibrary();
     }
 
+    // Initialize runtime manager once on startup
+    public static native void initRuntimeManager(int cpuThreads);
+
+    // Shutdown runtime manager on datafusion service
+    public static native void shutdownRuntimeManager();
+
     /**
      * Private constructor to prevent instantiation of utility class.
      */
@@ -39,6 +45,7 @@ public class DataFusionQueryJNI {
         }
 
         try {
+
             // Try to load the library directly
             System.loadLibrary("opensearch_datafusion_jni");
             libraryLoaded = true;
@@ -81,6 +88,7 @@ public class DataFusionQueryJNI {
 
     public static native long createTokioRuntime();
 
+    public static native long startRuntimeMonitoring(long runtimePtr);
     /**
      * Closes global runtime environment
      * @param pointer the runtime environment pointer to close
@@ -113,7 +121,7 @@ public class DataFusionQueryJNI {
      * @param substraitPlan the serialized Substrait query plan
      * @return stream pointer for result iteration
      */
-    public static native long executeSubstraitQuery(long cachePtr, String tableName, byte[] substraitPlan, long runtimePtr);
+    public static native long executeSubstraitQuery(long cachePtr, String tableName, byte[] substraitPlan);
 
     public static native long createDatafusionReader(String path, String[] files);
 
@@ -148,4 +156,9 @@ public class DataFusionQueryJNI {
      * @param streamPtr the stream pointer to close
      */
     public static native void closeStream(long streamPtr);
+
+    /**
+     * Free stream
+     */
+    public static native void freeStream(long streamPtr);
 }

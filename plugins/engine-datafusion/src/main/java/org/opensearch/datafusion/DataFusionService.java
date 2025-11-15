@@ -80,6 +80,7 @@ public class DataFusionService extends AbstractLifecycleComponent {
         }
         sessionEngines.clear();
         globalRuntimeEnv.close();
+        DataFusionQueryJNI.shutdownRuntimeManager();
         logger.info("DataFusion service stopped");
     }
 

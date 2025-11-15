@@ -790,12 +790,32 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                         return;
                     }
                 }
+
+                boolean isDataFusionQuery = orig.source() != null && orig.source().queryPlanIR() != null;
+
+                if (isDataFusionQuery) {
+                    getExecutor(executorName, shard).execute(new ActionRunnable<SearchPhaseResult>(listener) {
+                        @Override
+                        protected void doRun() throws Exception {
+                            executeQueryPhaseAsync(orig, task,  getExecutor(executorName, shard), keepStatesInContext, isStreamSearch, listener);
+                        }
+                    });
+                } else {
+                    // existing pattern
+                    runAsync(
+                        getExecutor(executorName, shard),
+                        () -> executeQueryPhaseSync(orig, task, keepStatesInContext, isStreamSearch, listener),
+                        listener
+                    );
+                }
+
                 // fork the execution in the search thread pool
-                runAsync(
-                    getExecutor(executorName, shard),
-                    () -> executeQueryPhase(orig, task, keepStatesInContext, isStreamSearch, listener),
-                    listener
-                );
+                // existing code
+//                runAsync(
+//                    getExecutor(executorName, shard),
+//                    () -> executeQueryPhase(orig, task, keepStatesInContext, isStreamSearch, listener),
+//                    listener
+//                );
             }
 
             @Override
@@ -900,6 +920,256 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             throw exception;
         } finally {
             taskResourceTrackingService.writeTaskResourceUsage(task, clusterService.localNode().getId());
+        }
+    }
+
+    private void executeQueryPhaseAsync(
+        ShardSearchRequest request,
+        SearchShardTask task,
+        Executor executor,
+        boolean keepStatesInContext,
+        boolean isStreamSearch,
+        ActionListener<SearchPhaseResult> listener
+    ) {
+
+        final ReaderContext readerContext;
+        try {
+            readerContext = createOrGetReaderContext(request, keepStatesInContext);
+        } catch (Exception e) {
+            listener.onFailure(e);
+            return;
+        }
+
+        @SuppressWarnings("unchecked")
+        SearchExecEngine searchExecEngine = readerContext.indexShard()
+            .getIndexingExecutionCoordinator()
+            .getPrimaryReadEngine();
+        SearchShardTarget shardTarget = new SearchShardTarget(
+            clusterService.localNode().getId(),
+            readerContext.indexShard().shardId(),
+            request.getClusterAlias(),
+            OriginalIndices.NONE
+        );
+
+        Releasable readerContextRelease = null;
+        SearchContext context = null;
+
+        try {
+            readerContextRelease = readerContext.markAsUsed(getKeepAlive(request));
+            context = createContext(readerContext, request, task, true, isStreamSearch, searchExecEngine);
+
+            final Releasable finalRelease = readerContextRelease;
+            final SearchContext finalContext = context;
+
+            // Prevent cleanup in this try-catch, will be handled in callback
+            readerContextRelease = null;
+            context = null;
+
+            // Execute DataFusion async
+            searchExecEngine.executeAsync(finalContext, executor, new ActionListener<Map<String, Object[]>>() {
+                @Override
+                public void onResponse(Map<String, Object[]> result) {
+                    try {
+                        finalContext.setDFResults(result);
+
+                        // Continue with rest of query phase
+                        continueQueryPhaseAsync(
+                            finalContext,
+                            readerContext,
+                            request,
+                            task,
+                            isStreamSearch,
+                            listener,
+                            finalRelease
+                        );
+                    } catch (Exception e) {
+                        onFailure(e);
+                    }
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+                    logger.error("DataFusion execution failed", e);
+                    Exception exception = e;
+                    if (exception instanceof ExecutionException) {
+                        exception = (exception.getCause() == null || exception.getCause() instanceof Exception)
+                            ? (Exception) exception.getCause()
+                            : new OpenSearchException(exception.getCause());
+                    }
+                    logger.trace("Query phase failed", exception);
+
+                    // Cleanup
+                    try {
+                        finalContext.close();
+                    } catch (Exception ex) {
+                        logger.error("Error closing context", ex);
+                    }
+                    try {
+                        finalRelease.close();
+                    } catch (Exception ex) {
+                        logger.error("Error closing release", ex);
+                    }
+
+                    processFailure(readerContext, exception);
+                    listener.onFailure(exception);
+
+                    try {
+                        taskResourceTrackingService.writeTaskResourceUsage(task, clusterService.localNode().getId());
+                    } catch (Exception ex) {
+                        logger.error("Error writing task resource usage", ex);
+                    }
+                }
+            });
+
+        } catch (Exception e) {
+            // Cleanup on exception
+            if (context != null) {
+                try {
+                    context.close();
+                } catch (Exception ex) {
+                    logger.error("Error closing context", ex);
+                }
+            }
+            if (readerContextRelease != null) {
+                try {
+                    readerContextRelease.close();
+                } catch (Exception ex) {
+                    logger.error("Error closing release", ex);
+                }
+            }
+
+            Exception exception = e;
+            if (exception instanceof ExecutionException) {
+                exception = (exception.getCause() == null || exception.getCause() instanceof Exception)
+                    ? (Exception) exception.getCause()
+                    : new OpenSearchException(exception.getCause());
+            }
+            logger.trace("Query phase failed", exception);
+            processFailure(readerContext, exception);
+            listener.onFailure(exception);
+        }
+    }
+
+    private SearchPhaseResult executeQueryPhaseSync(
+        ShardSearchRequest request,
+        SearchShardTask task,
+        boolean keepStatesInContext,
+        boolean isStreamSearch,
+        ActionListener<SearchPhaseResult> listener
+    ) throws Exception {
+
+        final ReaderContext readerContext = createOrGetReaderContext(request, keepStatesInContext);
+        SearchShardTarget shardTarget = new SearchShardTarget(
+            clusterService.localNode().getId(),
+            readerContext.indexShard().shardId(),
+            request.getClusterAlias(),
+            OriginalIndices.NONE
+        );
+
+        try (
+            Releasable ignored = readerContext.markAsUsed(getKeepAlive(request));
+            SearchContext context = createContext(readerContext, request, task, true, isStreamSearch, null)
+        ) {
+            if (isStreamSearch) {
+                assert listener instanceof StreamSearchChannelListener : "Stream search expects StreamSearchChannelListener";
+                context.setStreamChannelListener((StreamSearchChannelListener<SearchPhaseResult, ShardSearchRequest>) listener);
+            }
+
+            final long afterQueryTime;
+            try (SearchOperationListenerExecutor executor = new SearchOperationListenerExecutor(context)) {
+                loadOrExecuteQueryPhase(request, context);
+
+                if (context.queryResult().hasSearchContext() == false && readerContext.singleSession()) {
+                    freeReaderContext(readerContext.id());
+                }
+                afterQueryTime = executor.success();
+            }
+
+            if (request.numberOfShards() == 1) {
+                return executeFetchPhase(readerContext, context, afterQueryTime);
+            } else {
+                final RescoreDocIds rescoreDocIds = context.rescoreDocIds();
+                context.queryResult().setRescoreDocIds(rescoreDocIds);
+                readerContext.setRescoreDocIds(rescoreDocIds);
+                return context.queryResult();
+            }
+        } catch (Exception e) {
+            Exception exception = e;
+            if (exception instanceof ExecutionException) {
+                exception = (exception.getCause() == null || exception.getCause() instanceof Exception)
+                    ? (Exception) exception.getCause()
+                    : new OpenSearchException(exception.getCause());
+            }
+            logger.trace("Query phase failed", exception);
+            processFailure(readerContext, exception);
+            throw exception;
+        } finally {
+            taskResourceTrackingService.writeTaskResourceUsage(task, clusterService.localNode().getId());
+        }
+    }
+
+    private void continueQueryPhaseAsync(
+        SearchContext context,
+        ReaderContext readerContext,
+        ShardSearchRequest request,
+        SearchShardTask task,
+        boolean isStreamSearch,
+        ActionListener<SearchPhaseResult> listener,
+        Releasable readerContextRelease) {
+
+        try {
+            if (isStreamSearch) {
+                assert listener instanceof StreamSearchChannelListener;
+                context.setStreamChannelListener((StreamSearchChannelListener<SearchPhaseResult, ShardSearchRequest>) listener);
+            }
+
+            final long afterQueryTime;
+            try (SearchOperationListenerExecutor executor = new SearchOperationListenerExecutor(context)) {
+                loadOrExecuteQueryPhase(request, context);
+
+                if (context.queryResult().hasSearchContext() == false && readerContext.singleSession()) {
+                    freeReaderContext(readerContext.id());
+                }
+                afterQueryTime = executor.success();
+            }
+
+            SearchPhaseResult result;
+            if (request.numberOfShards() == 1) {
+                result = executeFetchPhase(readerContext, context, afterQueryTime);
+            } else {
+                final RescoreDocIds rescoreDocIds = context.rescoreDocIds();
+                context.queryResult().setRescoreDocIds(rescoreDocIds);
+                readerContext.setRescoreDocIds(rescoreDocIds);
+                result = context.queryResult();
+            }
+
+            listener.onResponse(result);
+
+        } catch (Exception e) {
+            Exception exception = e;
+            if (exception instanceof ExecutionException) {
+                exception = (exception.getCause() == null || exception.getCause() instanceof Exception)
+                    ? (Exception) exception.getCause()
+                    : new OpenSearchException(exception.getCause());
+            }
+            logger.trace("Query phase continuation failed", exception);
+            listener.onFailure(exception);
+        } finally {
+            try {
+                readerContextRelease.close();
+            } catch (Exception e) {
+                logger.error("Error closing reader context release", e);
+            }
+            try {
+                context.close();
+            } catch (Exception e) {
+                logger.error("Error closing context", e);
+            }
+            try {
+                taskResourceTrackingService.writeTaskResourceUsage(task, clusterService.localNode().getId());
+            } catch (Exception e) {
+                logger.error("Error writing task resource usage", e);
+            }
         }
     }
 

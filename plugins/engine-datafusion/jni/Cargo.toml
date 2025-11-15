@@ -20,9 +20,13 @@ arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
-
+env_logger = {workspace =  true}
 # JNI dependencies
 jni = { workspace = true }
+simple_logger = { workspace = true }
+tokio-metrics = { workspace = true }
+metrics = { workspace = true }  # Optional: for external metrics
+metrics-exporter-prometheus = { workspace = true }
 
 # Substrait support
 datafusion-substrait = { workspace = true }
@@ -62,18 +66,23 @@ async-trait = { workspace = true }
 itertools = { workspace = true }
 rstest = { workspace = true }
 regex = { workspace = true }
+once_cell = "1.21.3"
+tokio-stream = "0.1.17"
+parking_lot = "0.12.5"
+tracing = "0.1.41"
+
 
 [build-dependencies]
 cbindgen = "0.27"
 [build]
-rustflags = ["-C", "force-frame-pointers=yes","symbol-mangling-version=v0"]
+rustflags = ["-C", "force-frame-pointers=yes","symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
 
 [profile.release]
 lto = true
-codegen-units = 1
+codegen-units = 16
 panic = "abort"
 incremental = true
-debug = true
+debug = "full"
 strip = false
 
 [profile.dev]
@@ -81,5 +90,6 @@ opt-level = 1          # Some optimization for reasonable performance
 lto = false           # Disable LTO for faster builds
 codegen-units = 16    # More parallel compilation
 incremental = true    # Enable incremental compilation
-debug = true
+debug = "full"
 strip = false
+panic = "abort"
