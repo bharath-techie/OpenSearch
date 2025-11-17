@@ -291,6 +291,14 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         Property.NodeScope
     );
 
+    public static final Setting<Boolean> VECTORIZED_ENGINE_ASYNC_ENABLED = Setting.boolSetting(
+        "search.vectorized_engine.async.enabled",
+        true,
+        Property.Dynamic,
+        Property.NodeScope
+    );
+
+
     /**
      * Controls the threshold for the number of term queries on the same field that triggers
      * the TermsMergingRewriter to combine them into a single terms query. For example,
@@ -458,6 +466,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
     private volatile boolean allowDerivedField;
 
+    private volatile boolean nativeAsyncEnabled;
+
     private final Cancellable keepAliveReaper;
 
     private final AtomicLong idGenerator = new AtomicLong();
@@ -535,6 +545,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         maxOpenPitContext = MAX_OPEN_PIT_CONTEXT.get(settings);
         clusterService.getClusterSettings().addSettingsUpdateConsumer(MAX_OPEN_PIT_CONTEXT, this::setMaxOpenPitContext);
 
+        nativeAsyncEnabled = VECTORIZED_ENGINE_ASYNC_ENABLED.get(settings);
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(VECTORIZED_ENGINE_ASYNC_ENABLED, this::setNativeAsyncEnabled);
+
         lowLevelCancellation = LOW_LEVEL_CANCELLATION_SETTING.get(settings);
         clusterService.getClusterSettings().addSettingsUpdateConsumer(LOW_LEVEL_CANCELLATION_SETTING, this::setLowLevelCancellation);
 
@@ -555,6 +568,10 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         // Initialize QueryRewriterRegistry with cluster settings so TermsMergingRewriter
         // can register its settings update consumer
         QueryRewriterRegistry.INSTANCE.initialize(settings, clusterService.getClusterSettings());
+    }
+
+    private void setNativeAsyncEnabled(Boolean enabled) {
+        this.nativeAsyncEnabled = enabled;
     }
 
     private void validateKeepAlives(TimeValue defaultKeepAlive, TimeValue maxKeepAlive) {
@@ -793,7 +810,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
                 boolean isDataFusionQuery = orig.source() != null && orig.source().queryPlanIR() != null;
 
-                if (isDataFusionQuery) {
+                if (isDataFusionQuery && nativeAsyncEnabled) {
                     getExecutor(executorName, shard).execute(new ActionRunnable<SearchPhaseResult>(listener) {
                         @Override
                         protected void doRun() throws Exception {
@@ -804,7 +821,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                     // existing pattern
                     runAsync(
                         getExecutor(executorName, shard),
-                        () -> executeQueryPhaseSync(orig, task, keepStatesInContext, isStreamSearch, listener),
+                        () -> executeQueryPhase(orig, task, keepStatesInContext, isStreamSearch, listener),
                         listener
                     );
                 }

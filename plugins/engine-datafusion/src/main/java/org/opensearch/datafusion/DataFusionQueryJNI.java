@@ -123,6 +123,9 @@ public class DataFusionQueryJNI {
      */
     public static native long executeSubstraitQuery(long cachePtr, String tableName, byte[] substraitPlan);
 
+    public static native void executeSubstraitQueryAsync(long cachePtr, String tableName, byte[] substraitPlan, ObjectResultCallback callback);
+
+
     public static native long createDatafusionReader(String path, String[] files);
 
     public static native void closeDatafusionReader(long ptr);

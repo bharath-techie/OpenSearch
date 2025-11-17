@@ -8,6 +8,6 @@
 
 package org.opensearch.datafusion;
 
-interface ObjectResultCallback {
-    void callback(String errMessage, long value);
+public interface ObjectResultCallback {
+    public void callback(String errMessage, long value);
 }

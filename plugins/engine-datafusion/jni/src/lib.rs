@@ -10,14 +10,11 @@ use arrow_array::{Array, StructArray};
 use arrow_schema::ffi::FFI_ArrowSchema;
 use jni::objects::{JByteArray, JClass, JObject};
 use jni::sys::{jbyteArray, jint, jlong, jstring};
-use jni::JNIEnv;
+use jni::{JNIEnv, JavaVM};
 use std::ptr::addr_of_mut;
-use std::sync::{Arc, Mutex, Once, OnceLock};
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
+use std::sync::Once;
 
-
-/// Initialize the logger once
-use simple_logger::SimpleLogger;
 mod util;
 mod row_id_optimizer;
 mod listing_table;
@@ -28,40 +25,34 @@ mod io;
 
 use datafusion::execution::context::SessionContext;
 use tokio_metrics::{RuntimeMonitor, TaskMonitor};
-use log::{info, error, warn};
+use log::{info, error};
 use crate::listing_table::{ListingOptions, ListingTable, ListingTableConfig};
-use crate::util::{create_object_meta_from_filenames, parse_string_arr, set_object_result_error, set_object_result_ok};
-use datafusion::datasource::file_format::csv::CsvFormat;
+use crate::util::{create_object_meta_from_filenames, parse_string_arr, set_object_result_error, set_object_result_ok, set_object_result_error_global, set_object_result_ok_global};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::execution::cache::cache_manager::CacheManagerConfig;
 use datafusion::execution::cache::cache_unit::DefaultListFilesCache;
 use datafusion::execution::cache::CacheAccessor;
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
-use datafusion::physical_plan::SendableRecordBatchStream;
-use datafusion::prelude::{ParquetReadOptions, SessionConfig};
+use datafusion::prelude::SessionConfig;
 use datafusion::DATAFUSION_VERSION;
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
 use datafusion_substrait::substrait::proto::Plan;
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use futures::TryStreamExt;
 use jni::objects::{JObjectArray, JString};
 use object_store::ObjectMeta;
 use prost::Message;
-use tokio::runtime::Runtime;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
 use datafusion::error::DataFusionError;
-use datafusion::execution::RecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use once_cell::sync::Lazy;
 use crate::cross_rt_stream::CrossRtStream;
 use crate::runtime_manager::RuntimeManager;
 
-use std::sync::mpsc as std_mpsc;
 use crate::executor::DedicatedExecutor;
+use std::cell::RefCell;
+use datafusion::execution::RecordBatchStream;
 
 static QUERY_EXECUTION_MONITOR: Lazy<TaskMonitor> = Lazy::new(|| {
     TaskMonitor::with_slow_poll_threshold(Duration::from_micros(100)).clone()
@@ -76,17 +67,66 @@ static RUNTIME_MANAGER: OnceLock<Arc<RuntimeManager>> = OnceLock::new();
 /// Counter for periodic metrics logging
 static STREAM_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// Global JavaVM reference
+static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
+
+thread_local! {
+    static THREAD_JNIENV: RefCell<Option<JNIEnv<'static>>> = RefCell::new(None);
+}
+
+// Helper function to get or attach JNI env
+fn with_jni_env<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut JNIEnv) -> R,
+{
+    THREAD_JNIENV.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        if opt.is_none() {
+            let jvm = JAVA_VM.get().expect("JavaVM not initialized");
+            let env = jvm.attach_current_thread_permanently()
+                .expect("Failed to attach thread to JVM");
+            *opt = Some(env);
+        }
+
+        // Safe because we're the only one with access to this thread-local
+        let env_ref = opt.as_mut().unwrap();
+        f(env_ref)
+    })
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_initRuntimeManager(
-    _env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     cpu_threads: jint,
 ) {
+    // Initialize JavaVM once
+    JAVA_VM.get_or_init(|| {
+        env.get_java_vm().expect("Failed to get JavaVM")
+    });
+     // Initialize tokio console with custom configuration
+    // console_subscriber::ConsoleLayer::builder()
+    //     .with_default_env()
+    //     .init();
+    //
+    //  match console_subscriber::ConsoleLayer::builder()
+    //         .server_addr(([0, 0, 0, 0], 6669)) // Listen on all interfaces
+    //         .retention(std::time::Duration::from_secs(60))
+    //         .spawn()
+    //     {
+    //         Ok(_) => {
+    //             println!("✓ Console subscriber initialized successfully on port 6669");
+    //             println!("  Run: tokio-console http://127.0.0.1:6669");
+    //         }
+    //         Err(e) => {
+    //             eprintln!("✗ Failed to initialize console subscriber: {}", e);
+    //         }
+    //     }
 
     RUNTIME_MANAGER.get_or_init(|| {
-            println!("Runtime manager initialized with {} CPU threads", cpu_threads);
-            Arc::new(RuntimeManager::new(cpu_threads as usize))
-        });
+        println!("Runtime manager initialized with {} CPU threads", cpu_threads);
+        Arc::new(RuntimeManager::new(cpu_threads as usize))
+    });
 }
 
 #[no_mangle]
@@ -94,10 +134,8 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_shutdow
     _env: JNIEnv,
     _class: JClass,
 ) {
-    let mut manager = RUNTIME_MANAGER.get();
-    if let Some(mgr) = manager.take() {
-        // Runtimes will be dropped and shut down
-        drop(mgr);
+    if let Some(_mgr) = RUNTIME_MANAGER.get() {
+        // Runtimes will be dropped and shut down when RUNTIME_MANAGER is dropped
         info!("Runtime manager shut down");
     }
 }
@@ -110,9 +148,9 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createC
 ) -> jlong {
     let config = SessionConfig::new().with_repartition_aggregations(true);
     let context = SessionContext::new_with_config(config);
-    let ctx = Box::into_raw(Box::new(context)) as jlong;
-    ctx
+    Box::into_raw(Box::new(context)) as jlong
 }
+
 /// Close and cleanup a DataFusion context
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_closeContext(
@@ -120,8 +158,11 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_closeCo
     _class: JClass,
     context_id: jlong,
 ) {
-    let _ = unsafe { Box::from_raw(context_id as *mut SessionContext) };
+    if context_id != 0 {
+        let _ = unsafe { Box::from_raw(context_id as *mut SessionContext) };
+    }
 }
+
 /// Get version information
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_getVersionInfo(
@@ -131,6 +172,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_getVers
     let version_info = format!(r#"{{"version": "{}", "codecs": ["CsvDataSourceCodec"]}}"#, DATAFUSION_VERSION);
     env.new_string(version_info).expect("Couldn't create Java string").as_raw()
 }
+
 /// Get version information (legacy method name)
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_getVersion(
@@ -139,6 +181,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_getVers
 ) -> jstring {
     env.new_string(DATAFUSION_VERSION).expect("Couldn't create Java string").as_raw()
 }
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createTokioRuntime(
     _env: JNIEnv,
@@ -152,107 +195,63 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createT
     let ctx = Box::into_raw(Box::new(rt)) as jlong;
     ctx
 }
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_startRuntimeMonitoring(
     _env: JNIEnv,
     _class: JClass,
-    tokio_runtime_ptr: jlong,
 ) {
-    let runtime = unsafe { &*(tokio_runtime_ptr as *const Runtime) };
-    let handle = runtime.handle().clone();
+    let manager = match RUNTIME_MANAGER.get() {
+        Some(m) => m,
+        None => {
+            error!("Runtime manager not initialized");
+            return;
+        }
+    };
 
-    runtime.spawn(async move {
+    let io_runtime = manager.io_runtime.clone();
+     io_runtime.spawn(async move {
+        let handle = tokio::runtime::Handle::current();
         let runtime_monitor = RuntimeMonitor::new(&handle);
 
-        // Monitor at 5-second intervals
+        // Monitor at 120-second intervals
         for metrics in runtime_monitor.intervals() {
             log_runtime_metrics(&metrics);
             tokio::time::sleep(Duration::from_secs(120)).await;
         }
     });
-
-    info!("Runtime monitoring started");
+    //
+    // println!("Runtime monitoring started");
 }
 
 /// Log runtime metrics with performance analysis
 fn log_runtime_metrics(metrics: &tokio_metrics::RuntimeMetrics) {
-    info!("=== Runtime Metrics ===");
-    info!("  Workers: {}", metrics.workers_count);
-    info!("  Global queue depth: {}", metrics.global_queue_depth);
-    info!("  Worker overflow: {}", metrics.total_overflow_count);
-    info!("  Remote schedule: {}", metrics.max_local_schedule_count);
-    info!("  Worker steal ops: {}", metrics.total_steal_operations);
-    info!("  Blocking queue depth: {}", metrics.blocking_queue_depth);
-//     //
-    // // Performance guide recommendations: Check for runtime-level issues
-    //
-    // // High global queue depth indicates external thread chatter or overflow
-    // if metrics.global_queue_depth > 50 {
-    //     warn!("HIGH GLOBAL QUEUE DEPTH: {} - indicates external thread chatter or worker overflow",
-    //           metrics.global_queue_depth);
-    // }
-    //
-    // // Worker overflow indicates uneven load or too many small tasks
-    // if metrics.max_steal_operations > 20 {
-    //     warn!("HIGH WORKER OVERFLOW: {} - consider consolidating tasks or balancing load",
-    //           metrics.max_steal_operations);
-    // }
-    //
-    // // Remote schedule count indicates external thread interaction
-    // if metrics.max_local_schedule_count > 50 {
-    //     warn!("HIGH REMOTE SCHEDULE COUNT: {} - external threads spawning/waking tasks frequently",
-    //           metrics.max_local_schedule_count);
-    // }
-    //
-    // // High blocking queue indicates spawn_blocking contention
-    // if metrics.blocking_queue_depth > 10 {
-    //     warn!("HIGH BLOCKING QUEUE DEPTH: {} - spawn_blocking contention detected",
-    //           metrics.blocking_queue_depth);
-    // }
-    let metrics = QUERY_EXECUTION_MONITOR.cumulative();
-    log_task_metrics("Query exec (via CrossRtStream)", &metrics);
-    let metrics = STREAM_NEXT_MONITOR.cumulative();
-    log_task_metrics("Stream Next (via CrossRtStream)", &metrics);
-    info!("======================");
+    println!("=== Runtime Metrics ===");
+    println!("  Workers: {}", metrics.workers_count);
+    println!("  Global queue depth: {}", metrics.global_queue_depth);
+    println!("  Worker overflow: {}", metrics.total_overflow_count);
+    println!("  Remote schedule: {}", metrics.max_local_schedule_count);
+    println!("  Worker steal ops: {}", metrics.total_steal_operations);
+    println!("  Blocking queue depth: {}", metrics.blocking_queue_depth);
+
+    let query_metrics = QUERY_EXECUTION_MONITOR.cumulative();
+    log_task_metrics("Query exec (via CrossRtStream)", &query_metrics);
+    let stream_metrics = STREAM_NEXT_MONITOR.cumulative();
+    log_task_metrics("Stream Next (via CrossRtStream)", &stream_metrics);
+    println!("======================");
 }
 
 /// Log task metrics with performance analysis
 fn log_task_metrics(operation: &str, metrics: &tokio_metrics::TaskMetrics) {
-    info!("=== Task Metrics: {} ===", operation);
-    info!("  Scheduled duration: {:?}", metrics.total_scheduled_duration);
-    info!("  Poll duration: {:?}", metrics.total_poll_duration);
-    info!("  Idle duration: {:?}", metrics.total_idle_duration);
-    info!("  Mean poll duration: {:?}", metrics.mean_poll_duration());
-    info!("  Slow poll ratio: {:.2}%", metrics.slow_poll_ratio() * 100.0);
-    info!("  Mean first poll delay: {:?}", metrics.mean_first_poll_delay());
-    info!("  Total slow polls: {}", metrics.total_slow_poll_count);
-    info!("  Total long delays: {}", metrics.total_long_delay_count);
-//
-//     // Performance guide recommendations: Check for issues
-//
-//     // High scheduling delay indicates Tokio scheduling issues
-//     if metrics.total_scheduled_duration > Duration::from_millis(10) {
-//         warn!("HIGH SCHEDULING DELAY for {}: {:?} - investigate global queue or long polls",
-//               operation, metrics.total_scheduled_duration);
-//     }
-//
-//     // High slow poll ratio indicates blocking work in async context
-//     if metrics.slow_poll_ratio() > 0.1 {
-//         warn!("HIGH SLOW POLL RATIO for {}: {:.2}% - consider using spawn_blocking or yield_now",
-//               operation, metrics.slow_poll_ratio() * 100.0);
-//     }
-//
-//     // High first poll delay indicates external thread chatter or global queue issues
-//     if metrics.mean_first_poll_delay() > Duration::from_millis(5) {
-//         warn!("HIGH FIRST POLL DELAY for {}: {:?} - likely external thread chatter or global queue issues",
-//               operation, metrics.mean_first_poll_delay());
-//     }
-//
-//     // High long delay count indicates scheduling delays
-//     if metrics.total_long_delay_count > 10 {
-//         warn!("HIGH LONG DELAY COUNT for {}: {} - tasks waiting too long to be polled",
-//               operation, metrics.total_long_delay_count);
-//     }
+    println!("=== Task Metrics: {} ===", operation);
+    println!("  Scheduled duration: {:?}", metrics.total_scheduled_duration);
+    println!("  Poll duration: {:?}", metrics.total_poll_duration);
+    println!("  Idle duration: {:?}", metrics.total_idle_duration);
+    println!("  Mean poll duration: {:?}", metrics.mean_poll_duration());
+    println!("  Slow poll ratio: {:.2}%", metrics.slow_poll_ratio() * 100.0);
+    println!("  Mean first poll delay: {:?}", metrics.mean_first_poll_delay());
+    println!("  Total slow polls: {}", metrics.total_slow_poll_count);
+    println!("  Total long delays: {}", metrics.total_long_delay_count);
 }
 
 #[no_mangle]
@@ -261,31 +260,37 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createG
     _class: JClass,
 ) -> jlong {
     let runtime_env = RuntimeEnvBuilder::default().build().unwrap();
-    let ctx = Box::into_raw(Box::new(runtime_env)) as jlong;
-    ctx
+    Box::into_raw(Box::new(runtime_env)) as jlong
 }
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createSessionContext(
     _env: JNIEnv,
     _class: JClass,
     runtime_id: jlong,
 ) -> jlong {
+    if runtime_id == 0 {
+        return 0;
+    }
     let runtime_env = unsafe { Arc::from_raw(runtime_id as *const RuntimeEnv) };
     let config = SessionConfig::new().with_repartition_aggregations(true);
     let context = SessionContext::new_with_config_rt(config, runtime_env.clone());
     let _ = Arc::into_raw(runtime_env);
 
-    let ctx = Box::into_raw(Box::new(context)) as jlong;
-    ctx
+    Box::into_raw(Box::new(context)) as jlong
 }
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_closeSessionContext(
     _env: JNIEnv,
     _class: JClass,
     context_id: jlong,
 ) {
-    let _ = unsafe { Box::from_raw(context_id as *mut SessionContext) };
+    if context_id != 0 {
+        let _ = unsafe { Box::from_raw(context_id as *mut SessionContext) };
+    }
 }
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createDatafusionReader(
     mut env: JNIEnv,
@@ -300,26 +305,18 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_createD
     let shard_view = ShardView::new(table_path, files_meta);
     Box::into_raw(Box::new(shard_view)) as jlong
 }
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_destroyReader(
-    mut env: JNIEnv,
+    _env: JNIEnv,
     _class: JClass,
     ptr: jlong
-)  {
-    let _ = unsafe { Box::from_raw(ptr as *mut ShardView) };
+) {
+    if ptr != 0 {
+        let _ = unsafe { Box::from_raw(ptr as *mut ShardView) };
+    }
 }
-// #[no_mangle]
-// pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_freeStream(
-//     _env: JNIEnv,
-//     _class: JClass,
-//     stream_ptr: jlong,
-// ) {
-//     if stream_ptr != 0 {
-//         unsafe {
-//             let _ = Box::from_raw(stream_ptr as *mut SendableRecordBatchStream);
-//         }
-//     }
-// }
+
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_freeStream(
     _env: JNIEnv,
@@ -332,10 +329,12 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_freeStr
         }
     }
 }
+
 pub struct ShardView {
     table_path: ListingTableUrl,
     files_meta: Arc<Vec<ObjectMeta>>
 }
+
 impl ShardView {
     pub fn new(table_path: ListingTableUrl, files_meta: Vec<ObjectMeta>) -> Self {
         let files_meta = Arc::new(files_meta);
@@ -467,6 +466,13 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_execute
                 }
             };
 
+            // let df_stream = cpu_executor.spawn(async move {
+            //     let dataframe = ctx.execute_logical_plan(logical_plan).await?;
+            //     dataframe.execute_stream().await
+            // }).await
+            // .map_err(|e| DataFusionError::Execution(format!("Executor error: {:?}", e)))
+            // .map_err(|e| DataFusionError::Execution(format!("Stream error: {}", e)));
+
             let dataframe = match ctx.execute_logical_plan(logical_plan).await {
                 Ok(df) => df,
                 Err(e) => {
@@ -483,7 +489,8 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_execute
                 }
             };
 
-            // CrossRtStream transfer cpu heavy tasks to CPU executor
+
+        // CrossRtStream transfer cpu heavy tasks to CPU executor
             let cross_rt_stream = CrossRtStream::new_with_df_error_stream(
                 df_stream,
                 cpu_executor,
@@ -503,52 +510,221 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_execute
     })
 }
 
-// If we need to create session context separately
-// TODO : not used, remove this
+
+/// ASYNC VERSION - Preferred method for query execution
 #[no_mangle]
-pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_nativeCreateSessionContext(
+pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_executeSubstraitQueryAsync(
     mut env: JNIEnv,
     _class: JClass,
-    runtime_ptr: jlong,
     shard_view_ptr: jlong,
-    global_runtime_env_ptr: jlong,
-) -> jlong {
-    let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
-    let table_path = shard_view.table_path();
-    let files_meta = shard_view.files_meta();
-    // Will use it once the global RunTime is defined
-    // let runtime_arc = unsafe {
-    //     let boxed = &*(runtime_env_ptr as *const Pin<Arc<RuntimeEnv>>);
-    //     (**boxed).clone()
-    // };
+    table_name: JString,
+    substrait_bytes: jbyteArray,
+    callback: JObject,
+) {
+    let manager = match RUNTIME_MANAGER.get() {
+        Some(m) => m,
+        None => {
+            error!("Runtime manager not initialized");
+            set_object_result_error(&mut env, callback,
+                                    &DataFusionError::Execution("Runtime manager not initialized".to_string()));
+            return;
+        }
+    };
+
+    // Convert callback to GlobalRef (thread-safe)
+    let callback_ref = match env.new_global_ref(&callback) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to create global ref: {}", e);
+            set_object_result_error(&mut env, callback,
+                                    &DataFusionError::Execution(format!("Failed to create global ref: {}", e)));
+            return;
+        }
+    };
+
+    // Extract data before spawning
+    let table_name: String = match env.get_string(&table_name) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("Failed to get table name: {}", e);
+            set_object_result_error(&mut env, callback,
+                                    &DataFusionError::Execution(format!("Failed to get table name: {}", e)));
+            return;
+        }
+    };
+
+    let plan_bytes_obj = unsafe { JByteArray::from_raw(substrait_bytes) };
+    let plan_bytes_vec = match env.convert_byte_array(plan_bytes_obj) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!("Failed to convert plan bytes: {}", e);
+            set_object_result_error(&mut env, callback,
+                                    &DataFusionError::Execution(format!("Failed to convert plan bytes: {}", e)));
+            return;
+        }
+    };
+
+    let io_runtime = manager.io_runtime.clone();
+    let cpu_executor = manager.cpu_executor();
+
+    // Spawn async task - TRULY NON-BLOCKING!
+    io_runtime.spawn(async move {
+        let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
+        let table_path = shard_view.table_path();
+        let files_meta = shard_view.files_meta();
+
+        // Execute query with monitoring
+        let result = QUERY_EXECUTION_MONITOR.instrument(
+            execute_query_internal(
+                table_path,
+                files_meta,
+                table_name,
+                plan_bytes_vec,
+                cpu_executor,
+            )
+        ).await;
+
+        // let result = execute_query_internal(
+        //     table_path,
+        //     files_meta,
+        //     table_name,
+        //     plan_bytes_vec,
+        //     cpu_executor,
+        // ).await;
+
+        match result {
+            Ok(stream_ptr) => {
+                // Use thread-local JNI env - auto-attaches!
+                with_jni_env(|env| {
+                    //println!("cross rt ptr : {}", stream_ptr);
+                    set_object_result_ok_global(env, &callback_ref, stream_ptr as *mut u8);
+                });
+            }
+            Err(e) => {
+                // Use thread-local JNI env - auto-attaches!
+                with_jni_env(|env| {
+                    error!("Query execution failed: {}", e);
+                    set_object_result_error_global(env, &callback_ref, &e);
+                });
+            }
+        }
+    });
+
+    // Function returns immediately - async work continues in background
+}
+
+// Extract query execution logic
+async fn execute_query_internal(
+    table_path: ListingTableUrl,
+    files_meta: Arc<Vec<ObjectMeta>>,
+    table_name: String,
+    plan_bytes_vec: Vec<u8>,
+    cpu_executor: DedicatedExecutor,
+) -> Result<jlong, DataFusionError> {
     let list_file_cache = Arc::new(DefaultListFilesCache::default());
     list_file_cache.put(table_path.prefix(), files_meta);
-    let runtime_env = RuntimeEnvBuilder::new()
+
+    let runtime_env = match RuntimeEnvBuilder::new()
         .with_cache_manager(CacheManagerConfig::default()
-            .with_list_files_cache(Some(list_file_cache))).build().unwrap();
-    let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime_env));
-    // Create default parquet options
-    let file_format = CsvFormat::default();
+            .with_list_files_cache(Some(list_file_cache.clone()))
+        )
+        .build() {
+        Ok(env) => env,
+        Err(e) => {
+            error!("Failed to build runtime env: {}", e);
+            return Err(e);
+        }
+    };
+
+    let mut config = SessionConfig::new();
+    config.options_mut().execution.parquet.pushdown_filters = false;
+    config.options_mut().execution.target_partitions = 1; // TODO : this can be more than 1 for higher instance types ?
+
+    let state = datafusion::execution::SessionStateBuilder::new()
+        .with_config(config)
+        .with_runtime_env(Arc::new(runtime_env))
+        .with_default_features()
+        .build();
+
+    let ctx = SessionContext::new_with_state(state);
+
+    // Register table
+    let file_format = ParquetFormat::new();
     let listing_options = ListingOptions::new(Arc::new(file_format))
-        .with_file_extension(".csv");
-    let runtime = unsafe { &mut *(runtime_ptr as *mut Runtime) };
-    let mut session_context_ptr = 0;
-    runtime.block_on(async {
-        let resolved_schema = listing_options
-            .infer_schema(&ctx.state(), &table_path.clone())
-            .await.unwrap();
-        let config = ListingTableConfig::new(table_path.clone())
-            .with_listing_options(listing_options)
-            .with_schema(resolved_schema);
-        // Create a new TableProvider
-        let provider = Arc::new(ListingTable::try_new(config).unwrap());
-        let shard_id = table_path.prefix().filename().expect("error in fetching Path");
-        ctx.register_table(shard_id, provider)
-            .expect("Failed to attach the Table");
-        // Return back after wrapping in Box
-        session_context_ptr = Box::into_raw(Box::new(ctx)) as jlong
-    });
-    session_context_ptr
+        .with_file_extension(".parquet");
+
+    let resolved_schema = match listing_options
+        .infer_schema(&ctx.state(), &table_path)
+        .await {
+        Ok(schema) => schema,
+        Err(e) => {
+            error!("Failed to infer schema: {}", e);
+            return Err(e);
+        }
+    };
+
+    let table_config = ListingTableConfig::new(table_path.clone())
+        .with_listing_options(listing_options)
+        .with_schema(resolved_schema);
+
+    let provider = match ListingTable::try_new(table_config) {
+        Ok(table) => Arc::new(table),
+        Err(e) => {
+            error!("Failed to create listing table: {}", e);
+            return Err(e);
+        }
+    };
+
+    if let Err(e) = ctx.register_table(&table_name, provider) {
+        error!("Failed to register table: {}", e);
+        return Err(e);
+    }
+
+    // Decode substrait
+    let substrait_plan = match Plan::decode(plan_bytes_vec.as_slice()) {
+        Ok(plan) => plan,
+        Err(e) => {
+            error!("Failed to decode Substrait plan: {}", e);
+            return Err(DataFusionError::Execution(format!("Failed to decode Substrait: {}", e)));
+        }
+    };
+
+    let logical_plan = match from_substrait_plan(&ctx.state(), &substrait_plan).await {
+        Ok(plan) => plan,
+        Err(e) => {
+            error!("Failed to convert Substrait plan: {}", e);
+            return Err(e);
+        }
+    };
+
+    let dataframe = match ctx.execute_logical_plan(logical_plan).await {
+        Ok(df) => df,
+        Err(e) => {
+            error!("Failed to execute logical plan: {}", e);
+            return Err(e);
+        }
+    };
+
+    let df_stream = match dataframe.execute_stream().await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to create execution stream: {}", e);
+            return Err(e);
+        }
+    };
+
+    // CrossRtStream transfers CPU heavy tasks to CPU executor
+    let cross_rt_stream = CrossRtStream::new_with_df_error_stream(
+        df_stream,
+        cpu_executor,
+    );
+
+    let wrapped_stream = RecordBatchStreamAdapter::new(
+        cross_rt_stream.schema(),
+        cross_rt_stream,
+    );
+
+    Ok(Box::into_raw(Box::new(wrapped_stream)) as jlong)
 }
 
 #[no_mangle]
@@ -571,40 +747,55 @@ pub extern "system" fn Java_org_opensearch_datafusion_RecordBatchStream_next(
         }
     };
 
-    let stream = unsafe { &mut *(stream as *mut RecordBatchStreamAdapter<CrossRtStream>) };
+    // Convert callback to GlobalRef
+    let callback_ref = match env.new_global_ref(&callback) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to create global ref: {}", e);
+            set_object_result_error(&mut env, callback,
+                                    &DataFusionError::Execution(format!("Failed to create global ref: {}", e)));
+            return;
+        }
+    };
 
-//     let result = futures::executor::block_on(async {
-//         STREAM_NEXT_MONITOR.instrument(stream.try_next()).await
-//     });
+    let stream_ptr = stream;
+    let io_runtime = manager.io_runtime.clone();
 
-    // Call directly - CrossRtStream handles CPU executor internally
-    // Poll from IO runtime - actual work happens on CPU executor via CrossRtStream
-    manager.io_runtime.block_on(async move{
-        // Simple polling - CrossRtStream handles the runtime bridge
+    io_runtime.spawn(async move {
+        let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
+
+        // Poll the stream with monitoring
+        //let result = stream.try_next().await;
+
         let result = STREAM_NEXT_MONITOR.instrument(async {
-            let res = stream.try_next().await;
-            res
+                stream.try_next().await
         }).await;
 
-        match result {
-            Ok(Some(batch)) => {
-                // Convert to FFI on IO runtime (lightweight)
-                let struct_array: StructArray = batch.into();
-                let array_data = struct_array.into_data();
-                let ffi_array = FFI_ArrowArray::new(&array_data);
-                let ffi_array_ptr = Box::into_raw(Box::new(ffi_array));
-                set_object_result_ok(&mut env, callback, ffi_array_ptr);
+        // Use thread-local JNI env - auto-attaches!
+        with_jni_env(|env| {
+            match result {
+                Ok(Some(batch)) => {
+                    // Convert to FFI
+                    let struct_array: StructArray = batch.into();
+                    let array_data = struct_array.into_data();
+                    let ffi_array = FFI_ArrowArray::new(&array_data);
+                    let ffi_array_ptr = Box::into_raw(Box::new(ffi_array));
+                    set_object_result_ok_global(env, &callback_ref, ffi_array_ptr);
+                }
+                Ok(None) => {
+                    // End of stream
+                    set_object_result_ok_global(env, &callback_ref, std::ptr::null_mut::<FFI_ArrowSchema>());
+                }
+                Err(err) => {
+                    error!("Stream next failed: {}", err);
+                    set_object_result_error_global(env, &callback_ref, &err);
+                }
             }
-            Ok(None) => {
-                set_object_result_ok(&mut env, callback, 0 as *mut FFI_ArrowSchema);
-            }
-            Err(err) => {
-                set_object_result_error(&mut env, callback, &err);
-            }
-        }
+        });
     });
-}
 
+    // Function returns immediately - async work continues in background
+}
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_RecordBatchStream_getSchema(
@@ -621,18 +812,17 @@ pub extern "system" fn Java_org_opensearch_datafusion_RecordBatchStream_getSchem
         );
         return;
     }
-
     // Schema access is synchronous and fast - no need for runtime
     let stream = unsafe { &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
-    //let stream = unsafe { &mut *(stream_ptr as *mut SendableRecordBatchStream) };
     let schema = stream.schema();
-
-    match FFI_ArrowSchema::try_from(&*schema) {
+    match FFI_ArrowSchema::try_from(schema.as_ref()) {
         Ok(mut ffi_schema) => {
             set_object_result_ok(&mut env, callback, addr_of_mut!(ffi_schema));
         }
         Err(err) => {
-            set_object_result_error(&mut env, callback, &err);
+            set_object_result_error(&mut env, callback, &DataFusionError::Execution(
+                format!("Schema conversion failed: {}", err)
+            ));
         }
     }
 }
@@ -694,23 +884,14 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_resetMe
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_RecordBatchStream_closeStream(
-    mut env: JNIEnv,
+    _env: JNIEnv,
     _class: JClass,
-    stream: jlong
+    stream_ptr: jlong
 ) {
-    let _ = unsafe { Box::from_raw(stream as *mut SendableRecordBatchStream) };
+    if stream_ptr != 0 {
+        let _ = unsafe { Box::from_raw(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
+    }
 }
-
-// #[no_mangle]
-// pub extern "system" fn Java_org_opensearch_datafusion_RecordBatchStream_closeStream(
-//     _env: JNIEnv,
-//     _class: JClass,
-//     stream_ptr: jlong,
-// ) {
-//     if stream_ptr != 0 {
-//         let _ = unsafe { Box::from_raw(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>) };
-//     }
-// }
 
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_closeGlobalRuntime(
@@ -718,7 +899,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_DataFusionQueryJNI_closeGl
     _class: JClass,
     runtime: jlong
 ) {
-    //let _ = unsafe { Arc::from_raw(runtime as *const RuntimeEnv) };
-    let _ = unsafe { Box::from_raw(runtime as *mut RuntimeEnv) };
+    if runtime != 0 {
+        let _ = unsafe { Box::from_raw(runtime as *mut RuntimeEnv) };
+    }
 }
-

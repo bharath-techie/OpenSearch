@@ -31,9 +31,8 @@ impl RuntimeManager {
         let mut cpu_runtime_builder = Builder::new_multi_thread();
         let io_handle = io_runtime.handle().clone();
 
-        let cpu_thread =
-
-        cpu_runtime_builder
+          cpu_runtime_builder
+            //.worker_threads(cpu_threads)
             .worker_threads(((cpu_threads as f64) * 1.5 + 1.0) as usize)
             .thread_name("datafusion-cpu")
             .enable_time()

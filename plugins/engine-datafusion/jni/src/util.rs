@@ -5,7 +5,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use datafusion::arrow::array::RecordBatch;
-use jni::objects::{JObject, JObjectArray, JString};
+use jni::objects::{GlobalRef, JObject, JObjectArray, JString};
 use jni::sys::jlong;
 use jni::JNIEnv;
 use object_store::{path::Path as ObjectPath, ObjectMeta};
@@ -90,6 +90,33 @@ pub fn set_object_result_error<T: Error>(env: &mut JNIEnv, callback: JObject, er
         .expect("Failed to call object result callback with error");
 }
 
+/// Set success result by calling an ObjectResultCallback with GlobalRef
+pub fn set_object_result_ok_global<T>(env: &mut JNIEnv, callback: &GlobalRef, address: *mut T) {
+    //println!("cross rt ptr addr : {}",  (address as i64));
+    let err_message = JObject::null();
+    env.call_method(
+        callback.as_obj(),
+        "callback",
+        "(Ljava/lang/String;J)V",
+        &[(&err_message).into(), (address as jlong).into()],
+    )
+        .expect("Failed to call object result callback with address");
+}
+
+/// Set error result by calling an ObjectResultCallback with GlobalRef
+pub fn set_object_result_error_global<T: Error>(env: &mut JNIEnv, callback: &GlobalRef, error: &T) {
+    let err_message = env
+        .new_string(error.to_string())
+        .expect("Couldn't create java string for error message");
+    let address = -1 as jlong;
+    env.call_method(
+        callback.as_obj(),
+        "callback",
+        "(Ljava/lang/String;J)V",
+        &[(&err_message).into(), address.into()],
+    )
+        .expect("Failed to call object result callback with error");
+}
 
 /// Parse a string map from JNI arrays
 pub fn parse_string_map(

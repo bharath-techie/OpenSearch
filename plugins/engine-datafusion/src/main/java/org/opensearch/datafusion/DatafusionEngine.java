@@ -194,32 +194,31 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         long st = System.currentTimeMillis();
         try {
             DatafusionSearcher datafusionSearcher = context.getEngineSearcher();
-            long streamPointer = datafusionSearcher.search(
-                context.getDatafusionQuery(),
-                datafusionService.getTokioRuntimePointer()
-            );
-            RecordBatchStream stream = new RecordBatchStream(
-                streamPointer,
-                datafusionService.getTokioRuntimePointer(),
-                allocator
-            );
-            Map<String, Object[]> finalRes = new HashMap<>();
-            SearchResultsCollector<RecordBatchStream> collector = new SearchResultsCollector<RecordBatchStream>() {
-                @Override
-                public void collect(RecordBatchStream value) {
-                    VectorSchemaRoot root = value.getVectorSchemaRoot();
-                    for (Field field : root.getSchema().getFields()) {
-                        String fieldName = field.getName();
-                        FieldVector fieldVector = root.getVector(fieldName);
-                        Object[] fieldValues = new Object[fieldVector.getValueCount()];
-                        for (int i = 0; i < fieldVector.getValueCount(); i++) {
-                            fieldValues[i] = fieldVector.getObject(i);
+            datafusionSearcher.searchAsync(context.getDatafusionQuery()).whenCompleteAsync((streamPointer, error)->{
+                RecordBatchStream stream = new RecordBatchStream(
+                    streamPointer,
+                    datafusionService.getTokioRuntimePointer(),
+                    allocator
+                );
+                Map<String, Object[]> finalRes = new HashMap<>();
+                SearchResultsCollector<RecordBatchStream> collector = new SearchResultsCollector<RecordBatchStream>() {
+                    @Override
+                    public void collect(RecordBatchStream value) {
+                        VectorSchemaRoot root = value.getVectorSchemaRoot();
+                        for (Field field : root.getSchema().getFields()) {
+                            String fieldName = field.getName();
+                            FieldVector fieldVector = root.getVector(fieldName);
+                            Object[] fieldValues = new Object[fieldVector.getValueCount()];
+                            for (int i = 0; i < fieldVector.getValueCount(); i++) {
+                                fieldValues[i] = fieldVector.getObject(i);
+                            }
+                            finalRes.put(fieldName, fieldValues);
                         }
-                        finalRes.put(fieldName, fieldValues);
                     }
-                }
-            };
-            loadNextBatch(stream, executor, collector, finalRes, allocator, st, listener);
+                };
+                loadNextBatch(stream, executor, collector, finalRes, allocator, st, listener);
+            });
+
         } catch (Exception exception) {
             logger.error("Failed to execute Substrait query plan", exception);
             listener.onFailure(exception);

@@ -8,9 +8,12 @@
 
 package org.opensearch.datafusion.search;
 
+import org.apache.arrow.c.ArrowArray;
+import org.apache.arrow.c.Data;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.opensearch.datafusion.DataFusionQueryJNI;
 import org.opensearch.datafusion.DataFusionService;
+import org.opensearch.datafusion.ErrorUtil;
 import org.opensearch.datafusion.core.DefaultRecordBatchStream;
 import org.opensearch.index.engine.EngineSearcher;
 import org.opensearch.search.aggregations.SearchResultsCollector;
@@ -56,6 +59,23 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
     public long search(DatafusionQuery datafusionQuery, Long contextPtr) {
         return DataFusionQueryJNI.executeSubstraitQuery(reader.getCachePtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes());
     }
+
+    @Override
+    public CompletableFuture<Long> searchAsync(DatafusionQuery datafusionQuery) {
+        CompletableFuture<Long> result = new CompletableFuture<>();
+        DataFusionQueryJNI.executeSubstraitQueryAsync(reader.getCachePtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes(), (errString, streamPointer) -> {
+            if (ErrorUtil.containsError(errString)) {
+                result.completeExceptionally(new RuntimeException(errString));
+            } else if (streamPointer == 0) {
+                // Reached end of stream
+                result.complete(0L);
+            } else {
+                result.complete(streamPointer);
+            }
+        });
+        return result;
+    }
+
 
     public DatafusionReader getReader() {
         return reader;
