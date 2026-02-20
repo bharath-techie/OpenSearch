@@ -11,6 +11,7 @@ package org.opensearch.index.engine.exec.coord;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.index.IndexCommit;
+import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.search.ReferenceManager;
 import org.apache.lucene.store.AlreadyClosedException;
@@ -1330,5 +1331,12 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
         } else {
             throw new EngineException(shardId, "CompositeEngine committer is not a LuceneCommitEngine");
         }
+    }
+
+    public IndexWriter getLuceneIndexWriter() {
+        if (compositeEngineCommitter instanceof LuceneCommitEngine) {
+            return ((LuceneCommitEngine) compositeEngineCommitter).getIndexWriter();
+        }
+        return null;
     }
 }
