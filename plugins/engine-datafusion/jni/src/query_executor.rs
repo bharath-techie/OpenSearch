@@ -18,7 +18,7 @@ use datafusion::{
     datasource::physical_plan::parquet::{ParquetAccessPlan, RowGroupAccess},
     datasource::physical_plan::ParquetSource,
     execution::cache::cache_manager::CacheManagerConfig,
-    execution::cache::cache_unit::DefaultListFilesCache,
+    execution::cache::DefaultListFilesCache,
     execution::cache::CacheAccessor,
     execution::context::SessionContext,
     execution::runtime_env::RuntimeEnvBuilder,
@@ -120,7 +120,11 @@ pub async fn execute_query_with_cross_rt_stream(
     );
 
     let list_file_cache = Arc::new(DefaultListFilesCache::default());
-    list_file_cache.put(table_path.prefix(), object_meta);
+    let table_scoped_path = datafusion::execution::cache::TableScopedPath {
+        table: None,
+        path: table_path.prefix().clone(),
+    };
+    list_file_cache.put(&table_scoped_path, object_meta);
 
     let runtimeEnv = &runtime.runtime_env;
 
@@ -142,7 +146,7 @@ pub async fn execute_query_with_cross_rt_stream(
 
     let mut config = SessionConfig::new();
     config.options_mut().execution.parquet.pushdown_filters = false;
-    config.options_mut().execution.target_partitions = 1;
+    config.options_mut().execution.target_partitions = 4;
     config.options_mut().execution.batch_size = 8192;
 
     let state = datafusion::execution::SessionStateBuilder::new()
@@ -360,7 +364,11 @@ pub async fn execute_fetch_phase(
     );
 
     let list_file_cache = Arc::new(DefaultListFilesCache::default());
-    list_file_cache.put(table_path.prefix(), object_meta);
+    let table_scoped_path = datafusion::execution::cache::TableScopedPath {
+        table: None,
+        path: table_path.prefix().clone(),
+    };
+    list_file_cache.put(&table_scoped_path, object_meta);
 
     let runtime_env = RuntimeEnvBuilder::new()
         .with_cache_manager(
@@ -413,7 +421,13 @@ pub async fn execute_fetch_phase(
         .collect();
 
     let file_group = FileGroup::new(partitioned_files);
-    let file_source = Arc::new(ParquetSource::default());
+
+    // In DF 52, ParquetSource takes a TableSchema which includes partition columns
+    let table_schema = datafusion_datasource::table_schema::TableSchema::new(
+        parquet_schema.clone(),
+        vec![Arc::new(Field::new(ROW_BASE_FIELD_NAME, DataType::Int64, false))],
+    );
+    let file_source = Arc::new(ParquetSource::new(table_schema));
 
     let mut projection_index = vec![];
     for field_name in projections.iter() {
@@ -434,17 +448,15 @@ pub async fn execute_fetch_phase(
 
     let file_scan_config = FileScanConfigBuilder::new(
         ObjectStoreUrl::local_filesystem(),
-        parquet_schema.clone(),
         file_source,
     )
-    .with_table_partition_cols(vec![Field::new(ROW_BASE_FIELD_NAME, DataType::Int64, false)])
-    .with_projection_indices(Some(projection_index.clone()))
+    .with_projection_indices(Some(projection_index.clone()))?
     .with_file_group(file_group)
     .build();
 
     let parquet_exec = DataSourceExec::from_data_source(file_scan_config.clone());
 
-    let projection_exprs = build_projection_exprs(file_scan_config.projected_schema())
+    let projection_exprs = build_projection_exprs(file_scan_config.projected_schema()?)
         .expect("Failed to build projection expressions");
 
     let projection_exec = Arc::new(ProjectionExec::try_new(projection_exprs, parquet_exec)

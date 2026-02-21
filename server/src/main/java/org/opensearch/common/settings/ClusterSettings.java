@@ -870,7 +870,15 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 StreamTransportService.STREAM_TRANSPORT_REQ_TIMEOUT_SETTING,
                 StreamSearchTransportService.STREAM_SEARCH_ENABLED,
 
-                SearchService.CLUSTER_SEARCH_QUERY_PLAN_EXPLAIN_SETTING
+                SearchService.CLUSTER_SEARCH_QUERY_PLAN_EXPLAIN_SETTING,
+
+                // Indexed query settings (Lucene+DataFusion)
+                SearchService.INDEXED_QUERY_ENABLED_SETTING,
+                SearchService.INDEXED_QUERY_FIELD_SETTING,
+                SearchService.INDEXED_QUERY_TERM_SETTING,
+                SearchService.INDEXED_QUERY_TYPE_SETTING,
+                SearchService.INDEXED_QUERY_PARTITIONS_SETTING,
+                SearchService.INDEXED_QUERY_BITSET_MODE_SETTING
             )
         )
     );
