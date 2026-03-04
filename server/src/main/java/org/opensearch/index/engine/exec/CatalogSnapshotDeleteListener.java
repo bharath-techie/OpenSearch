@@ -6,7 +6,10 @@
  * compatible open source license.
  */
 
-/**
- * DataFusion native execution engine back-end plugin.
- */
-package org.opensearch.be.datafusion;
+package org.opensearch.index.engine.exec;
+
+import java.io.IOException;
+
+public interface CatalogSnapshotDeleteListener {
+    void onDeleted(CatalogSnapshot catalogSnapshot) throws IOException;
+}
