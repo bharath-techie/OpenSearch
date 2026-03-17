@@ -575,7 +575,9 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             }
         }
         this.dataFormatRegistry = dataFormatRegistry;
-        CompositeEngine engine = new CompositeEngine(dataFormatRegistry, path); // TODO : just a placeholder
+        if (dataFormatRegistry != null) {
+            this.currentCompositeEngineReference.set(new CompositeEngine(dataFormatRegistry));
+        }
     }
 
     /**
