@@ -10,7 +10,6 @@ package org.opensearch.be.lucene;
 
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreMode;
@@ -20,9 +19,6 @@ import org.opensearch.index.engine.exec.IndexFilterContext;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Lucene-specific index filter context.
@@ -37,8 +33,6 @@ public class LuceneIndexFilterContext implements IndexFilterContext {
 
     private final Weight weight;
     private final List<LeafReaderContext> leaves;
-    private final AtomicInteger nextCollectorId = new AtomicInteger(1);
-    private final Map<Integer, CollectorState> collectors = new ConcurrentHashMap<>();
 
     public LuceneIndexFilterContext(Query query, DirectoryReader reader) throws IOException {
         IndexSearcher searcher = new IndexSearcher(reader);
@@ -65,35 +59,6 @@ public class LuceneIndexFilterContext implements IndexFilterContext {
         return leaves;
     }
 
-    int registerCollector(DocIdSetIterator iterator, int minDoc, int maxDoc) {
-        int key = nextCollectorId.getAndIncrement();
-        collectors.put(key, new CollectorState(iterator, minDoc, maxDoc));
-        return key;
-    }
-
-    CollectorState getCollector(int key) {
-        return collectors.get(key);
-    }
-
-    void removeCollector(int key) {
-        collectors.remove(key);
-    }
-
     @Override
-    public void close() {
-        collectors.clear();
-    }
-
-    static class CollectorState {
-        final DocIdSetIterator iterator;
-        final int minDoc;
-        final int maxDoc;
-        int currentDoc = -1;
-
-        CollectorState(DocIdSetIterator iterator, int minDoc, int maxDoc) {
-            this.iterator = iterator;
-            this.minDoc = minDoc;
-            this.maxDoc = maxDoc;
-        }
-    }
+    public void close() {}
 }
