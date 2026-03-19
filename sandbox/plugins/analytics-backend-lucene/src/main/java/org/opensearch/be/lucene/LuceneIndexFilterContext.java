@@ -15,6 +15,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Weight;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.index.engine.exec.CollectorLifecycleManager;
 import org.opensearch.index.engine.exec.IndexFilterContext;
 
 import java.io.IOException;
@@ -33,6 +34,7 @@ public class LuceneIndexFilterContext implements IndexFilterContext {
 
     private final Weight weight;
     private final List<LeafReaderContext> leaves;
+    private final CollectorLifecycleManager collectorManager = new CollectorLifecycleManager();
 
     public LuceneIndexFilterContext(Query query, DirectoryReader reader) throws IOException {
         IndexSearcher searcher = new IndexSearcher(reader);
@@ -59,6 +61,15 @@ public class LuceneIndexFilterContext implements IndexFilterContext {
         return leaves;
     }
 
+    /**
+     * Returns the collector lifecycle manager
+     */
+    public CollectorLifecycleManager getCollectorManager() {
+        return collectorManager;
+    }
+
     @Override
-    public void close() {}
+    public void close() {
+        collectorManager.close();
+    }
 }

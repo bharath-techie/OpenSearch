@@ -26,5 +26,9 @@ public interface IndexFilterProvider<Q, C extends IndexFilterContext, ReaderT> e
 
     C createContext(Q query, ReaderT reader) throws IOException;
 
-    SegmentCollector createCollector(C context, int segmentOrd, int minDoc, int maxDoc);
+    int createCollector(C context, int segmentOrd, int minDoc, int maxDoc);
+
+    long[] collectDocs(C context, int collectorKey, int minDoc, int maxDoc);
+
+    void releaseCollector(C context, int collectorKey);
 }

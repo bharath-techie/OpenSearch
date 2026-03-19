@@ -32,8 +32,37 @@ public class LuceneIndexFilterProvider implements IndexFilterProvider<Query, Luc
         return new LuceneIndexFilterContext(query, reader);
     }
 
+
+    /**
+     * Creates a collector for the given segment and registers it in the
+     * context's {@link org.opensearch.index.engine.exec.CollectorLifecycleManager}.
+     *
+     * @return an int key that identifies this collector across JNI
+     */
     @Override
-    public SegmentCollector createCollector(LuceneIndexFilterContext context, int segmentOrd, int minDoc, int maxDoc) {
+    public int createCollector(LuceneIndexFilterContext context, int segmentOrd, int minDoc, int maxDoc) {
+        SegmentCollector collector = createCollectorInternal(context, segmentOrd, minDoc, maxDoc);
+        return context.getCollectorManager().registerCollector(collector);
+    }
+
+    /**
+     * Collects matching doc IDs for the collector identified by {@code key}.
+     */
+    public long[] collectDocs(LuceneIndexFilterContext context, int key, int minDoc, int maxDoc) {
+        return context.getCollectorManager().collectDocs(key, minDoc, maxDoc);
+    }
+
+    /**
+     * Releases the collector identified by {@code key}.
+     */
+    public void releaseCollector(LuceneIndexFilterContext context, int key) {
+        context.getCollectorManager().releaseCollector(key);
+    }
+
+    @Override
+    public void close() {}
+
+    private SegmentCollector createCollectorInternal(LuceneIndexFilterContext context, int segmentOrd, int minDoc, int maxDoc) {
         try {
             Scorer scorer = context.getWeight().scorer(context.getLeaves().get(segmentOrd));
             if (scorer == null) {
@@ -45,8 +74,6 @@ public class LuceneIndexFilterProvider implements IndexFilterProvider<Query, Luc
         }
     }
 
-    @Override
-    public void close() {}
 
     private static final SegmentCollector EMPTY_COLLECTOR = (min, max) -> new long[0];
 
