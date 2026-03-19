@@ -12,6 +12,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.index.engine.exec.ScoreWeightQueryLifecycleManager;
 import org.opensearch.search.SearchExecutionContext;
 import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.internal.ShardSearchRequest;
@@ -22,8 +23,13 @@ import java.io.IOException;
  * Lucene-specific search execution context.
  * <p>
  * Input: a Lucene {@link Query}.
- * Output: a registered Weight pointer + segment metadata that Rust
- * uses for JNI callbacks to stream bitsets per partition range.
+ * Output: a registered weight key + a {@link ScoreWeightQueryLifecycleManager}
+ * that Rust uses for JNI callbacks to create scorers and stream bitsets
+ * per partition range.
+ * <p>
+ * The lifecycle manager is created per-query and closed when this context
+ * is closed, acting as a safety net for any weights/scorers not explicitly
+ * released.
  *
  * @opensearch.experimental
  */
@@ -35,11 +41,11 @@ public class LuceneSearchContext implements SearchExecutionContext {
 
     private final DirectoryReader reader;
     private final LuceneEngineSearcher searcher;
+    private final ScoreWeightQueryLifecycleManager scoreWeightManager;
     private Query query;
 
-    private long weightPointer;
-    private int segmentCount;
-    private int[] segmentMaxDocs;
+    /** The int key for the registered weight in the lifecycle manager. */
+    private int weightKey;
 
     public LuceneSearchContext(
         ShardSearchRequest request,
@@ -48,7 +54,8 @@ public class LuceneSearchContext implements SearchExecutionContext {
     ) throws IOException {
         this.reader = reader;
         IndexSearcher indexSearcher = new IndexSearcher(reader);
-        searcher = new LuceneEngineSearcher(indexSearcher, reader);
+        this.searcher = new LuceneEngineSearcher(indexSearcher, reader);
+        this.scoreWeightManager = new ScoreWeightQueryLifecycleManager();
         this.request = request;
         this.shardTarget = shardTarget;
     }
@@ -65,28 +72,50 @@ public class LuceneSearchContext implements SearchExecutionContext {
         this.query = query;
     }
 
-    public long getWeightPointer() {
-        return weightPointer;
+    /**
+     * Returns the per-query lifecycle manager for weights and scorers.
+     * The Rust/JNI side uses this to create scorers and collect docs
+     * via int keys.
+     */
+    public ScoreWeightQueryLifecycleManager getScoreWeightManager() {
+        return scoreWeightManager;
     }
 
-    public void setWeightPointer(long weightPointer) {
-        this.weightPointer = weightPointer;
+    /**
+     * Returns the int key for the registered weight.
+     */
+    public int getWeightKey() {
+        return weightKey;
     }
 
+    /**
+     * Sets the int key for the registered weight. Called by
+     * {@link LuceneEngineSearcher#search} after registering the weight.
+     */
+    public void setWeightKey(int weightKey) {
+        this.weightKey = weightKey;
+    }
+
+    /**
+     * Returns the number of segments for the registered weight.
+     */
     public int getSegmentCount() {
-        return segmentCount;
+        return scoreWeightManager.getSegmentCount(weightKey);
     }
 
-    public void setSegmentCount(int segmentCount) {
-        this.segmentCount = segmentCount;
-    }
-
+    /**
+     * Returns the max doc array for all segments of the registered weight.
+     */
     public int[] getSegmentMaxDocs() {
-        return segmentMaxDocs;
-    }
-
-    public void setSegmentMaxDocs(int[] segmentMaxDocs) {
-        this.segmentMaxDocs = segmentMaxDocs;
+        int count = getSegmentCount();
+        if (count <= 0) {
+            return new int[0];
+        }
+        int[] maxDocs = new int[count];
+        for (int i = 0; i < count; i++) {
+            maxDocs[i] = scoreWeightManager.getSegmentMaxDoc(weightKey, i);
+        }
+        return maxDocs;
     }
 
     @Override
@@ -101,11 +130,7 @@ public class LuceneSearchContext implements SearchExecutionContext {
 
     @Override
     public void close() throws IOException {
-        // Release the registered Weight when context is closed
-        if (weightPointer != 0) {
-            LuceneEngineSearcher.releaseWeight(weightPointer);
-            weightPointer = 0;
-        }
+        scoreWeightManager.close();
         searcher.close();
     }
 }
