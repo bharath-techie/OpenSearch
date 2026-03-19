@@ -16,7 +16,6 @@ import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Weight;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.engine.exec.EngineSearcher;
-import org.opensearch.index.engine.exec.ScoreWeightQueryLifecycleManager;
 
 import java.io.IOException;
 import java.util.List;
@@ -24,9 +23,7 @@ import java.util.List;
 /**
  * Lucene-backed engine searcher.
  * <p>
- * Delegates all weight/scorer state management to a per-query
- * {@link ScoreWeightQueryLifecycleManager}. This class is stateless
- * with respect to active queries — the manager owns the lifecycle.
+ * This class is stateless with respect to active queries
  *
  * @opensearch.experimental
  */
@@ -55,10 +52,8 @@ public class LuceneEngineSearcher implements EngineSearcher<LuceneSearchContext>
         Query rewritten = indexSearcher.rewrite(query);
         Weight weight = indexSearcher.createWeight(rewritten, ScoreMode.COMPLETE_NO_SCORES, 1.0f);
         List<LeafReaderContext> leaves = directoryReader.leaves();
+        //TODO : Complete the wiring for search execution
 
-        ScoreWeightQueryLifecycleManager manager = context.getScoreWeightManager();
-        int weightKey = manager.registerWeight(weight, leaves);
-        context.setWeightKey(weightKey);
     }
 
     public IndexSearcher getIndexSearcher() {
