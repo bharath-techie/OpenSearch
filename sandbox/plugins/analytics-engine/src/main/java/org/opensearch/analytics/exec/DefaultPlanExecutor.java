@@ -23,7 +23,6 @@ import org.opensearch.index.IndexService;
 import org.opensearch.index.engine.DataFormatAwareEngine;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.indices.IndicesService;
-import org.opensearch.plugins.SearchBackEndPlugin;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -35,32 +34,31 @@ import java.util.Set;
 /**
  * {@link QueryPlanExecutor} default implementation.
  * <p>
- * Acquires a composite reader, selects a {@link SearchBackEndPlugin}, and
- * delegates query execution to it. The plugin provides both reader management
- * and query execution — no separate analytics SPI needed.
+ * Acquires a composite reader, selects a {@link SearchExecEngineProvider}, and
+ * delegates query execution to it.
  */
 public class DefaultPlanExecutor implements QueryPlanExecutor<RelNode, Iterable<Object[]>> {
 
     private static final Logger logger = LogManager.getLogger(DefaultPlanExecutor.class);
-    private final Map<String, SearchBackEndPlugin<?>> backEnds;
+    private final Map<String, SearchExecEngineProvider> backEnds;
     private final IndicesService indicesService;
     private final ClusterService clusterService;
 
     /**
      * Constructs a DefaultPlanExecutor.
      *
-     * @param plugins list of search backend plugins (unified storage + query)
+     * @param providers list of search execution engine providers
      * @param indicesService service for accessing index shards
      * @param clusterService service for accessing cluster state
      */
     public DefaultPlanExecutor(
-        List<SearchBackEndPlugin<?>> plugins,
+        List<SearchExecEngineProvider> providers,
         IndicesService indicesService,
         ClusterService clusterService
     ) {
         this.backEnds = new LinkedHashMap<>();
-        for (SearchBackEndPlugin<?> plugin : plugins) {
-            this.backEnds.put(plugin.name(), plugin);
+        for (SearchExecEngineProvider provider : providers) {
+            this.backEnds.put(provider.name(), provider);
         }
         this.indicesService = indicesService;
         this.clusterService = clusterService;
@@ -69,8 +67,8 @@ public class DefaultPlanExecutor implements QueryPlanExecutor<RelNode, Iterable<
     @Override
     public Iterable<Object[]> execute(RelNode logicalFragment, Object context) {
         String tableName = extractTableName(logicalFragment);
-        SearchBackEndPlugin<?> plugin = selectBackEnd();
-        if (plugin == null) {
+        SearchExecEngineProvider provider = selectBackEnd();
+        if (provider == null) {
             return new ArrayList<>();
         }
 
@@ -84,8 +82,8 @@ public class DefaultPlanExecutor implements QueryPlanExecutor<RelNode, Iterable<
         List<Object[]> rows = new ArrayList<>();
         try (DataFormatAwareEngine.DataFormatAwareReader reader = dataFormatAwareEngine.acquireReader()) {
             ExecutionContext ctx = new ExecutionContext(tableName, task, reader);
-            try (SearchExecEngine<ExecutionContext, EngineResultStream> engine = createExecEngineFromPlugin(plugin, ctx)) {
-                logger.info("[DefaultPlanExecutor] Executing via [{}]", plugin.name());
+            try (SearchExecEngine<ExecutionContext, EngineResultStream> engine = provider.createSearchExecEngine(ctx)) {
+                logger.info("[DefaultPlanExecutor] Executing via [{}]", provider.name());
                 try (EngineResultStream resultStream = engine.execute(ctx)) {
                     Iterator<EngineResultBatch> batchIterator = resultStream.iterator();
                     while (batchIterator.hasNext()) {
@@ -102,27 +100,9 @@ public class DefaultPlanExecutor implements QueryPlanExecutor<RelNode, Iterable<
                 }
             }
         } catch (Exception e) {
-            throw new RuntimeException("Execution failed for [" + plugin.name() + "]", e);
+            throw new RuntimeException("Execution failed for [" + provider.name() + "]", e);
         }
         return rows;
-    }
-
-    /**
-     * Creates a full search execution engine from the plugin.
-     * If the plugin implements {@link SearchExecEngineProvider}, delegates to it.
-     * Otherwise falls back to creating a basic searcher via {@link SearchBackEndPlugin#createSearcher}.
-     */
-    @SuppressWarnings("unchecked")
-    private static <R> SearchExecEngine<ExecutionContext, EngineResultStream> createExecEngineFromPlugin(
-        SearchBackEndPlugin<R> plugin,
-        ExecutionContext ctx
-    ) {
-        if (plugin instanceof SearchExecEngineProvider) {
-            return ((SearchExecEngineProvider) plugin).createSearchExecEngine(ctx);
-        }
-        throw new UnsupportedOperationException(
-            "Backend [" + plugin.name() + "] does not implement SearchExecEngineProvider"
-        );
     }
 
     static String extractTableName(RelNode node) {
@@ -145,7 +125,7 @@ public class DefaultPlanExecutor implements QueryPlanExecutor<RelNode, Iterable<
         return indexService.getShardOrNull(shardIds.iterator().next());
     }
 
-    private SearchBackEndPlugin<?> selectBackEnd() {
+    private SearchExecEngineProvider selectBackEnd() {
         if (backEnds.isEmpty()) {
             logger.warn("No back-end plugins registered — queries will return empty results");
             return null;

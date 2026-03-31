@@ -25,6 +25,7 @@ import org.opensearch.analytics.backend.EngineResultBatch;
 import org.opensearch.analytics.backend.EngineResultStream;
 import org.opensearch.analytics.backend.ExecutionContext;
 import org.opensearch.analytics.backend.SearchExecEngine;
+import org.opensearch.analytics.spi.SearchExecEngineProvider;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.Metadata;
@@ -35,13 +36,11 @@ import org.opensearch.index.engine.DataFormatAwareEngine;
 import org.opensearch.index.engine.dataformat.DataFormat;
 import org.opensearch.index.engine.dataformat.FieldTypeCapabilities;
 import org.opensearch.index.engine.exec.CatalogSnapshot;
+import org.opensearch.index.engine.exec.EngineReaderManager;
 import org.opensearch.index.engine.exec.Segment;
 import org.opensearch.index.engine.exec.WriterFileSet;
-import org.opensearch.index.engine.exec.EngineReaderManager;
 import org.opensearch.index.shard.IndexShard;
-import org.opensearch.index.shard.ShardPath;
 import org.opensearch.indices.IndicesService;
-import org.opensearch.plugins.SearchBackEndPlugin;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
@@ -381,7 +380,7 @@ public class DefaultPlanExecutorTests extends OpenSearchTestCase {
         }
     }
 
-    static class MockBackendPlugin implements SearchBackEndPlugin<Long> {
+    static class MockBackendPlugin implements SearchExecEngineProvider {
         private final DataFormat format;
 
         MockBackendPlugin(DataFormat format) {
@@ -394,13 +393,10 @@ public class DefaultPlanExecutorTests extends OpenSearchTestCase {
         }
 
         @Override
-        public List<DataFormat> getSupportedFormats() {
-            return List.of(format);
-        }
-
-        @Override
-        public EngineReaderManager<Long> createReaderManager(DataFormat format, ShardPath shardPath) {
-            return null;
+        public SearchExecEngine<ExecutionContext, EngineResultStream> createSearchExecEngine(ExecutionContext ctx) {
+            Object reader = ctx.getReader().getReader(format);
+            long rows = reader instanceof Long ? (Long) reader : 0L;
+            return new MockSearchExecEngine(rows);
         }
     }
 }

@@ -17,6 +17,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.exec.DefaultPlanExecutor;
 import org.opensearch.analytics.exec.QueryPlanExecutor;
 import org.opensearch.analytics.schema.OpenSearchSchemaBuilder;
+import org.opensearch.analytics.spi.SearchExecEngineProvider;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Module;
@@ -27,7 +28,6 @@ import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.plugins.ExtensiblePlugin;
 import org.opensearch.plugins.Plugin;
-import org.opensearch.plugins.SearchBackEndPlugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
@@ -54,16 +54,13 @@ public class AnalyticsPlugin extends Plugin implements ExtensiblePlugin {
      */
     public AnalyticsPlugin() {}
 
-    private final List<SearchBackEndPlugin<?>> backEnds = new ArrayList<>();
+    private final List<SearchExecEngineProvider> backEnds = new ArrayList<>();
     private SqlOperatorTable operatorTable;
 
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings("rawtypes")
     @Override
     public void loadExtensions(ExtensionLoader loader) {
-        List<SearchBackEndPlugin> rawPlugins = loader.loadExtensions(SearchBackEndPlugin.class);
-        for (SearchBackEndPlugin plugin : rawPlugins) {
-            backEnds.add(plugin);
-        }
+        backEnds.addAll(loader.loadExtensions(SearchExecEngineProvider.class));
         operatorTable = aggregateOperatorTables();
     }
 
@@ -98,7 +95,7 @@ public class AnalyticsPlugin extends Plugin implements ExtensiblePlugin {
     }
 
     private SqlOperatorTable aggregateOperatorTables() {
-        // TODO: re-wire once operatorTable() is added back to SearchBackEndPlugin
+        // TODO: re-wire once operatorTable() is added back to SearchExecEngineProvider
         return SqlOperatorTables.of();
     }
 
