@@ -11,6 +11,8 @@ package org.opensearch.analytics.spi;
 import org.opensearch.analytics.backend.EngineResultStream;
 import org.opensearch.analytics.backend.ExecutionContext;
 import org.opensearch.analytics.backend.SearchExecEngine;
+import org.opensearch.index.engine.dataformat.DataFormat;
+import org.opensearch.index.shard.ShardPath;
 
 /**
  * Optional capability interface for {@link org.opensearch.plugins.SearchBackEndPlugin}
@@ -18,8 +20,7 @@ import org.opensearch.analytics.backend.SearchExecEngine;
  * semantics for the analytics query path.
  * <p>
  * Plugins that implement this interface are used by the analytics executor for the
- * complete query lifecycle. Plugins that don't implement it can still provide basic
- * search via {@link org.opensearch.plugins.SearchBackEndPlugin#createSearcher}.
+ * complete query lifecycle.
  *
  * @opensearch.internal
  */
