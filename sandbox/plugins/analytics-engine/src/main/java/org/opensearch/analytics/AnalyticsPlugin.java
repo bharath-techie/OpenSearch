@@ -95,7 +95,7 @@ public class AnalyticsPlugin extends Plugin implements ExtensiblePlugin {
     }
 
     private SqlOperatorTable aggregateOperatorTables() {
-        // TODO: re-wire once operatorTable() is added back to SearchExecEngineProvider
+        // TODO: re-wire once operatorTable() is added back to AnalyticsSearchBackendPlugin
         return SqlOperatorTables.of();
     }
 
