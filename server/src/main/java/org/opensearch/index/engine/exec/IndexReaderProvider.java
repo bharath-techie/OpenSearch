@@ -60,5 +60,7 @@ public interface IndexReaderProvider {
          * @return the format-specific reader object
          */
         Object reader(DataFormat format);
+
+        <R> R getReader(DataFormat format, Class<R> readerType);
     }
 }
