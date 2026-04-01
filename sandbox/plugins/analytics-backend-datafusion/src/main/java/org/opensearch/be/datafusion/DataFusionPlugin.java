@@ -13,7 +13,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.backend.EngineResultStream;
 import org.opensearch.analytics.backend.ExecutionContext;
 import org.opensearch.analytics.backend.SearchExecEngine;
-import org.opensearch.analytics.spi.SearchExecEngineProvider;
+import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
@@ -46,7 +46,7 @@ import java.util.function.Supplier;
  * per-shard {@link DatafusionSearchExecEngine} instances via the
  * {@link SearchBackEndPlugin} SPI.
  */
-public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<DatafusionReader>, SearchExecEngineProvider {
+public class DataFusionPlugin extends Plugin implements SearchBackEndPlugin<DatafusionReader>, AnalyticsSearchBackendPlugin {
 
     private static final Logger logger = LogManager.getLogger(DataFusionPlugin.class);
 

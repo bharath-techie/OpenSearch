@@ -17,7 +17,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.exec.DefaultPlanExecutor;
 import org.opensearch.analytics.exec.QueryPlanExecutor;
 import org.opensearch.analytics.schema.OpenSearchSchemaBuilder;
-import org.opensearch.analytics.spi.SearchExecEngineProvider;
+import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Module;
@@ -54,13 +54,13 @@ public class AnalyticsPlugin extends Plugin implements ExtensiblePlugin {
      */
     public AnalyticsPlugin() {}
 
-    private final List<SearchExecEngineProvider> backEnds = new ArrayList<>();
+    private final List<AnalyticsSearchBackendPlugin> backEnds = new ArrayList<>();
     private SqlOperatorTable operatorTable;
 
     @SuppressWarnings("rawtypes")
     @Override
     public void loadExtensions(ExtensionLoader loader) {
-        backEnds.addAll(loader.loadExtensions(SearchExecEngineProvider.class));
+        backEnds.addAll(loader.loadExtensions(AnalyticsSearchBackendPlugin.class));
         operatorTable = aggregateOperatorTables();
     }
 

@@ -15,7 +15,7 @@ import org.opensearch.index.engine.dataformat.DataFormat;
 import org.opensearch.index.shard.ShardPath;
 
 /**
- * Optional capability interface for {@link org.opensearch.plugins.SearchBackEndPlugin}
+ * Optional capability interface for {@link AnalyticsSearchBackendPlugin}
  * implementations that can provide a full {@link SearchExecEngine} with prepare/execute/stream
  * semantics for the analytics query path.
  * <p>
