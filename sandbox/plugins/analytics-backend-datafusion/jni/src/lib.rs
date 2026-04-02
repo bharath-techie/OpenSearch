@@ -235,10 +235,10 @@ pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_execut
         }
     };
 
-    // Delegate to bridge-agnostic API
-    let result = unsafe {
-        api::execute_query_blocking(shard_view_ptr as i64, &table_name, &plan_bytes, runtime_ptr as i64, manager)
-    };
+    // Delegate to bridge-agnostic API — bridge does the block_on
+    let result = manager.io_runtime.block_on(unsafe {
+        api::execute_query(shard_view_ptr as i64, &table_name, &plan_bytes, runtime_ptr as i64, manager)
+    });
 
     with_jni_env(|env| match result {
         Ok(stream_ptr) => set_action_listener_ok_global(env, &listener_ref, stream_ptr as jlong),
@@ -296,7 +296,7 @@ pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_stream
         }
     };
 
-    let result = unsafe { api::stream_next_blocking(stream_ptr as i64, manager) };
+    let result = manager.io_runtime.block_on(unsafe { api::stream_next(stream_ptr as i64) });
 
     with_jni_env(|env| match result {
         Ok(array_ptr) => set_action_listener_ok_global(env, &listener_ref, array_ptr as jlong),

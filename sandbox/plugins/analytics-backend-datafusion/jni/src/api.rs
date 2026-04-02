@@ -26,9 +26,10 @@
 //!   single thread (node startup/shutdown).
 //! - `create_global_runtime` / `close_global_runtime` are not thread-safe for the
 //!   same pointer.
-//! - `execute_query_blocking` is safe to call concurrently with different shard/runtime
-//!   pointers.
-//! - `stream_get_schema`, `stream_next_blocking`, `stream_close` must NOT be called
+//! - `execute_query`: async. Safe to call concurrently with different shard/runtime pointers.
+//!   The bridge layer wraps with `block_on` or `spawn`.
+//! - `stream_next`: async. The bridge layer wraps with `block_on` or `spawn`.
+//! - `stream_get_schema`, `stream_close` must NOT be called
 //!   concurrently on the same stream pointer.
 //!
 //! # FFM bridge example
@@ -98,17 +99,16 @@
 //!     let plan_bytes = unsafe {
 //!         std::slice::from_raw_parts(plan_ptr, plan_len as usize)
 //!     };
-//!     unsafe {
-//!         api::execute_query_blocking(shard_view_ptr, table_name, plan_bytes, runtime_ptr, manager)
-//!             .unwrap_or(0)
-//!     }
+//!     manager.io_runtime.block_on(unsafe {
+//!         api::execute_query(shard_view_ptr, table_name, plan_bytes, runtime_ptr, manager)
+//!     }).unwrap_or(0)
 //! }
 //!
 //! /// Get next batch. Returns FFI_ArrowArray pointer, 0 for end-of-stream, -1 on error.
 //! #[no_mangle]
 //! pub extern "C" fn df_stream_next(stream_ptr: i64) -> i64 {
 //!     let manager = RUNTIME_MANAGER.get().expect("not initialized");
-//!     unsafe { api::stream_next_blocking(stream_ptr, manager).unwrap_or(-1) }
+//!     manager.io_runtime.block_on(unsafe { api::stream_next(stream_ptr) }).unwrap_or(-1)
 //! }
 //!
 //! /// Close a stream. Safe with 0.
@@ -282,14 +282,15 @@ pub unsafe fn close_reader(ptr: i64) {
 // Query execution
 // ---------------------------------------------------------------------------
 
-/// Executes a query synchronously (blocks until the stream pointer is ready).
-///
-/// Returns a heap-allocated pointer (as i64) to the result stream.
+/// Executes a query. Returns a heap-allocated pointer (as i64) to the result stream.
 /// Caller must call `stream_close` exactly once to free it.
+///
+/// This is an async function — the bridge layer decides how to run it
+/// (`block_on` for synchronous JNI, `spawn` for async delivery).
 ///
 /// # Safety
 /// `shard_view_ptr` and `runtime_ptr` must be valid, non-zero pointers.
-pub unsafe fn execute_query_blocking(
+pub async unsafe fn execute_query(
     shard_view_ptr: i64,
     table_name: &str,
     plan_bytes: &[u8],
@@ -303,16 +304,15 @@ pub unsafe fn execute_query_blocking(
     let object_metas = shard_view.object_metas.clone();
     let cpu_executor = manager.cpu_executor();
 
-    let result = manager.io_runtime.block_on(
-        crate::query_executor::execute_query(
-            table_path,
-            object_metas,
-            table_name.to_string(),
-            plan_bytes.to_vec(),
-            runtime,
-            cpu_executor,
-        )
-    )?;
+    let result = crate::query_executor::execute_query(
+        table_path,
+        object_metas,
+        table_name.to_string(),
+        plan_bytes.to_vec(),
+        runtime,
+        cpu_executor,
+    )
+    .await?;
 
     Ok(result)
 }
@@ -337,16 +337,17 @@ pub unsafe fn stream_get_schema(stream_ptr: i64) -> Result<i64, DataFusionError>
 ///
 /// Returns a heap-allocated FFI_ArrowArray pointer (as i64), or 0 if end-of-stream.
 ///
+/// This is an async function — the bridge layer decides how to run it.
+///
 /// # Safety
 /// `stream_ptr` must be a valid, non-zero pointer. Must not be called concurrently
 /// on the same stream.
-pub unsafe fn stream_next_blocking(
+pub async unsafe fn stream_next(
     stream_ptr: i64,
-    manager: &RuntimeManager,
 ) -> Result<i64, DataFusionError> {
     let stream = &mut *(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>);
 
-    let result = manager.io_runtime.block_on(stream.try_next())?;
+    let result = stream.try_next().await?;
 
     match result {
         Some(batch) => {
@@ -362,7 +363,7 @@ pub unsafe fn stream_next_blocking(
 /// Closes a result stream. Safe to call with 0 (no-op).
 ///
 /// # Safety
-/// `stream_ptr` must be 0 or a valid pointer returned by `execute_query_blocking`.
+/// `stream_ptr` must be 0 or a valid pointer returned by `execute_query`.
 pub unsafe fn stream_close(stream_ptr: i64) {
     if stream_ptr != 0 {
         let _ = Box::from_raw(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>);
