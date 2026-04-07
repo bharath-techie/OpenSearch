@@ -141,6 +141,39 @@ public final class NativeBridge {
      */
     public static native void cacheManagerRemoveFiles(long runtimePtr, String[] filePaths);
 
+    // ---- Tree query execution ----
+
+    /**
+     * Executes a boolean tree query asynchronously. The tree bytes and bridge context ID
+     * are passed to Rust. Rust deserializes the tree, creates JniTreeShardSearcher per
+     * collector leaf, builds TreeIndexedTableProvider, and returns a stream pointer.
+     *
+     * @param treeBytes        Serialized boolean tree (from IndexFilterTree.serialize())
+     * @param bridgeContextId  Context ID registered with FilterTreeCallbackBridge
+     * @param segmentMaxDocs   Max doc count per segment (long[])
+     * @param parquetPaths     One parquet file path per segment (String[])
+     * @param tableName        Table name for DataFusion registration
+     * @param substraitBytes   Serialized substrait plan bytes
+     * @param numPartitions    Number of DataFusion partitions
+     * @param indexLeafCount   Number of collector leaves in the tree
+     * @param isQueryPlanExplainEnabled Whether to enable query plan explain
+     * @param runtimePtr       Pointer to the DataFusion runtime
+     * @param listener         ActionListener to receive the stream pointer (Long)
+     */
+    public static native void executeTreeQueryAsync(
+        byte[] treeBytes,
+        long bridgeContextId,
+        long[] segmentMaxDocs,
+        String[] parquetPaths,
+        String tableName,
+        byte[] substraitBytes,
+        int numPartitions,
+        int indexLeafCount,
+        boolean isQueryPlanExplainEnabled,
+        long runtimePtr,
+        org.opensearch.core.action.ActionListener<Long> listener
+    );
+
     // ---- Test helpers ----
 
     /**

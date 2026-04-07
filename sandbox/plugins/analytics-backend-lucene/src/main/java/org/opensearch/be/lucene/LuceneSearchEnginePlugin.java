@@ -12,6 +12,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.engine.dataformat.DataFormat;
 import org.opensearch.index.engine.exec.EngineReaderManager;
+import org.opensearch.index.engine.exec.IndexFilterTreeProvider;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.plugins.SearchBackEndPlugin;
 
@@ -37,6 +38,15 @@ public class LuceneSearchEnginePlugin implements SearchBackEndPlugin<DirectoryRe
     @Override
     public EngineReaderManager<DirectoryReader> createReaderManager(DataFormat format, ShardPath shardPath) throws IOException {
         return new LuceneReaderManager(format);
+    }
+
+    /**
+     * Creates a new {@link LuceneIndexFilterTreeProvider} for boolean tree queries.
+     *
+     * @return a tree provider that delegates to {@link LuceneIndexFilterProvider}
+     */
+    public IndexFilterTreeProvider<?, ?, ?> createTreeProvider() {
+        return new LuceneIndexFilterTreeProvider();
     }
 
     @Override

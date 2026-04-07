@@ -28,6 +28,7 @@ use log::error;
 pub mod api;
 pub mod cross_rt_stream;
 pub mod executor;
+pub mod indexed_table;
 pub mod io;
 pub mod query_executor;
 pub mod runtime_manager;
@@ -373,4 +374,158 @@ pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_initLo
     _class: JClass,
 ) {
     // TODO: wire Rust→Java logging bridge
+}
+
+// ── Tree Query Execution ───────────────────────────────────────────────
+
+/// JNI entry point for boolean tree query execution.
+///
+/// Deserializes the tree from bytes, creates JniTreeShardSearcher per Collector leaf,
+/// resolves predicates from the Substrait plan, builds TreeIndexedTableProvider,
+/// and executes via DataFusion. The result stream pointer is delivered via ActionListener.
+#[jni_safe]
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_executeTreeQueryAsync(
+    mut env: JNIEnv,
+    _class: JClass,
+    tree_bytes: JObject,        // byte[]
+    bridge_context_id: jlong,
+    _segment_max_docs: JObject, // long[]
+    _parquet_paths: JObject,    // String[]
+    table_name: JString,
+    substrait_bytes: JObject,   // byte[]
+    _num_partitions: jint,
+    _index_leaf_count: jint,
+    _is_explain_enabled: u8,
+    _runtime_ptr: jlong,
+    listener: JObject,
+) {
+    let tokio_rt_mgr = match get_tokio_rt_manager() {
+        Ok(m) => m,
+        Err(e) => {
+            set_action_listener_error(env, listener, &e);
+            return;
+        }
+    };
+
+    // Parse tree bytes
+    let tree_bytes_arr = unsafe { JByteArray::from_raw(tree_bytes.as_raw()) };
+    let tree_data = match env.convert_byte_array(tree_bytes_arr) {
+        Ok(b) => b,
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to convert tree bytes: {}", e)),
+            );
+            return;
+        }
+    };
+
+    // Deserialize the boolean tree
+    let bool_node = match indexed_table::BoolNode::deserialize(&tree_data) {
+        Ok(n) => n,
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to deserialize tree: {}", e)),
+            );
+            return;
+        }
+    };
+
+    // Parse table name
+    let table_name_str: String = match env.get_string(&JString::from(table_name)) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Invalid table name: {}", e)),
+            );
+            return;
+        }
+    };
+
+    // Parse substrait plan bytes
+    let plan_bytes_arr = unsafe { JByteArray::from_raw(substrait_bytes.as_raw()) };
+    let plan_bytes = match env.convert_byte_array(plan_bytes_arr) {
+        Ok(b) => b,
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to convert substrait bytes: {}", e)),
+            );
+            return;
+        }
+    };
+
+    // Get JVM reference for JNI callbacks
+    let jvm = match JAVA_VM.get() {
+        Some(vm) => Arc::new(unsafe {
+            // Safety: we need an owned JavaVM for the searcher, but JAVA_VM is a global static.
+            // We create a new Arc wrapping the raw pointer.
+            JavaVM::from_raw(vm.get_java_vm_pointer()).expect("Failed to get JavaVM")
+        }),
+        None => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution("JavaVM not initialized".to_string()),
+            );
+            return;
+        }
+    };
+
+    // Find the FilterTreeCallbackBridge class for JNI callbacks
+    let bridge_class = match env.find_class("org/opensearch/index/engine/exec/FilterTreeCallbackBridge") {
+        Ok(c) => match env.new_global_ref(c) {
+            Ok(r) => r,
+            Err(e) => {
+                set_action_listener_error(
+                    env, listener,
+                    &DataFusionError::Execution(format!("Failed to create global ref for bridge class: {}", e)),
+                );
+                return;
+            }
+        },
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to find FilterTreeCallbackBridge class: {}", e)),
+            );
+            return;
+        }
+    };
+
+    let listener_ref = match env.new_global_ref(&listener) {
+        Ok(r) => r,
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to create listener global ref: {}", e)),
+            );
+            return;
+        }
+    };
+
+    let io_runtime = tokio_rt_mgr.io_runtime.clone();
+    let context_id = bridge_context_id;
+    let _tree = Arc::new(bool_node);
+    let _jvm = jvm;
+    let _bridge_class = bridge_class;
+
+    // TODO: Build JniTreeShardSearcher per Collector leaf from the tree,
+    //       resolve predicates from Substrait plan, create TreeIndexedTableProvider,
+    //       register table with DataFusion, execute plan, and return stream pointer.
+    //       For now, this is a placeholder that reports the tree was parsed successfully.
+    io_runtime.block_on(async move {
+        // Placeholder: report error indicating tree query execution is not yet fully wired
+        with_jni_env(|env| {
+            set_action_listener_error_global(
+                env, &listener_ref,
+                &DataFusionError::NotImplemented(format!(
+                    "Tree query execution stub: tree parsed OK, contextId={}, table={}, plan_bytes={}",
+                    context_id, table_name_str, plan_bytes.len()
+                )),
+            );
+        });
+    });
 }
