@@ -36,6 +36,8 @@ dependencies {
   implementation "com.fasterxml.jackson.core:jackson-core:${versions.jackson}"
   implementation "com.fasterxml.jackson.core:jackson-annotations:${versions.jackson_annotations}"
   implementation "com.fasterxml.jackson.core:jackson-databind:${versions.jackson_databind}"
+
+
 }
 
 // Rust native library build

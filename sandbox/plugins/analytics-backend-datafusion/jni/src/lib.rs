@@ -332,6 +332,35 @@ pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_sqlToS
     }
 }
 
+/// Like sqlToSubstrait but registers the `index_filter` UDF so SQL can contain
+/// `index_filter(provider_id, collector_idx)` calls in WHERE clauses.
+#[jni_safe(default = std::ptr::null_mut())]
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_sqlToSubstraitWithIndexFilter(
+    mut env: JNIEnv,
+    _class: JClass,
+    shard_view_ptr: jlong,
+    table_name: JString,
+    sql: JString,
+    runtime_ptr: jlong,
+) -> jni::sys::jbyteArray {
+    let manager = TOKIO_RUNTIME_MANAGER.get().expect("Runtime manager not initialized");
+    let table_name: String = env.get_string(&table_name).expect("Invalid table name").into();
+    let sql: String = env.get_string(&sql).expect("Invalid SQL").into();
+
+    let result = unsafe {
+        api::sql_to_substrait_with_index_filter(shard_view_ptr as i64, &table_name, &sql, runtime_ptr as i64, manager)
+    };
+
+    match result {
+        Ok(bytes) => env.byte_array_from_slice(&bytes).expect("byte array").into_raw(),
+        Err(e) => {
+            let _ = env.throw_new("java/lang/RuntimeException", e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
 // Tests panic, only used for testing
 #[jni_safe]
 #[no_mangle]
@@ -705,6 +734,302 @@ pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_execut
             Ok(stream_ptr) => set_action_listener_ok_global(env, &listener_ref, stream_ptr),
             Err(e) => {
                 error!("Tree query execution failed: {}", e);
+                set_action_listener_error_global(env, &listener_ref, &e);
+            }
+        }
+    });
+}
+
+// ── Substrait-driven Tree Query Execution ──────────────────────────────
+
+/// JNI entry point for substrait-driven boolean tree query execution.
+///
+/// Instead of receiving a pre-built tree from Java, this function:
+/// 1. Decodes the Substrait plan into a DataFusion LogicalPlan
+/// 2. Extracts the filter expression from the plan
+/// 3. Walks the filter expression to build a BoolNode tree:
+///    - `index_filter(provider_id, collector_idx)` → CollectorLeaf
+///    - Standard comparisons (col op literal) → PredicateLeaf
+///    - AND/OR/NOT → boolean nodes
+/// 4. Creates JniTreeShardSearcher per CollectorLeaf
+/// 5. Builds TreeIndexedTableProvider and executes via DataFusion
+#[jni_safe]
+#[no_mangle]
+pub extern "system" fn Java_org_opensearch_be_datafusion_jni_NativeBridge_executeSubstraitTreeQueryAsync(
+    mut env: JNIEnv,
+    _class: JClass,
+    bridge_context_id: jlong,
+    _parquet_paths: JObject,    // String[]
+    table_name: JString,
+    substrait_bytes: JObject,   // byte[]
+    _num_partitions: jint,
+    _runtime_ptr: jlong,
+    listener: JObject,
+) {
+    let tokio_rt_mgr = match get_tokio_rt_manager() {
+        Ok(m) => m,
+        Err(e) => {
+            set_action_listener_error(env, listener, &e);
+            return;
+        }
+    };
+
+    // Parse table name
+    let table_name_str: String = match env.get_string(&JString::from(table_name)) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Invalid table name: {}", e)),
+            );
+            return;
+        }
+    };
+
+    // Parse substrait plan bytes
+    let plan_bytes_arr = unsafe { JByteArray::from_raw(substrait_bytes.as_raw()) };
+    let plan_bytes = match env.convert_byte_array(plan_bytes_arr) {
+        Ok(b) => b,
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to convert substrait bytes: {}", e)),
+            );
+            return;
+        }
+    };
+
+    // Parse parquet paths
+    let pq_paths = {
+        let arr = unsafe { JObjectArray::from_raw(_parquet_paths.as_raw()) };
+        match parse_string_arr(env, arr) {
+            Ok(p) => p,
+            Err(e) => {
+                set_action_listener_error(
+                    env, listener,
+                    &DataFusionError::Execution(format!("Failed to parse parquet paths: {}", e)),
+                );
+                return;
+            }
+        }
+    };
+
+    // Get JVM reference for JNI callbacks
+    let jvm = match JAVA_VM.get() {
+        Some(vm) => Arc::new(unsafe {
+            JavaVM::from_raw(vm.get_java_vm_pointer()).expect("Failed to get JavaVM")
+        }),
+        None => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution("JavaVM not initialized".to_string()),
+            );
+            return;
+        }
+    };
+
+    let bridge_class = match env.find_class("org/opensearch/index/engine/exec/FilterTreeCallbackBridge") {
+        Ok(c) => match env.new_global_ref(c) {
+            Ok(r) => r,
+            Err(e) => {
+                set_action_listener_error(
+                    env, listener,
+                    &DataFusionError::Execution(format!("Failed to create global ref: {}", e)),
+                );
+                return;
+            }
+        },
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to find bridge class: {}", e)),
+            );
+            return;
+        }
+    };
+
+    let listener_ref = match env.new_global_ref(&listener) {
+        Ok(r) => r,
+        Err(e) => {
+            set_action_listener_error(
+                env, listener,
+                &DataFusionError::Execution(format!("Failed to create listener ref: {}", e)),
+            );
+            return;
+        }
+    };
+
+    let io_runtime = tokio_rt_mgr.io_runtime.clone();
+    let context_id = bridge_context_id;
+    let num_parts = _num_partitions.max(1) as usize;
+    let jvm_ref = jvm;
+    let bridge_class_ref = bridge_class;
+
+    let result = io_runtime.block_on(async {
+        use datafusion::prelude::*;
+        use datafusion::physical_plan::execute_stream;
+        use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+        use prost::Message;
+
+        // Build session context
+        let runtime = if _runtime_ptr != 0 {
+            unsafe { &*(_runtime_ptr as *const crate::api::DataFusionRuntime) }
+        } else {
+            return Err(DataFusionError::Execution("Invalid runtime pointer".to_string()));
+        };
+
+        let runtime_env = datafusion::execution::runtime_env::RuntimeEnvBuilder::from_runtime_env(
+            &runtime.runtime_env,
+        ).build()?;
+
+        let mut config = SessionConfig::new();
+        config.options_mut().execution.target_partitions = num_parts;
+        config.options_mut().execution.batch_size = 8192;
+
+        let state = datafusion::execution::SessionStateBuilder::new()
+            .with_config(config)
+            .with_runtime_env(Arc::from(runtime_env))
+            .with_default_features()
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+
+        // Step 1: Build segments from parquet paths, deriving max_doc from parquet metadata
+        let seg_max_docs: Vec<i64> = pq_paths.iter().map(|path| {
+            let file = std::fs::File::open(path).ok();
+            file.and_then(|f| {
+                indexed_table::parquet_bridge::load_parquet_metadata(&f).ok()
+            }).map(|(_, meta)| {
+                (0..meta.num_row_groups()).map(|i| meta.row_group(i).num_rows()).sum::<i64>()
+            }).unwrap_or(0)
+        }).collect();
+        let (segments, schema) = if pq_paths.is_empty() == false {
+            indexed_table::build_segments(&pq_paths, &seg_max_docs)
+                .map_err(|e| DataFusionError::Execution(format!("build_segments: {}", e)))?
+        } else {
+            return Err(DataFusionError::Execution("No parquet paths".to_string()));
+        };
+
+        // Step 2: Decode substrait → logical plan to extract filter
+        // Register index_filter UDF so substrait containing it can be decoded
+        ctx.register_udf(indexed_table::substrait_to_tree::create_index_filter_udf());
+
+        // Register a temporary listing table so substrait can resolve the schema
+        {
+            use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
+            use datafusion::datasource::file_format::parquet::ParquetFormat;
+
+            let table_path = datafusion::datasource::listing::ListingTableUrl::parse(
+                &format!("file://{}", pq_paths[0])
+            ).map_err(|e| DataFusionError::Execution(format!("parse path: {}", e)))?;
+
+            let listing_options = ListingOptions::new(Arc::new(ParquetFormat::new()))
+                .with_file_extension(".parquet");
+            let inferred_schema = listing_options.infer_schema(&ctx.state(), &table_path).await?;
+            let config = ListingTableConfig::new(table_path)
+                .with_listing_options(listing_options)
+                .with_schema(inferred_schema);
+            ctx.register_table(&table_name_str, Arc::new(ListingTable::try_new(config)?))?;
+        }
+
+        let substrait_plan = substrait::proto::Plan::decode(plan_bytes.as_slice())
+            .map_err(|e| DataFusionError::Execution(format!("Substrait decode: {}", e)))?;
+        let logical_plan = from_substrait_plan(&ctx.state(), &substrait_plan).await?;
+
+        // Step 3: Extract filter expression and convert to BoolNode tree
+        let filter_expr = indexed_table::substrait_to_tree::extract_filter_expr(&logical_plan);
+        let (tree, predicates) = match filter_expr {
+            Some(expr) => {
+                let result = indexed_table::substrait_to_tree::expr_to_bool_tree(&expr)
+                    .map_err(|e| DataFusionError::Execution(format!("expr_to_tree: {}", e)))?;
+                (Arc::new(result.tree), result.predicates)
+            }
+            None => {
+                // No filter — predicate-only pass-through (all rows match)
+                (Arc::new(indexed_table::BoolNode::And(vec![])), Vec::new())
+            }
+        };
+
+        // Step 4: Create JniTreeShardSearcher per collector leaf
+        let collector_leaves = tree.collector_leaves();
+        let mut searchers: Vec<Arc<dyn indexed_table::ShardSearcher>> = Vec::with_capacity(collector_leaves.len());
+
+        for (idx, &(provider_id, _collector_idx)) in collector_leaves.iter().enumerate() {
+            // Attach to JVM for callbacks
+            let mut cb_env = jvm_ref.attach_current_thread()
+                .map_err(|e| DataFusionError::Execution(format!("attach: {}", e)))?;
+
+            let class: &jni::objects::JClass = bridge_class_ref.as_obj().into();
+
+            let seg_count = cb_env.call_static_method(
+                class, "getSegmentCount", "(JII)I",
+                &[jni::objects::JValue::Long(context_id),
+                  jni::objects::JValue::Int(provider_id as i32),
+                  jni::objects::JValue::Int(idx as i32)],
+            ).map_err(|e| DataFusionError::Execution(format!("getSegmentCount: {}", e)))?
+            .i().unwrap_or(0).max(0) as usize;
+
+            let mut searcher_max_docs = Vec::with_capacity(seg_count);
+            for seg_ord in 0..seg_count {
+                let max_doc = cb_env.call_static_method(
+                    class, "getSegmentMaxDoc", "(JIII)I",
+                    &[jni::objects::JValue::Long(context_id),
+                      jni::objects::JValue::Int(provider_id as i32),
+                      jni::objects::JValue::Int(idx as i32),
+                      jni::objects::JValue::Int(seg_ord as i32)],
+                ).map_err(|e| DataFusionError::Execution(format!("getSegmentMaxDoc: {}", e)))?
+                .i().unwrap_or(0) as i64;
+                searcher_max_docs.push(max_doc);
+            }
+
+            let bridge_for_searcher = cb_env.new_global_ref(class)
+                .map_err(|e| DataFusionError::Execution(format!("global ref: {}", e)))?;
+
+            searchers.push(Arc::new(indexed_table::JniTreeShardSearcher::new(
+                Arc::clone(&jvm_ref),
+                context_id,
+                provider_id as i32,
+                idx as i32,
+                bridge_for_searcher,
+                seg_count,
+                searcher_max_docs,
+            )));
+        }
+
+        // Step 5: Build TreeIndexedTableProvider
+        let provider = indexed_table::TreeIndexedTableProvider::try_new(
+            indexed_table::tree_provider::TreeIndexedTableConfig::new(
+                tree, searchers, predicates, segments, schema,
+            ).with_partitions(num_parts),
+        )?;
+
+        // Step 6: Re-register with tree provider (replace listing table)
+        ctx.deregister_table(&table_name_str)?;
+        ctx.register_table(&table_name_str, Arc::new(provider))?;
+
+        // Step 7: Re-decode substrait against the new table and execute
+        let logical_plan2 = from_substrait_plan(&ctx.state(), &substrait_plan).await?;
+        let dataframe = ctx.execute_logical_plan(logical_plan2).await?;
+        let physical_plan = dataframe.create_physical_plan().await?;
+        let df_stream = execute_stream(physical_plan, ctx.task_ctx())?;
+
+        let cpu_executor = tokio_rt_mgr.cpu_executor();
+        let cross_rt_stream = crate::cross_rt_stream::CrossRtStream::new_with_df_error_stream(
+            df_stream, cpu_executor,
+        );
+        let wrapped = datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
+            cross_rt_stream.schema(),
+            cross_rt_stream,
+        );
+
+        Ok(Box::into_raw(Box::new(wrapped)) as jni::sys::jlong)
+    });
+
+    with_jni_env(|env| {
+        match result {
+            Ok(stream_ptr) => set_action_listener_ok_global(env, &listener_ref, stream_ptr),
+            Err(e) => {
+                error!("Substrait tree query execution failed: {}", e);
                 set_action_listener_error_global(env, &listener_ref, &e);
             }
         }

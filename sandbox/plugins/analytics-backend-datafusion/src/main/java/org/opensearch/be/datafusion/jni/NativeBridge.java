@@ -174,6 +174,45 @@ public final class NativeBridge {
         org.opensearch.core.action.ActionListener<Long> listener
     );
 
+    /**
+     * Converts a SQL query to serialized Substrait plan bytes (test only).
+     * Registers the {@code index_filter(provider_id, collector_idx)} UDF so SQL
+     * WHERE clauses can contain collector leaf references alongside standard predicates.
+     * Example: {@code SELECT * FROM t WHERE index_filter(0, 0) AND price > 100}
+     */
+    public static native byte[] sqlToSubstraitWithIndexFilter(long readerPtr, String tableName, String sql, long runtimePtr);
+
+    // ---- Substrait-driven tree query execution ----
+
+    /**
+     * Executes a boolean tree query where the tree is derived from the Substrait
+     * plan's filter expression on the Rust side, rather than being pre-built in Java.
+     * <p>
+     * Rust decodes the Substrait plan, walks the filter expression, and classifies:
+     * <ul>
+     *   <li>{@code index_filter(provider_id, collector_idx)} → CollectorLeaf</li>
+     *   <li>Standard comparisons (col op literal) → PredicateLeaf</li>
+     *   <li>AND/OR/NOT → boolean tree nodes</li>
+     * </ul>
+     *
+     * @param bridgeContextId  Context ID registered with FilterTreeCallbackBridge
+     * @param parquetPaths     One parquet file path per segment (String[])
+     * @param tableName        Table name for DataFusion registration
+     * @param substraitBytes   Serialized substrait plan bytes (contains the filter)
+     * @param numPartitions    Number of DataFusion partitions
+     * @param runtimePtr       Pointer to the DataFusion runtime
+     * @param listener         ActionListener to receive the stream pointer (Long)
+     */
+    public static native void executeSubstraitTreeQueryAsync(
+        long bridgeContextId,
+        String[] parquetPaths,
+        String tableName,
+        byte[] substraitBytes,
+        int numPartitions,
+        long runtimePtr,
+        org.opensearch.core.action.ActionListener<Long> listener
+    );
+
     // ---- Test helpers ----
 
     /**

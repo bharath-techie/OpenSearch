@@ -410,3 +410,79 @@ pub unsafe fn sql_to_substrait(
         Ok(buf)
     })
 }
+
+/// Like `sql_to_substrait` but registers the `index_filter` UDF so SQL can
+/// contain `index_filter(provider_id, collector_idx)` calls that become
+/// CollectorLeaf nodes when Rust extracts the filter tree from Substrait.
+///
+/// # Safety
+/// `shard_view_ptr` and `runtime_ptr` must be valid, non-zero pointers.
+pub unsafe fn sql_to_substrait_with_index_filter(
+    shard_view_ptr: i64,
+    table_name: &str,
+    sql: &str,
+    runtime_ptr: i64,
+    manager: &RuntimeManager,
+) -> Result<Vec<u8>, DataFusionError> {
+    use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
+    use datafusion::datasource::file_format::parquet::ParquetFormat;
+    use datafusion::execution::cache::{CacheAccessor, DefaultListFilesCache};
+    use datafusion::execution::cache::cache_manager::CacheManagerConfig;
+    use datafusion_substrait::logical_plan::producer::to_substrait_plan;
+    use prost::Message;
+
+    let shard_view = &*(shard_view_ptr as *const ShardView);
+    let runtime = &*(runtime_ptr as *const DataFusionRuntime);
+    let table_path = shard_view.table_path.clone();
+    let object_metas = shard_view.object_metas.clone();
+    let table_name = table_name.to_string();
+
+    manager.io_runtime.block_on(async {
+        let list_file_cache = Arc::new(DefaultListFilesCache::default());
+        list_file_cache.put(
+            &datafusion::execution::cache::TableScopedPath {
+                table: None,
+                path: table_path.prefix().clone(),
+            },
+            object_metas,
+        );
+        let runtime_env = RuntimeEnvBuilder::from_runtime_env(&runtime.runtime_env)
+            .with_cache_manager(
+                CacheManagerConfig::default()
+                    .with_list_files_cache(Some(list_file_cache))
+                    .with_file_metadata_cache(Some(
+                        runtime.runtime_env.cache_manager.get_file_metadata_cache(),
+                    ))
+                    .with_files_statistics_cache(
+                        runtime.runtime_env.cache_manager.get_file_statistic_cache(),
+                    ),
+            )
+            .build()?;
+
+        let state = SessionStateBuilder::new()
+            .with_config(SessionConfig::new())
+            .with_runtime_env(Arc::from(runtime_env))
+            .with_default_features()
+            .build();
+        let ctx = datafusion::prelude::SessionContext::new_with_state(state);
+
+        // Register the index_filter UDF
+        ctx.register_udf(crate::indexed_table::substrait_to_tree::create_index_filter_udf());
+
+        let listing_options = ListingOptions::new(Arc::new(ParquetFormat::new()))
+            .with_file_extension(".parquet")
+            .with_collect_stat(true);
+        let schema = listing_options.infer_schema(&ctx.state(), &table_path).await?;
+        let config = ListingTableConfig::new(table_path)
+            .with_listing_options(listing_options)
+            .with_schema(schema);
+        ctx.register_table(&table_name, Arc::new(ListingTable::try_new(config)?))?;
+
+        let plan = ctx.sql(sql).await?.logical_plan().clone();
+        let substrait = to_substrait_plan(&plan, &ctx.state())?;
+        let mut buf = Vec::new();
+        substrait.encode(&mut buf)
+            .map_err(|e| DataFusionError::Execution(format!("Substrait encode failed: {}", e)))?;
+        Ok(buf)
+    })
+}
