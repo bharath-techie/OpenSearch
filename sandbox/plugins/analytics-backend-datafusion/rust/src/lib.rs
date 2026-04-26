@@ -15,6 +15,8 @@ pub mod api;
 pub mod cross_rt_stream;
 pub mod executor;
 pub mod ffm;
+pub mod indexed_executor;
+pub mod indexed_table;
 pub mod io;
 pub mod query_executor;
 pub mod query_memory_pool_tracker;
