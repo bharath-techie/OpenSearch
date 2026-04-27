@@ -193,6 +193,7 @@ pub async unsafe fn execute_query(
     runtime_ptr: i64,
     manager: &RuntimeManager,
     context_id: i64,
+    query_config: crate::datafusion_query_config::DatafusionQueryConfig,
 ) -> Result<i64, DataFusionError> {
     let shard_view = &*(shard_view_ptr as *const ShardView);
     let runtime = &*(runtime_ptr as *const DataFusionRuntime);
@@ -210,14 +211,16 @@ pub async unsafe fn execute_query(
     let is_indexed = plan_bytes_mentions_index_filter(plan_bytes);
 
     let stream_ptr = if is_indexed {
+        let qc = Arc::new(query_config);
         crate::indexed_executor::execute_indexed_query(
             plan_bytes.to_vec(),
             table_name.to_string(),
             shard_view,
-            4,
+            qc.target_partitions.max(1),
             runtime,
             cpu_executor,
             query_memory_pool,
+            qc,
         )
         .await?
     } else {
@@ -229,6 +232,7 @@ pub async unsafe fn execute_query(
             runtime,
             cpu_executor,
             query_memory_pool,
+            &query_config,
         )
         .await?
     };
