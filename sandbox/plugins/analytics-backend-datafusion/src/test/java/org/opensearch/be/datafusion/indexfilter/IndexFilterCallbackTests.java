@@ -105,8 +105,8 @@ public class IndexFilterCallbackTests extends OpenSearchTestCase {
 
     public void testCreateProviderWithNoFactoryReturnsError() {
         // Fresh lifecycle with no factory set.
-        FilterProviderRegistry empty = new FilterProviderRegistry(emptyColl);
         CollectorRegistry emptyColl = new CollectorRegistry();
+        FilterProviderRegistry empty = new FilterProviderRegistry(emptyColl);
         FilterTreeCallbacks.setRegistries(empty, emptyColl);
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment seg = arena.allocate(1);

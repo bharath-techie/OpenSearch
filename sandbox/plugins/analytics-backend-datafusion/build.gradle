@@ -82,6 +82,17 @@ dependencies {
   calciteCompile "com.google.guava:guava:${versions.guava}"
   calciteTestCompile "com.google.guava:guava:${versions.guava}"
 
+  // Lucene backend — test-only dep for IndexedQueryPerfTest which
+  // creates a LuceneIndexFilterProvider against real Lucene indexes.
+  testImplementation project(':sandbox:plugins:analytics-backend-lucene')
+
+  // ParquetCodec — the test data's Lucene index was written with this
+  // custom codec; needed on classpath to open the DirectoryReader.
+  testImplementation project(':sandbox:plugins:parquet-data-format')
+
+  // JUnit — for standalone perf tests that don't extend OpenSearchTestCase
+  testImplementation "junit:junit:${versions.junit}"
+
   // ── internalClusterTest: end-to-end coordinator-reduce IT ───────────────────
   // Pulls in every sibling plugin needed to construct a parquet-backed composite
   // index, dispatch a multi-shard PPL aggregate, and exercise DatafusionReduceSink.
@@ -223,6 +234,21 @@ task cargoTest(type: Exec) {
 }
 
 check.dependsOn cargoTest
+
+// Standalone perf test — runs IndexedQueryPerfMain as a Java application.
+// Usage: ./gradlew -Dsandbox.enabled=true :sandbox:plugins:analytics-backend-datafusion:perfMain -PshardDir=/path/to/shard/0
+task perfMain(type: JavaExec) {
+  description = 'Run the standalone indexed query perf test'
+  group = 'verification'
+  classpath = sourceSets.main.runtimeClasspath + sourceSets.test.runtimeClasspath
+  mainClass = 'org.opensearch.be.datafusion.IndexedQueryPerfMain'
+  jvmArgs += ['--enable-native-access=ALL-UNNAMED']
+  jvmArgs += ['--add-opens', 'java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED']
+  jvmArgs += ['-Xmx2g']
+  systemProperty 'native.lib.path', project(':sandbox:libs:dataformat-native').ext.nativeLibPath.absolutePath
+  args = [project.findProperty('shardDir') ?: '/Users/abandeji/Public/work-dump/experiments/data/nodes/0/indices/ATTb8ViJT0mrLoeWpkEtrA/0']
+  dependsOn ':sandbox:libs:dataformat-native:buildRustLibrary'
+}
 
 tasks.withType(JavaCompile).configureEach {
   // Arrow references Jackson annotations not on classpath — harmless warnings

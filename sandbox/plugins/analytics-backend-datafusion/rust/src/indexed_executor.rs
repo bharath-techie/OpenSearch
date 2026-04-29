@@ -362,8 +362,15 @@ pub async fn execute_indexed_query(
     };
 
     ctx.deregister_table(&table_name)?;
+    // Extract the scheme+authority portion of the table URL for
+    // DataFusion's FileScanConfig. The full URL includes the path
+    // (e.g. "file:///Users/.../parquet/"); ObjectStoreUrl wants only
+    // the scheme+authority ("file:///").
+    let url_str = shard_view.table_path.as_str();
+    let parsed = url::Url::parse(url_str)
+        .map_err(|e| DataFusionError::Execution(format!("parse table_path URL: {}", e)))?;
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::parse(
-        shard_view.table_path.as_str(),
+        &format!("{}://{}", parsed.scheme(), parsed.authority()),
     )?;
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),

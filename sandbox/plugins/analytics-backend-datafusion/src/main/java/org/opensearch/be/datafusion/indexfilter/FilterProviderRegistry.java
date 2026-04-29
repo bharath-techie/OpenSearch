@@ -67,7 +67,12 @@ public final class FilterProviderRegistry {
         if (f == null) {
             return -1;
         }
-        IndexFilterProvider provider = f.create(queryBytes);
+        IndexFilterProvider provider;
+        try {
+            provider = f.create(queryBytes);
+        } catch (Exception e) {
+            return -1;
+        }
         if (provider == null) {
             return -1;
         }

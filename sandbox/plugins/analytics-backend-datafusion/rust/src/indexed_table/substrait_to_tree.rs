@@ -129,8 +129,14 @@ fn convert_expr(
         // require boolean return type so the tree evaluator can
         // interpret the result as a per-row mask.
         other => {
-            let phys = create_physical_expr(other, df_schema, props)
-                .map_err(|e| format!("create_physical_expr for {:?}: {}", other, e))?;
+            // Strip table qualifiers from Column references. DataFusion's
+            // substrait consumer qualifies field references with the
+            // NamedScan table name (e.g. "test_table.elb_status_code"),
+            // but the parquet schema has bare names. Without stripping,
+            // `create_physical_expr` fails with "No field named ...".
+            let unqualified = strip_column_qualifiers(other);
+            let phys = create_physical_expr(&unqualified, df_schema, props)
+                .map_err(|e| format!("create_physical_expr for {:?}: {}", unqualified, e))?;
             let return_type = phys.data_type(schema).map_err(|e| format!("data_type: {}", e))?;
             if return_type != DataType::Boolean {
                 return Err(format!(
@@ -154,6 +160,25 @@ fn convert_collector_function(args: &[Expr]) -> Result<BoolNode, String> {
     }
     let bytes = extract_binary_literal(&args[0])?;
     Ok(BoolNode::Collector { query_bytes: bytes })
+}
+
+/// Strip table qualifiers from `Column` references in an `Expr` tree.
+/// DataFusion's substrait consumer qualifies field references with the
+/// NamedScan table name, but the parquet schema has bare column names.
+fn strip_column_qualifiers(expr: &Expr) -> Expr {
+    use datafusion::common::tree_node::TreeNode;
+    expr.clone().transform(|e| {
+        if let Expr::Column(col) = &e {
+            if col.relation.is_some() {
+                return Ok(datafusion::common::tree_node::Transformed::yes(
+                    Expr::Column(datafusion::common::Column::new_unqualified(&col.name)),
+                ));
+            }
+        }
+        Ok(datafusion::common::tree_node::Transformed::no(e))
+    })
+    .unwrap()
+    .data
 }
 
 fn extract_binary_literal(expr: &Expr) -> Result<Arc<[u8]>, String> {
