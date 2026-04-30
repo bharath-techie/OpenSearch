@@ -18,6 +18,7 @@ import org.apache.lucene.search.ScoreMode;
 import org.apache.lucene.search.Scorer;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.Weight;
+import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.FixedBitSet;
 import org.opensearch.analytics.spi.IndexFilterProvider;
@@ -47,9 +48,28 @@ public class LuceneTermQueryFactory implements IndexFilterProviderFactory {
     @Override
     public IndexFilterProvider create(byte[] queryBytes) throws Exception {
         String s = new String(queryBytes, StandardCharsets.UTF_8);
-        int sep = s.indexOf('\0');
-        if (sep < 0) throw new IllegalArgumentException("expected 'field\\0value', got: " + s);
-        TermQuery query = new TermQuery(new Term(s.substring(0, sep), s.substring(sep + 1)));
+
+        // Multiple clauses separated by \n → BooleanQuery with MUST
+        Query query;
+        String[] clauses = s.split("\n");
+        if (clauses.length == 1) {
+            int sep = s.indexOf('\0');
+            if (sep < 0) throw new IllegalArgumentException("expected 'field\\0value', got: " + s);
+            String field = s.substring(0, sep);
+            String value = s.substring(sep + 1);
+            query = termOrWildcard(field, value);
+        } else {
+            var builder = new org.apache.lucene.search.BooleanQuery.Builder();
+            for (String clause : clauses) {
+                int sep = clause.indexOf('\0');
+                if (sep < 0) throw new IllegalArgumentException("expected 'field\\0value', got: " + clause);
+                String field = clause.substring(0, sep);
+                String value = clause.substring(sep + 1);
+                builder.add(termOrWildcard(field, value),
+                    org.apache.lucene.search.BooleanClause.Occur.MUST);
+            }
+            query = builder.build();
+        }
 
         IndexSearcher searcher = new IndexSearcher(reader);
         Query rewritten = searcher.rewrite(query);
@@ -60,6 +80,20 @@ public class LuceneTermQueryFactory implements IndexFilterProviderFactory {
     }
 
     public void closeReader() throws IOException { reader.close(); }
+
+    /**
+     * Build a TermQuery for exact values or a WildcardQuery when the value
+     * contains the `*` or `?` glob markers. WildcardQuery is substantially
+     * slower than TermQuery — every matching term's postings are scanned
+     * through a rewrite that enumerates matching terms.
+     */
+    private static Query termOrWildcard(String field, String value) {
+        boolean wildcard = value.indexOf('*') >= 0 || value.indexOf('?') >= 0;
+        if (wildcard) {
+            return new WildcardQuery(new Term(field, value));
+        }
+        return new TermQuery(new Term(field, value));
+    }
 
     private static class TermQueryProvider implements IndexFilterProvider {
         private final Weight weight;

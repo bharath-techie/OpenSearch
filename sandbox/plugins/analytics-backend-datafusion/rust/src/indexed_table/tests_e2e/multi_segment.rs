@@ -175,6 +175,7 @@ async fn run_two_segment_query(
         force_pushdown: Some(false),
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(crate::datafusion_query_config::DatafusionQueryConfig::default()),
+        predicate_columns: vec![],
     }));
 
     let ctx = SessionContext::new();
@@ -381,6 +382,7 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
         force_pushdown: Some(false),
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(crate::datafusion_query_config::DatafusionQueryConfig::default()),
+        predicate_columns: vec![],
     }));
 
     let ctx = SessionContext::new();
@@ -751,6 +753,7 @@ async fn run_wide_segments(
                     page_pruner: pruner,
                     cost_predicate: 1,
                     cost_collector: 10,
+                    max_collector_parallelism: 1,
                     pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
                 page_prune_metrics: None,
                 },
@@ -773,6 +776,7 @@ async fn run_wide_segments(
         force_pushdown: Some(false),
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(crate::datafusion_query_config::DatafusionQueryConfig::default()),
+        predicate_columns: vec![],
     }));
 
     let ctx = SessionContext::new();

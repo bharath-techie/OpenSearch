@@ -13,6 +13,8 @@ opensearchplugin {
     classname = 'org.opensearch.be.lucene.LucenePlugin'
 }
 
+java { sourceCompatibility = JavaVersion.toVersion(25); targetCompatibility = JavaVersion.toVersion(25) }
+
 dependencies {
     // Shared types and SPI interfaces (EngineBridge, AnalyticsBackEndPlugin, etc.)
     // Also provides calcite-core transitively via api.

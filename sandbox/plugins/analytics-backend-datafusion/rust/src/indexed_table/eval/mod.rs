@@ -123,6 +123,13 @@ pub struct PrefetchedRg {
     /// Opaque per-RG state threaded to `on_batch_mask` via `rg_state: &dyn Any`.
     /// Evaluators downcast to their own concrete type.
     pub context: Box<dyn Any + Send + Sync>,
+    /// Optional: pre-built Arrow `Buffer` holding `candidates` in
+    /// Arrow's native LSB-first bit layout, length = rg_num_rows. When
+    /// `Some`, `IndexedStream::build_mask` wraps a `BooleanBuffer` view
+    /// over this buffer (zero-copy) instead of rematerialising from the
+    /// `RoaringBitmap`. Set by evaluators that already produced the
+    /// packed bits internally (e.g. `SingleCollectorEvaluator`).
+    pub mask_buffer: Option<datafusion::arrow::buffer::Buffer>,
 }
 
 impl PrefetchedRg {
@@ -133,6 +140,7 @@ impl PrefetchedRg {
             candidates,
             eval_nanos,
             context: Box::new(()),
+            mask_buffer: None,
         }
     }
 }
@@ -260,6 +268,11 @@ pub struct TreeBitsetSource {
     /// time so `prefetch_rg` doesn't need an `Arc` deref on the hot path.
     pub cost_predicate: u32,
     pub cost_collector: u32,
+    /// Max number of Collector leaves whose bitmaps are produced in
+    /// parallel per RG prefetch. 1 = sequential (preserves short-circuit
+    /// savings). Higher values trade short-circuit savings for latency
+    /// reduction on multi-collector trees; bounded by caller's config.
+    pub max_collector_parallelism: usize,
     /// Per-predicate `PruningPredicate` cache, keyed by
     /// `Arc::as_ptr(resolved_predicate) as usize`. Built once per query at
     /// dispatch time by the caller. Empty = page-level predicate pruning
@@ -295,12 +308,36 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             cost_predicate: self.cost_predicate,
             cost_collector: self.cost_collector,
         };
+
+        // Optional: materialise all Collector leaves in parallel before
+        // running the tree walk. Preserves correctness; sacrifices AND/OR
+        // short-circuit savings (all collectors run even if an earlier
+        // AND child already emptied the accumulator). Governed by
+        // `max_collector_parallelism`: 1 = sequential (today).
+        let precomputed = if self.max_collector_parallelism > 1 {
+            Some(precompute_collector_leaves(
+                &self.tree,
+                &ctx,
+                &*self.leaves,
+                self.max_collector_parallelism,
+            )?)
+        } else {
+            None
+        };
+
+        // Use the precomputed cache as the LeafBitmapSource if present;
+        // otherwise delegate directly to the original source (sequential).
+        let leaves_ref: &dyn LeafBitmapSource = match &precomputed {
+            Some(c) => c,
+            None => &*self.leaves,
+        };
+
         let prefetch = self
             .evaluator
             .prefetch(
                 &self.tree,
                 &ctx,
-                &*self.leaves,
+                leaves_ref,
                 &self.page_pruner,
                 &self.pruning_predicates,
                 self.page_prune_metrics.as_ref(),
@@ -324,6 +361,7 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             candidates: rg_candidates,
             eval_nanos: t.elapsed().as_nanos() as u64,
             context: Box::new(prefetch),
+            mask_buffer: None,
         }))
     }
 
@@ -372,6 +410,138 @@ impl RowGroupBitsetSource for TreeBitsetSource {
     fn forbid_parquet_pushdown(&self) -> bool {
         true
     }
+}
+
+/// LeafBitmapSource that serves from a pre-populated map keyed by
+/// `Arc::as_ptr(collector)`. Falls back to the inner source for leaves
+/// not in the map (shouldn't happen in practice — we populate the map
+/// with every Collector leaf in the tree before invoking the evaluator).
+struct PrecomputedLeafCache<'a> {
+    map: std::collections::HashMap<usize, RoaringBitmap>,
+    fallback: &'a dyn LeafBitmapSource,
+}
+
+impl<'a> LeafBitmapSource for PrecomputedLeafCache<'a> {
+    fn leaf_bitmap(
+        &self,
+        tree: &ResolvedNode,
+        leaf_dfs_index: usize,
+        ctx: &RgEvalContext,
+    ) -> Result<RoaringBitmap, String> {
+        if let ResolvedNode::Collector { collector, .. } = tree {
+            let key = Arc::as_ptr(collector) as *const () as usize;
+            if let Some(bm) = self.map.get(&key) {
+                return Ok(bm.clone());
+            }
+        }
+        self.fallback.leaf_bitmap(tree, leaf_dfs_index, ctx)
+    }
+}
+
+/// Walk the resolved tree and collect (key, collector-node-reference)
+/// pairs for every Collector leaf, in DFS order (matching the
+/// evaluator's walk order — we don't care about order beyond determinism).
+/// Duplicates (same Arc pointing at the same collector instance) are
+/// deduplicated by `Arc::as_ptr` so we don't call Lucene twice for the
+/// same leaf.
+fn collect_unique_collector_nodes<'a>(
+    node: &'a ResolvedNode,
+    out: &mut Vec<(usize, &'a ResolvedNode)>,
+    seen: &mut std::collections::HashSet<usize>,
+) {
+    match node {
+        ResolvedNode::And(children) | ResolvedNode::Or(children) => {
+            for c in children {
+                collect_unique_collector_nodes(c, out, seen);
+            }
+        }
+        ResolvedNode::Not(c) => collect_unique_collector_nodes(c, out, seen),
+        ResolvedNode::Collector { collector, .. } => {
+            let key = Arc::as_ptr(collector) as *const () as usize;
+            if seen.insert(key) {
+                out.push((key, node));
+            }
+        }
+        ResolvedNode::Predicate(_) => {}
+    }
+}
+
+/// Materialise all Collector leaves of `tree` by running their
+/// `LeafBitmapSource::leaf_bitmap` calls in parallel via `std::thread::scope`,
+/// bounded by `max_parallel`. Returns a cache keyed by `Arc::as_ptr(collector)`.
+///
+/// Uses an `Arc<AtomicUsize>`-driven round-robin over pre-spawned worker
+/// threads so we never exceed `max_parallel` concurrent Lucene calls.
+/// On error, returns the first error encountered.
+fn precompute_collector_leaves<'a>(
+    tree: &'a ResolvedNode,
+    ctx: &RgEvalContext,
+    leaves: &'a dyn LeafBitmapSource,
+    max_parallel: usize,
+) -> Result<PrecomputedLeafCache<'a>, String> {
+    let mut collectors: Vec<(usize, &ResolvedNode)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    collect_unique_collector_nodes(tree, &mut collectors, &mut seen);
+
+    // Zero or one collector → no benefit from parallelism, fall back to
+    // an empty cache (evaluator will use the fallback synchronously).
+    if collectors.len() <= 1 {
+        return Ok(PrecomputedLeafCache {
+            map: std::collections::HashMap::new(),
+            fallback: leaves,
+        });
+    }
+
+    let n = collectors.len();
+    let parallel = max_parallel.min(n).max(1);
+
+    // Bounded parallelism via std::thread::scope + a work queue Mutex.
+    // Each worker pulls the next collector to evaluate, calls
+    // leaf_bitmap, writes result into a shared Vec<Option<Result<...>>>
+    // at the collector's index.
+    let mut results: Vec<Option<Result<RoaringBitmap, String>>> = (0..n).map(|_| None).collect();
+    let next_idx = std::sync::atomic::AtomicUsize::new(0);
+    let results_mutex = std::sync::Mutex::new(&mut results);
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(parallel);
+        for _worker in 0..parallel {
+            let collectors_ref = &collectors;
+            let leaves_ref = leaves;
+            let ctx_ref = ctx;
+            let next_idx_ref = &next_idx;
+            let results_mutex_ref = &results_mutex;
+            handles.push(scope.spawn(move || {
+                loop {
+                    let i = next_idx_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= collectors_ref.len() {
+                        break;
+                    }
+                    let (_key, node) = collectors_ref[i];
+                    // Use i as the leaf_dfs_index — the cache doesn't
+                    // use it for lookup (keys by Arc::as_ptr), so any
+                    // stable value works.
+                    let result = leaves_ref.leaf_bitmap(node, i, ctx_ref);
+                    let mut guard = results_mutex_ref.lock().unwrap();
+                    guard[i] = Some(result);
+                }
+            }));
+        }
+        // Scope ensures all threads complete before returning.
+        for h in handles {
+            let _ = h.join();
+        }
+    });
+
+    // Assemble results. Fail fast on the first error.
+    let mut map = std::collections::HashMap::with_capacity(n);
+    for (i, slot) in results.into_iter().enumerate() {
+        let bm = slot
+            .ok_or_else(|| format!("precompute: worker did not populate slot {}", i))??;
+        map.insert(collectors[i].0, bm);
+    }
+
+    Ok(PrecomputedLeafCache { map, fallback: leaves })
 }
 
 #[cfg(test)]
@@ -483,6 +653,7 @@ mod tests {
             page_pruner: empty_pruner(),
             cost_predicate: 1,
             cost_collector: 10,
+            max_collector_parallelism: 1,
             pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
                 page_prune_metrics: None,
         };

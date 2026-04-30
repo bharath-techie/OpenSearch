@@ -45,7 +45,7 @@ pub async fn execute_query(
     // wire up context_id correctly.
     query_memory_pool: Option<Arc<dyn datafusion::execution::memory_pool::MemoryPool>>,
     query_config: &crate::datafusion_query_config::DatafusionQueryConfig,
-) -> Result<i64, DataFusionError> {
+) -> Result<(i64, Arc<dyn datafusion::physical_plan::ExecutionPlan>), DataFusionError> {
     // Pre-populate the list-files cache so DataFusion doesn't re-list the directory
     let list_file_cache = Arc::new(DefaultListFilesCache::default());
     let table_scoped_path = datafusion::execution::cache::TableScopedPath {
@@ -132,7 +132,7 @@ pub async fn execute_query(
     let dataframe = ctx.execute_logical_plan(logical_plan).await?;
     let physical_plan = dataframe.create_physical_plan().await?;
 
-    let df_stream = execute_stream(physical_plan, ctx.task_ctx()).map_err(|e| {
+    let df_stream = execute_stream(physical_plan.clone(), ctx.task_ctx()).map_err(|e| {
         error!("Failed to create execution stream: {}", e);
         e
     })?;
@@ -145,5 +145,5 @@ pub async fn execute_query(
         cross_rt_stream,
     );
 
-    Ok(Box::into_raw(Box::new(wrapped)) as i64)
+    Ok((Box::into_raw(Box::new(wrapped)) as i64, physical_plan))
 }

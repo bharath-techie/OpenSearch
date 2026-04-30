@@ -64,7 +64,7 @@ pub async fn execute_indexed_query(
     cpu_executor: DedicatedExecutor,
     query_memory_pool: Option<Arc<dyn datafusion::execution::memory_pool::MemoryPool>>,
     query_config: Arc<crate::datafusion_query_config::DatafusionQueryConfig>,
-) -> Result<i64, DataFusionError> {
+) -> Result<(i64, Arc<dyn datafusion::physical_plan::ExecutionPlan>), DataFusionError> {
     use datafusion::execution::cache::cache_manager::CacheManagerConfig;
     use datafusion::execution::cache::{CacheAccessor, DefaultListFilesCache};
 
@@ -175,6 +175,8 @@ pub async fn execute_indexed_query(
             FilterClass::Tree | FilterClass::None => None,
         };
 
+    let predicate_columns = collect_predicate_column_indices(extraction.as_ref());
+
     let factory: EvaluatorFactory = match classification {
         FilterClass::None => {
             return Err(DataFusionError::Execution(
@@ -284,6 +286,7 @@ pub async fn execute_indexed_query(
             let schema_for_pruner = schema.clone();
             let cost_predicate = query_config.cost_predicate;
             let cost_collector = query_config.cost_collector;
+            let max_collector_parallelism = query_config.max_collector_parallelism;
 
             // Build one `PruningPredicate` per unique `Predicate` leaf
             // in the tree. Key = `Arc::as_ptr(expr) as usize` — the
@@ -349,6 +352,7 @@ pub async fn execute_indexed_query(
                     page_pruner: pruner,
                     cost_predicate,
                     cost_collector,
+                    max_collector_parallelism,
                     pruning_predicates: Arc::clone(&pruning_predicates),
                     page_prune_metrics: Some(
                         crate::indexed_table::page_pruner::PagePruneMetrics::from_stream_metrics(
@@ -383,20 +387,21 @@ pub async fn execute_indexed_query(
         force_pushdown: query_config.force_pushdown,
         pushdown_predicate,
         query_config: Arc::clone(&query_config),
+        predicate_columns,
     }));
     ctx.register_table(&table_name, provider)?;
 
     let logical_plan = from_substrait_plan(&ctx.state(), &plan).await?;
     let dataframe = ctx.execute_logical_plan(logical_plan).await?;
     let physical_plan = dataframe.create_physical_plan().await?;
-    let df_stream = execute_stream(physical_plan, ctx.task_ctx())
+    let df_stream = execute_stream(physical_plan.clone(), ctx.task_ctx())
         .map_err(|e| DataFusionError::Execution(format!("execute_stream: {}", e)))?;
 
     let cross_rt_stream = CrossRtStream::new_with_df_error_stream(df_stream, cpu_executor);
     let schema = cross_rt_stream.schema();
     let wrapped =
         datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(schema, cross_rt_stream);
-    Ok(Box::into_raw(Box::new(wrapped)) as i64)
+    Ok((Box::into_raw(Box::new(wrapped)) as i64, physical_plan))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -416,6 +421,25 @@ fn collect_predicate_exprs(
         BoolNode::Predicate(expr) => out.push(Arc::clone(expr)),
     }
 }
+
+fn collect_predicate_column_indices(
+    extraction: Option<&crate::indexed_table::substrait_to_tree::ExtractionResult>,
+) -> Vec<usize> {
+    let Some(e) = extraction else { return vec![] };
+    let mut exprs = Vec::new();
+    collect_predicate_exprs(&e.tree, &mut exprs);
+    let mut indices = std::collections::BTreeSet::new();
+    for expr in &exprs {
+        use datafusion::common::tree_node::TreeNode;
+        let _ = expr.apply(|node| {
+            if let Some(col) = node.as_any().downcast_ref::<datafusion::physical_expr::expressions::Column>() {
+                indices.insert(col.index());
+            }
+            Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+        });
+    }
+    indices.into_iter().collect()
+}
 /// For a tree classified as `SingleCollector`, walk it to find the single
 /// Collector leaf and return its query bytes.
 fn single_collector_bytes(
@@ -424,7 +448,26 @@ fn single_collector_bytes(
     use crate::indexed_table::bool_tree::BoolNode;
     match tree {
         BoolNode::Collector { query_bytes } => Some(Arc::clone(query_bytes)),
-        BoolNode::And(children) => children.iter().find_map(single_collector_bytes),
+        BoolNode::And(children) => {
+            let mut all: Vec<Arc<[u8]>> = Vec::new();
+            for child in children {
+                if let Some(b) = single_collector_bytes(child) {
+                    all.push(b);
+                }
+            }
+            match all.len() {
+                0 => None,
+                1 => Some(all.remove(0)),
+                _ => {
+                    let mut merged = Vec::new();
+                    for (i, b) in all.iter().enumerate() {
+                        if i > 0 { merged.push(b'\n'); }
+                        merged.extend_from_slice(b);
+                    }
+                    Some(Arc::from(merged.as_slice()))
+                }
+            }
+        }
         _ => None,
     }
 }

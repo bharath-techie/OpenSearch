@@ -38,8 +38,16 @@ use datafusion::physical_optimizer::pruning::PruningPredicate;
 /// mode parquet narrowed fully via `with_predicate` + `RowSelection`
 /// and nothing is needed here. In block-granular mode we need the
 /// Collector candidate bitmap to build a post-decode mask.
+///
+/// `mask_buffer` is the candidate bitmap in Arrow's native LSB-first bit
+/// layout, wrapped as a refcounted `Buffer`. Sharing an `Arc<Buffer>` lets
+/// `on_batch_mask` and `build_mask` build zero-copy `BooleanBuffer`
+/// views via `BooleanBuffer::new(buf.clone(), bit_offset, bit_len)`.
+/// Length of the underlying buffer covers `mask_len` bits (= rg_num_rows).
 struct SingleCollectorState {
     candidates: RoaringBitmap,
+    mask_buffer: datafusion::arrow::buffer::Buffer,
+    mask_len: usize,
 }
 
 /// Evaluator holding one collector and applying per-RG page pruning.
@@ -114,7 +122,8 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
     ) -> Result<Option<PrefetchedRg>, String> {
         let t = std::time::Instant::now();
 
-        // Collect bitset from backend → RG-relative RoaringBitmap.
+        // Collect bitset from backend. Lucene returns a packed u64 bitset
+        // in the min_doc-relative space: bit 0 = doc `min_doc`.
         let bitset = self.collector
             .collect_packed_u64_bitset(min_doc, max_doc)
             .map_err(|e| {
@@ -127,24 +136,28 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             c.add(1);
         }
 
-        let mut candidates = RoaringBitmap::new();
-        for (word_idx, &word) in bitset.iter().enumerate() {
-            if word == 0 {
-                continue;
-            }
-            let base = min_doc as i64 + (word_idx as i64 * 64);
-            let mut w = word;
-            while w != 0 {
-                let bit = w.trailing_zeros() as i64;
-                let doc_id = base + bit;
-                if doc_id < max_doc as i64 {
-                    let rel = doc_id - rg.first_row;
-                    if rel >= 0 && rel <= u32::MAX as i64 {
-                        candidates.insert(rel as u32);
-                    }
-                }
-                w &= w - 1; // clear lowest set bit
-            }
+        // Build RoaringBitmap in RG-relative space using the bulk
+        // `from_lsb0_bytes` API. This is O(container_count), not
+        // O(set_bits). The `offset` argument shifts Lucene's min_doc-
+        // relative bits into RG-relative space (bit 0 = rg.first_row).
+        //
+        // Cast u64 slice to u8 slice (same memory, same byte order on
+        // little-endian — OpenSearch-supported architectures are all LE).
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                bitset.as_ptr() as *const u8,
+                bitset.len() * 8,
+            )
+        };
+        let rg_offset = (min_doc as i64 - rg.first_row) as u32; // >= 0 by construction
+        let mut candidates = RoaringBitmap::from_lsb0_bytes(rg_offset, bytes);
+        // `from_lsb0_bytes` may include padding bits past `max_doc` if
+        // the last u64 had extra set bits. Trim to the valid range
+        // `[rg_offset, rg_offset + (max_doc - min_doc))`.
+        let span = (max_doc - min_doc) as u32;
+        let upper_bound = rg_offset.saturating_add(span);
+        if upper_bound < u32::MAX {
+            candidates.remove_range(upper_bound..);
         }
 
         // Apply page-level pruning if we have a residual predicate.
@@ -165,14 +178,26 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             return Ok(None);
         }
 
-        // Attach the candidate bitmap as per-RG state. `on_batch_mask`
-        // downcast's this to reconstruct the Collector mask in
-        // block-granular mode (where parquet with_predicate is OFF to
-        // avoid misalignment with post-decode masking).
+        // Materialise the final RG-relative bitmap as an Arrow `Buffer`
+        // in Arrow's native LSB-first layout. This is the ONLY
+        // representation the hot paths (`on_batch_mask`, `build_mask`)
+        // need; they construct zero-copy `BooleanBuffer` views via
+        // `BooleanBuffer::new(buf.clone(), bit_offset, bit_len)`.
+        let mask_len = rg.num_rows as usize;
+        let packed_bits = crate::indexed_table::row_selection::bitmap_to_packed_bits(
+            &candidates,
+            mask_len as u32,
+        );
+        let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
         Ok(Some(PrefetchedRg {
             candidates: candidates.clone(),
             eval_nanos: t.elapsed().as_nanos() as u64,
-            context: Box::new(SingleCollectorState { candidates }),
+            context: Box::new(SingleCollectorState {
+                candidates,
+                mask_buffer: mask_buffer.clone(),
+                mask_len,
+            }),
+            mask_buffer: Some(mask_buffer),
         }))
     }
 
@@ -202,30 +227,60 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             })?;
 
         // Build Collector mask over delivered rows via PositionMap.
-        // Same logic as `row_selection::build_mask` but sliced to
-        // [batch_offset, batch_offset + batch_len).
-        let mut collector_bits = Vec::with_capacity(batch_len);
-        for i in 0..batch_len {
-            let delivered_idx = batch_offset + i;
-            let rg_pos = position_map
-                .rg_position(delivered_idx)
-                .ok_or_else(|| {
-                    format!(
-                        "SingleCollectorEvaluator: delivered_idx {} out of range",
-                        delivered_idx
-                    )
-                })?;
-            let hit = if rg_pos <= u32::MAX as usize {
-                state.candidates.contains(rg_pos as u32)
-            } else {
-                false
-            };
-            collector_bits.push(hit);
-        }
-        let collector_mask = BooleanArray::from(collector_bits);
+        // All paths produce a `BooleanArray` whose underlying
+        // `Buffer` is a refcounted view into `state.mask_buffer` —
+        // zero allocation for Identity, at most one small packed
+        // Vec<u64> for Runs.
+        let collector_mask: BooleanArray = match position_map {
+            // Identity: delivered row i == rg_position (batch_offset + i).
+            // BooleanBuffer::new adjusts bit_offset without copying the
+            // underlying Buffer. The returned BooleanArray points into
+            // state.mask_buffer; lifecycle is Arc-managed.
+            PositionMap::Identity { .. } => {
+                let bb = datafusion::arrow::buffer::BooleanBuffer::new(
+                    state.mask_buffer.clone(),
+                    batch_offset,
+                    batch_len,
+                );
+                BooleanArray::new(bb, None)
+            }
+            // Every delivered row is by construction a candidate — mask is all-true.
+            PositionMap::Bitmap { .. } => BooleanArray::new(
+                datafusion::arrow::buffer::BooleanBuffer::new_set(batch_len),
+                None,
+            ),
+            // Runs: gather per-row bit from the shared mask_buffer into
+            // a new packed Vec<u64> (small — bounded by batch_len/64).
+            PositionMap::Runs { .. } => {
+                let words = batch_len.div_ceil(64);
+                let mut out = vec![0u64; words];
+                let src_bytes = state.mask_buffer.as_slice();
+                for i in 0..batch_len {
+                    let delivered_idx = batch_offset + i;
+                    let rg_pos = position_map.rg_position(delivered_idx).ok_or_else(|| {
+                        format!(
+                            "SingleCollectorEvaluator: delivered_idx {} out of range",
+                            delivered_idx
+                        )
+                    })?;
+                    // Read bit rg_pos from the packed buffer (LSB-first).
+                    let hit = rg_pos < state.mask_len
+                        && (src_bytes[rg_pos >> 3] >> (rg_pos & 7)) & 1 == 1;
+                    if hit {
+                        out[i >> 6] |= 1u64 << (i & 63);
+                    }
+                }
+                crate::indexed_table::row_selection::packed_bits_to_boolean_array(
+                    out, batch_len,
+                )
+            }
+        };
 
-        // Evaluate residual against the batch.
-        let residual_value = residual
+        // Evaluate residual against the batch. The residual may use
+        // full-schema column indices; remap to batch positions by name.
+        let remapped_residual = remap_expr_to_batch(residual, batch)
+            .map_err(|e| format!("SingleCollectorEvaluator: remap residual: {}", e))?;
+        let residual_value = remapped_residual
             .evaluate(batch)
             .map_err(|e| format!("SingleCollectorEvaluator: residual.evaluate: {}", e))?;
         let residual_array = residual_value
@@ -413,4 +468,29 @@ mod tests {
     // Keep the `fmt` import used
     #[allow(dead_code)]
     fn _use(_: &dyn fmt::Debug) {}
+}
+
+/// Remap Column indices in a PhysicalExpr to match the batch schema by name.
+fn remap_expr_to_batch(
+    expr: &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    batch: &RecordBatch,
+) -> Result<Arc<dyn datafusion::physical_expr::PhysicalExpr>, String> {
+    use datafusion::common::tree_node::TreeNode;
+    use datafusion::physical_expr::expressions::Column;
+
+    expr.clone()
+        .transform(|e| {
+            if let Some(col) = e.as_any().downcast_ref::<Column>() {
+                if let Ok(new_idx) = batch.schema().index_of(col.name()) {
+                    if new_idx != col.index() {
+                        let remapped = Arc::new(Column::new(col.name(), new_idx))
+                            as Arc<dyn datafusion::physical_expr::PhysicalExpr>;
+                        return Ok(datafusion::common::tree_node::Transformed::yes(remapped));
+                    }
+                }
+            }
+            Ok(datafusion::common::tree_node::Transformed::no(e))
+        })
+        .map(|t| t.data)
+        .map_err(|e| format!("remap_expr_to_batch: {}", e))
 }

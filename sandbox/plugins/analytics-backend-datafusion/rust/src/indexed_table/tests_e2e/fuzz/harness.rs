@@ -242,6 +242,7 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
                 page_pruner: pruner,
                 cost_predicate: 1,
                 cost_collector: 10,
+                max_collector_parallelism: 1,
                 pruning_predicates: Arc::clone(&pruning_predicates),
                 page_prune_metrics: Some(
                     crate::indexed_table::page_pruner::PagePruneMetrics::from_stream_metrics(
@@ -270,6 +271,7 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
         query_config: Arc::new(
             crate::datafusion_query_config::DatafusionQueryConfig::default(),
         ),
+        predicate_columns: vec![],
     }));
 
     let ctx = SessionContext::new();
@@ -432,6 +434,7 @@ async fn run_single_collector_query(
         query_config: Arc::new(
             crate::datafusion_query_config::DatafusionQueryConfig::default(),
         ),
+        predicate_columns: vec![],
     }));
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();
@@ -632,6 +635,7 @@ async fn run_with_factory_plan(
         query_config: Arc::new(
             crate::datafusion_query_config::DatafusionQueryConfig::default(),
         ),
+        predicate_columns: vec![],
     }));
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();

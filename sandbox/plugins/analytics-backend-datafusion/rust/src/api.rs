@@ -62,14 +62,22 @@ use crate::runtime_manager::RuntimeManager;
 /// handle automatically marks the query completed in the registry.
 pub struct QueryStreamHandle {
     stream: RecordBatchStreamAdapter<CrossRtStream>,
-    /// Held for its `Drop` impl — marks the query completed when the
-    /// stream is closed.
     _query_tracking_context: QueryTrackingContext,
+    physical_plan: Option<Arc<dyn datafusion::physical_plan::ExecutionPlan>>,
 }
 
 impl QueryStreamHandle {
     pub fn new(stream: RecordBatchStreamAdapter<CrossRtStream>, query_context: QueryTrackingContext) -> Self {
-        Self { stream, _query_tracking_context: query_context }
+        Self { stream, _query_tracking_context: query_context, physical_plan: None }
+    }
+}
+
+impl Drop for QueryStreamHandle {
+    fn drop(&mut self) {
+        if let Some(ref plan) = self.physical_plan {
+            let display = datafusion::physical_plan::display::DisplayableExecutionPlan::with_metrics(plan.as_ref());
+            let _ = std::fs::write("/tmp/_df_explain_analyze.txt", format!("{}", display.indent(false)));
+        }
     }
 }
 
@@ -215,7 +223,7 @@ pub async unsafe fn execute_query(
     // index_filter(bytes) calls. Cheap — just bytes inspection.
     let is_indexed = plan_bytes_mentions_index_filter(plan_bytes);
 
-    let stream_ptr = if is_indexed {
+    let (stream_ptr, plan) = if is_indexed {
         let qc = Arc::new(query_config);
         crate::indexed_executor::execute_indexed_query(
             plan_bytes.to_vec(),
@@ -242,9 +250,9 @@ pub async unsafe fn execute_query(
         .await?
     };
 
-    // Reconstruct the stream from the raw pointer returned by the executor.
     let stream = *Box::from_raw(stream_ptr as *mut RecordBatchStreamAdapter<CrossRtStream>);
-    let handle = QueryStreamHandle::new(stream, query_context);
+    let mut handle = QueryStreamHandle::new(stream, query_context);
+    handle.physical_plan = Some(plan);
     Ok(Box::into_raw(Box::new(handle)) as i64)
 }
 

@@ -244,8 +244,8 @@ task perfMain(type: JavaExec) {
   mainClass = 'org.opensearch.be.datafusion.IndexedQueryPerfMain'
   jvmArgs += ['--enable-native-access=ALL-UNNAMED']
   jvmArgs += ['--add-opens', 'java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED']
-  jvmArgs += ['-Xmx2g']
-  systemProperty 'native.lib.path', project(':sandbox:libs:dataformat-native').ext.nativeLibPath.absolutePath
+  jvmArgs += ['-Xmx4g']
+  systemProperty 'native.lib.path', project.findProperty('nativeLibPath') ?: project(':sandbox:libs:dataformat-native').ext.nativeLibPath.absolutePath
   args = [project.findProperty('shardDir') ?: '/Users/abandeji/Public/work-dump/experiments/data/nodes/0/indices/ATTb8ViJT0mrLoeWpkEtrA/0']
   dependsOn ':sandbox:libs:dataformat-native:buildRustLibrary'
 }

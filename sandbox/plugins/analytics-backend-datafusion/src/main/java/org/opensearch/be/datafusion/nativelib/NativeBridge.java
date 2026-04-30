@@ -114,7 +114,8 @@ public final class NativeBridge {
                 ValueLayout.ADDRESS,
                 ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_LONG,
-                ValueLayout.JAVA_LONG
+                ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG  // query_config_ptr (0 = defaults)
             )
         );
 
@@ -392,7 +393,8 @@ public final class NativeBridge {
                 call.bytes(substraitPlan),
                 (long) substraitPlan.length,
                 runtimePtr,
-                contextId
+                contextId,
+                0L  // query_config_ptr — 0 = use defaults
             );
             listener.onResponse(result);
         } catch (Throwable t) {

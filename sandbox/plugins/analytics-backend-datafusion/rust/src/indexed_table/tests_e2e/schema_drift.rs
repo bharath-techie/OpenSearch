@@ -109,6 +109,7 @@ async fn run_missing_col_tree(tree_bool: BoolNode) -> usize {
                 page_pruner: pruner,
                 cost_predicate: 1,
                 cost_collector: 10,
+                max_collector_parallelism: 1,
                 pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
                 page_prune_metrics: None,
             });
@@ -126,6 +127,7 @@ async fn run_missing_col_tree(tree_bool: BoolNode) -> usize {
         force_pushdown: Some(false),
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(crate::datafusion_query_config::DatafusionQueryConfig::default()),
+        predicate_columns: vec![],
     }));
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();

@@ -197,18 +197,32 @@ fn extract_binary_literal(expr: &Expr) -> Result<Arc<[u8]>, String> {
 ///
 /// - 0 collector leaves → `FilterClass::None`
 /// - 1 collector leaf, top-level AND with non-collector children only → `FilterClass::SingleCollector`
-/// - anything else (OR / NOT / multiple collectors / bare collector) → `FilterClass::Tree`
+/// - bare collector or AND(Collector, predicates...) → `FilterClass::SingleCollector`
+/// - AND(Collector, Collector, ...) with only collectors → `FilterClass::SingleCollector`
+///   (merged into single BooleanQuery by the backend)
+/// - anything else (OR / NOT / mixed collector+predicate in OR) → `FilterClass::Tree`
 pub fn classify_filter(tree: &BoolNode) -> FilterClass {
     match tree.collector_leaf_count() {
         0 => FilterClass::None,
         1 => {
-            if is_and_of_collector_plus_predicates(tree) {
+            if matches!(tree, BoolNode::Collector { .. })
+                || is_and_of_collector_plus_predicates(tree)
+            {
                 FilterClass::SingleCollector
             } else {
                 FilterClass::Tree
             }
         }
-        _ => FilterClass::Tree,
+        _ => {
+            // Multiple collectors: if top-level AND with ALL children
+            // being pure Collectors (no predicates), they can be merged
+            // into a single BooleanQuery → SingleCollector.
+            if is_and_of_only_collectors(tree) {
+                FilterClass::SingleCollector
+            } else {
+                FilterClass::Tree
+            }
+        }
     }
 }
 
@@ -228,6 +242,16 @@ fn is_and_of_collector_plus_predicates(tree: &BoolNode) -> bool {
             }
             collector_count == 1
         }
+        _ => false,
+    }
+}
+
+/// Returns true if `tree` is `AND(Collector, Collector, ...)` with ALL
+/// children being direct Collector leaves. These can be merged into a
+/// single Lucene BooleanQuery (MUST clauses) → SingleCollector path.
+fn is_and_of_only_collectors(tree: &BoolNode) -> bool {
+    match tree {
+        BoolNode::And(children) => children.iter().all(|c| matches!(c, BoolNode::Collector { .. })),
         _ => false,
     }
 }

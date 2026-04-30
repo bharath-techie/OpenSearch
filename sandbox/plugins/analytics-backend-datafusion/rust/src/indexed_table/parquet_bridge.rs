@@ -167,6 +167,9 @@ fn create_stream_with_access_plan(
     .with_file(partitioned_file);
 
     if let Some(ref proj) = config.projection {
+        // Empty projection (e.g. COUNT(*)) is honoured as "read no
+        // columns". Parquet delivers correct row counts via the
+        // access plan but skips all column I/O.
         config_builder = config_builder.with_projection_indices(Some(proj.clone()))?;
     }
 

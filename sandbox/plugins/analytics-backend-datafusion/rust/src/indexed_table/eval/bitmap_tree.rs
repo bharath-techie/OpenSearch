@@ -592,23 +592,54 @@ fn bitmap_to_batch_mask(
     batch_offset: usize,
     batch_len: usize,
 ) -> BooleanArray {
-    use datafusion::arrow::array::builder::BooleanBufferBuilder;
-    let mut builder = BooleanBufferBuilder::new(batch_len);
-    for i in 0..batch_len {
-        let rg_pos = match position_map.rg_position(batch_offset + i) {
-            Some(p) => p,
-            // Defensive: batch rows beyond delivered_count → false.
-            None => {
-                builder.append(false);
-                continue;
+    use crate::indexed_table::row_selection::packed_bits_to_boolean_array;
+
+    // Convert batch-row index -> min-doc-relative bitmap index.
+    // delivered row i -> rg_position(batch_offset + i) -> abs_doc -> bit.
+    //
+    // For Identity position map, rg_position(k) == k, so the mapping is
+    // linear: delivered row i -> bit (rg_first_row + batch_offset + i) - min_doc.
+    // We iterate the set bits of `bm` within the batch's coverage and
+    // translate back, instead of per-row `bm.contains()`.
+    let words = batch_len.div_ceil(64);
+    let mut out = vec![0u64; words];
+
+    let anchor = rg_first_row as i64 - min_doc as i64; // rg_pos -> bit: rg_pos + anchor
+    match position_map {
+        PositionMap::Identity { .. } => {
+            // delivered row i -> rg_pos = batch_offset + i -> bit = batch_offset + i + anchor.
+            // Enumerate set bits in `bm` within [anchor + batch_offset, anchor + batch_offset + batch_len).
+            let lo = (batch_offset as i64 + anchor).max(0);
+            let hi = (batch_offset as i64 + anchor + batch_len as i64).max(0);
+            if hi > 0 && lo <= u32::MAX as i64 {
+                let lo_u32 = lo as u32;
+                let hi_u32 = hi.min(u32::MAX as i64) as u32;
+                for b in bm.range(lo_u32..hi_u32) {
+                    // delivered index = bit - anchor - batch_offset
+                    let delivered = (b as i64 - anchor - batch_offset as i64) as usize;
+                    if delivered < batch_len {
+                        out[delivered >> 6] |= 1u64 << (delivered & 63);
+                    }
+                }
             }
-        };
-        let abs_doc = rg_first_row + rg_pos as i64;
-        let bit = abs_doc - min_doc as i64;
-        let hit = bit >= 0 && bit <= u32::MAX as i64 && bm.contains(bit as u32);
-        builder.append(hit);
+        }
+        PositionMap::Bitmap { .. } | PositionMap::Runs { .. } => {
+            // General case — fall back to per-row lookup but use packed-bit
+            // assembly so we avoid the Vec<bool> + BooleanArray::from copy.
+            for i in 0..batch_len {
+                let rg_pos = match position_map.rg_position(batch_offset + i) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let abs_doc = rg_first_row + rg_pos as i64;
+                let bit = abs_doc - min_doc as i64;
+                if bit >= 0 && bit <= u32::MAX as i64 && bm.contains(bit as u32) {
+                    out[i >> 6] |= 1u64 << (i & 63);
+                }
+            }
+        }
     }
-    BooleanArray::new(builder.finish(), None)
+    packed_bits_to_boolean_array(out, batch_len)
 }
 
 // Evaluate an arbitrary boolean `PhysicalExpr` against a batch; return
@@ -762,34 +793,22 @@ impl LeafBitmapSource for CollectorLeafBitmaps {
         if let Some(ref c) = self.ffm_collector_calls {
             c.add(1);
         }
-        let mut result_bitmap = RoaringBitmap::new();
-        // Iterate only set bits via trailing_zeros — sparse bitsets (typical
-        // for selective queries) visit O(set_bits) instead of O(span).
+        // Build RoaringBitmap from Lucene's packed LSB-first bits via the
+        // bulk `from_lsb0_bytes` API. O(container_count) allocation,
+        // no per-bit iteration. The tree evaluator walks the result in
+        // min_doc-relative space (bit 0 = ctx.min_doc), same convention
+        // as the old per-bit loop.
         let num_docs = (ctx.max_doc - ctx.min_doc) as u32;
-        for (word_idx, &word) in bitset.iter().enumerate() {
-            // Fast path: whole word empty, skip all 64 bit positions at once.
-            if word == 0 {
-                continue;
-            }
-            let base = (word_idx as u32) * 64;
-            let mut curr_word = word;
-            while curr_word != 0 {
-                // Position of the lowest set bit within the current word (0..=63).
-                let bit = curr_word.trailing_zeros();
-                // Absolute bit position in the bitset = word offset + in-word offset.
-                let rel = base + bit;
-                // Clamp: the last word may have bits set beyond (max_doc - min_doc)
-                // because the bitset is 64-bit-word-aligned; those bits are padding
-                // and must not enter the RoaringBitmap.
-                if rel < num_docs {
-                    result_bitmap.insert(rel);
-                }
-                // Clear that lowest set bit so the next trailing_zeros() finds
-                // the next one. Classic `x & (x - 1)` trick: subtracting 1 flips
-                // the lowest set bit to 0 and all lower bits to 1; AND keeps
-                // only the higher bits unchanged, clearing exactly that one bit.
-                curr_word &= curr_word - 1;
-            }
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                bitset.as_ptr() as *const u8,
+                bitset.len() * 8,
+            )
+        };
+        let mut result_bitmap = RoaringBitmap::from_lsb0_bytes(0, bytes);
+        // Trim bits past `num_docs` (last u64 may contain padding).
+        if num_docs < u32::MAX {
+            result_bitmap.remove_range(num_docs..);
         }
         Ok(result_bitmap)
     }

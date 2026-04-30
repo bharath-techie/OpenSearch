@@ -121,6 +121,8 @@ pub struct IndexedTableConfig {
     /// Query-scoped tunables (batch_size, min_skip_run_default, costs, …).
     /// Shared by reference across fanned-out `QueryShardExec` instances.
     pub query_config: Arc<crate::datafusion_query_config::DatafusionQueryConfig>,
+    /// Full-schema column indices referenced by BoolNode Predicate leaves.
+    pub predicate_columns: Vec<usize>,
 }
 
 /// Table provider. Returns a `QueryShardExec` that fans out across chunks.
@@ -178,10 +180,25 @@ impl TableProvider for IndexedTableProvider {
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let full_schema = self.config.schema.clone();
-        let projected_schema: SchemaRef = match projection {
+        // Output schema = what DataFusion expects
+        let output_schema: SchemaRef = match projection {
             Some(proj) => Arc::new(full_schema.project(proj)?),
             None => full_schema.clone(),
         };
+        // Read projection = output + predicate columns for evaluator
+        let read_projection: Option<Vec<usize>> = if self.config.predicate_columns.is_empty() {
+            projection.cloned()
+        } else {
+            projection.map(|proj| {
+                let mut cols = proj.clone();
+                for &idx in &self.config.predicate_columns {
+                    if !cols.contains(&idx) { cols.push(idx); }
+                }
+                cols.sort();
+                cols
+            })
+        };
+        let projected_schema = output_schema;
 
         // Ignore DataFusion's `filters` argument. The `index_filter(...)`
         // UDF call would be in there (its body panics), and the
@@ -216,7 +233,7 @@ impl TableProvider for IndexedTableProvider {
             config: Arc::clone(&self.config),
             full_schema,
             projected_schema,
-            projection: projection.cloned(),
+            projection: read_projection,
             assignments,
             properties,
             predicate,
@@ -296,6 +313,8 @@ impl ExecutionPlan for QueryShardExec {
         if let Ok(inner) = self.inner_parquet_metrics.lock() {
             for set in inner.iter() {
                 for m in set.iter() {
+                    let name = m.value().name();
+                    if name == "output_rows" || name == "output_batches" || name == "output_bytes" { continue; }
                     combined.push(m.clone());
                 }
             }
@@ -433,6 +452,7 @@ mod tests {
             force_pushdown: None,
             pushdown_predicate: None,
             query_config: std::sync::Arc::new(crate::datafusion_query_config::DatafusionQueryConfig::default()),
+        predicate_columns: vec![],
         }
     }
 
