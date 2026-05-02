@@ -225,6 +225,7 @@ pub async fn execute_indexed_query(
                 )
             });
 
+            let call_strategy = query_config.collector_call_strategy;
             Arc::new(move |segment: &SegmentFileInfo, chunk, stream_metrics: &crate::indexed_table::metrics::StreamMetrics| {
                 let collector = FfmSegmentCollector::create(
                     provider.key(),
@@ -258,6 +259,7 @@ pub async fn execute_indexed_query(
                             ),
                         ),
                         stream_metrics.ffm_collector_calls.clone(),
+                        call_strategy,
                     ),
                 );
                 Ok(eval)
@@ -473,27 +475,33 @@ fn single_collector_bytes(
 }
 
 /// For a tree classified as `SingleCollector`, return the residual
-/// (all non-Collector children of the top-level AND, re-assembled into
-/// a single BoolNode). Returns `None` if the tree is a bare Collector
-/// (no residual).
+/// (all non-Collector parts of the AND tree, re-assembled into a
+/// single BoolNode). Recursively strips Collector leaves from nested
+/// ANDs. Returns `None` if the tree is a bare Collector or the entire
+/// tree is collectors-only (no residual predicates).
 fn extract_single_collector_residual(
     tree: &crate::indexed_table::bool_tree::BoolNode,
 ) -> Option<crate::indexed_table::bool_tree::BoolNode> {
     use crate::indexed_table::bool_tree::BoolNode;
-    let children = match tree {
-        BoolNode::And(c) => c,
-        _ => return None,
-    };
-    let residuals: Vec<BoolNode> = children
-        .iter()
-        .filter(|c| !matches!(c, BoolNode::Collector { .. }))
-        .cloned()
-        .collect();
-    match residuals.len() {
-        0 => None,
-        1 => Some(residuals.into_iter().next().unwrap()),
-        _ => Some(BoolNode::And(residuals)),
+    fn strip_collectors(node: &BoolNode) -> Option<BoolNode> {
+        match node {
+            BoolNode::Collector { .. } => None,
+            BoolNode::Predicate(_) => Some(node.clone()),
+            BoolNode::And(children) => {
+                let residuals: Vec<BoolNode> =
+                    children.iter().filter_map(strip_collectors).collect();
+                match residuals.len() {
+                    0 => None,
+                    1 => Some(residuals.into_iter().next().unwrap()),
+                    _ => Some(BoolNode::And(residuals)),
+                }
+            }
+            // OR/NOT with no collectors pass through unchanged (they're
+            // pure-predicate subtrees in a SingleCollector-classified tree).
+            other => Some(other.clone()),
+        }
     }
+    strip_collectors(tree)
 }
 
 // ── Placeholder provider used only for substrait consume pass ─────────

@@ -267,6 +267,99 @@ public class IndexedQueryPerfMain {
                 "client_ip", "14.175.54.83"),  // selective term
             "SELECT COUNT(*) FROM test_table WHERE http_version LIKE 'HTTP/1.%' AND client_ip = '14.175.54.83'");
 
+        // ── Page-pruning proof queries (___row_id is monotonic → tight page stats) ──
+
+        // Q27: Collector + ___row_id < 10000. ~99% of pages pruned per RG.
+        // Page-range splitting should call collector only for the first ~1-2 pages.
+        compare(reader, runtime, pb, "Q27",
+            pb.buildAndCollectorPredicateCount("test_table",
+                "http_version", "HTTP/1.1", "___row_id", "lt", 10000),
+            "SELECT COUNT(*) FROM test_table WHERE http_version = 'HTTP/1.1' AND ___row_id < 10000");
+
+        // Q28: Collector + ___row_id range in the middle. Pages before and
+        // after the range are pruned — tests gap skipping.
+        compare(reader, runtime, pb, "Q28",
+            pb.buildAndCollectorPredicateCount("test_table",
+                "http_version", "HTTP/1.1", "___row_id", "gt", 500000),
+            "SELECT COUNT(*) FROM test_table WHERE http_version = 'HTTP/1.1' AND ___row_id > 500000");
+
+        // Q29: Selective collector + tight ___row_id range. Both sides
+        // are selective — page pruning + collector narrowing compound.
+        compare(reader, runtime, pb, "Q29",
+            pb.buildAndCollectorPredicateCount("test_table",
+                "client_ip", "14.175.54.83", "___row_id", "lt", 100000),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip = '14.175.54.83' AND ___row_id < 100000");
+
+        // ── Expensive wildcard + page-pruning range queries ──
+
+        // Q30: Expensive leading-wildcard collector + 99% page pruning.
+        // `*14.175*` forces Lucene to enumerate all terms — expensive FFM call.
+        // ___row_id < 10000 prunes 99.6% of pages.
+        compare(reader, runtime, pb, "Q30",
+            pb.buildAndCollectorPredicateCount("test_table",
+                "client_ip", "*14.175*", "___row_id", "lt", 10000),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%14.175%' AND ___row_id < 10000");
+
+        // Q31: Expensive wildcard + 5 disjoint ___row_id ranges.
+        // Each range is ~10K rows with large gaps → collector called per range.
+        compare(reader, runtime, pb, "Q31",
+            pb.buildCollectorWithRangesCount("test_table",
+                "client_ip", "*14.175*", "___row_id",
+                new int[][]{{0, 10000}, {100000, 110000}, {300000, 310000}, {600000, 610000}, {900000, 910000}}),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%14.175%' AND (___row_id BETWEEN 0 AND 9999 OR ___row_id BETWEEN 100000 AND 109999 OR ___row_id BETWEEN 300000 AND 309999 OR ___row_id BETWEEN 600000 AND 609999 OR ___row_id BETWEEN 900000 AND 909999)");
+
+        // Q32: Expensive wildcard + 3 narrow ranges (1K each).
+        // Very selective — only ~3K rows survive page pruning per RG.
+        compare(reader, runtime, pb, "Q32",
+            pb.buildCollectorWithRangesCount("test_table",
+                "backend_ip", "*99.99*", "___row_id",
+                new int[][]{{5000, 6000}, {500000, 501000}, {1000000, 1001000}}),
+            "SELECT COUNT(*) FROM test_table WHERE backend_ip LIKE '%99.99%' AND (___row_id BETWEEN 5000 AND 5999 OR ___row_id BETWEEN 500000 AND 500999 OR ___row_id BETWEEN 1000000 AND 1000999)");
+
+        // Q33: Fat wildcard (matches everything) + 5 ranges.
+        // Collector is cheap (all docs match), but page pruning still narrows.
+        compare(reader, runtime, pb, "Q33",
+            pb.buildCollectorWithRangesCount("test_table",
+                "http_version", "HTTP/*", "___row_id",
+                new int[][]{{0, 10000}, {200000, 210000}, {400000, 410000}, {700000, 710000}, {1000000, 1010000}}),
+            "SELECT COUNT(*) FROM test_table WHERE http_version LIKE 'HTTP/%' AND (___row_id BETWEEN 0 AND 9999 OR ___row_id BETWEEN 200000 AND 209999 OR ___row_id BETWEEN 400000 AND 409999 OR ___row_id BETWEEN 700000 AND 709999 OR ___row_id BETWEEN 1000000 AND 1009999)");
+
+        // ── Expensive *1* wildcard on client_ip (95% match, 77K terms) ──
+
+        // Q34: *1* wildcard + row_id < 10K. 99.6% pages pruned.
+        // Lucene enumerates 77K terms — very expensive FFM call.
+        compare(reader, runtime, pb, "Q34",
+            pb.buildAndCollectorPredicateCount("test_table",
+                "client_ip", "*1*", "___row_id", "lt", 10000),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%1%' AND ___row_id < 10000");
+
+        // Q35: *1* wildcard + 5 disjoint 10K ranges.
+        compare(reader, runtime, pb, "Q35",
+            pb.buildCollectorWithRangesCount("test_table",
+                "client_ip", "*1*", "___row_id",
+                new int[][]{{0, 10000}, {100000, 110000}, {300000, 310000}, {600000, 610000}, {900000, 910000}}),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%1%' AND (___row_id BETWEEN 0 AND 9999 OR ___row_id BETWEEN 100000 AND 109999 OR ___row_id BETWEEN 300000 AND 309999 OR ___row_id BETWEEN 600000 AND 609999 OR ___row_id BETWEEN 900000 AND 909999)");
+
+        // Q36: *1* wildcard + 3 narrow 1K ranges. Maximum pruning.
+        compare(reader, runtime, pb, "Q36",
+            pb.buildCollectorWithRangesCount("test_table",
+                "client_ip", "*1*", "___row_id",
+                new int[][]{{5000, 6000}, {500000, 501000}, {1000000, 1001000}}),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%1%' AND (___row_id BETWEEN 5000 AND 5999 OR ___row_id BETWEEN 500000 AND 500999 OR ___row_id BETWEEN 1000000 AND 1000999)");
+
+        // Q37: *1* wildcard only (no range filter) — baseline for FFM cost.
+        compare(reader, runtime, pb, "Q37",
+            pb.buildCollectorOnlyCount("test_table", "client_ip", "*1*"),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%1%'");
+
+        // Q38: *1* wildcard + 70 disjoint 1K ranges. Tests whether
+        // many small FFM calls degrade vs one full-range call.
+        compare(reader, runtime, pb, "Q38",
+            pb.buildCollectorWithRangesCount("test_table",
+                "client_ip", "*1*", "___row_id",
+                new int[][]{{0, 1000}, {15000, 16000}, {30000, 31000}, {45000, 46000}, {60000, 61000}, {75000, 76000}, {90000, 91000}, {105000, 106000}, {120000, 121000}, {135000, 136000}, {150000, 151000}, {165000, 166000}, {180000, 181000}, {195000, 196000}, {210000, 211000}, {225000, 226000}, {240000, 241000}, {255000, 256000}, {270000, 271000}, {285000, 286000}, {300000, 301000}, {315000, 316000}, {330000, 331000}, {345000, 346000}, {360000, 361000}, {375000, 376000}, {390000, 391000}, {405000, 406000}, {420000, 421000}, {435000, 436000}, {450000, 451000}, {465000, 466000}, {480000, 481000}, {495000, 496000}, {510000, 511000}, {525000, 526000}, {540000, 541000}, {555000, 556000}, {570000, 571000}, {585000, 586000}, {600000, 601000}, {615000, 616000}, {630000, 631000}, {645000, 646000}, {660000, 661000}, {675000, 676000}, {690000, 691000}, {705000, 706000}, {720000, 721000}, {735000, 736000}, {750000, 751000}, {765000, 766000}, {780000, 781000}, {795000, 796000}, {810000, 811000}, {825000, 826000}, {840000, 841000}, {855000, 856000}, {870000, 871000}, {885000, 886000}, {900000, 901000}, {915000, 916000}, {930000, 931000}, {945000, 946000}, {960000, 961000}, {975000, 976000}, {990000, 991000}, {1005000, 1006000}, {1020000, 1021000}, {1035000, 1036000}}),
+            "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%1%' AND ___row_id < 1036000");
+
         csvWriter.close();
         System.out.println("\nCSV written to: " + csvPath);
 

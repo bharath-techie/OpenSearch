@@ -30,9 +30,26 @@ use roaring::RoaringBitmap;
 use super::{PrefetchedRg, RowGroupBitsetSource};
 use crate::indexed_table::index::RowGroupDocsCollector;
 use crate::indexed_table::page_pruner::PagePruner;
-use crate::indexed_table::row_selection::{row_selection_to_bitmap, PositionMap};
+use crate::indexed_table::row_selection::PositionMap;
 use crate::indexed_table::stream::RowGroupInfo;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
+
+/// How the SingleCollectorEvaluator calls the backend collector relative
+/// to page-pruning results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectorCallStrategy {
+    /// Call collector once for the full `[min_doc, max_doc)` range, then
+    /// AND with the page-pruning bitmap. One FFM call, simple.
+    FullRange,
+    /// Prune pages first, tighten to `[first_surviving, last_surviving)`,
+    /// make one call. Skips leading/trailing dead pages. One FFM call,
+    /// never regresses.
+    TightenOuterBounds,
+    /// Prune pages first, call collector once per contiguous surviving
+    /// page range. Fewer docs scanned per call but more FFM calls.
+    /// Best when the collector is expensive and pruning is heavy.
+    PageRangeSplit,
+}
 
 /// Per-RG state the evaluator keeps for refinement. In row-granular
 /// mode parquet narrowed fully via `with_predicate` + `RowSelection`
@@ -89,6 +106,7 @@ pub struct SingleCollectorEvaluator {
     /// Incremented once per `prefetch_rg` call (once per RG) — the
     /// Collector path always performs one FFM round-trip to Java.
     ffm_collector_calls: Option<datafusion::physical_plan::metrics::Count>,
+    call_strategy: CollectorCallStrategy,
 }
 
 impl SingleCollectorEvaluator {
@@ -101,6 +119,7 @@ impl SingleCollectorEvaluator {
             crate::indexed_table::page_pruner::PagePruneMetrics,
         >,
         ffm_collector_calls: Option<datafusion::physical_plan::metrics::Count>,
+        call_strategy: CollectorCallStrategy,
     ) -> Self {
         Self {
             collector,
@@ -109,6 +128,7 @@ impl SingleCollectorEvaluator {
             residual_expr,
             page_prune_metrics,
             ffm_collector_calls,
+            call_strategy,
         }
     }
 }
@@ -122,56 +142,91 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
     ) -> Result<Option<PrefetchedRg>, String> {
         let t = std::time::Instant::now();
 
-        // Collect bitset from backend. Lucene returns a packed u64 bitset
-        // in the min_doc-relative space: bit 0 = doc `min_doc`.
-        let bitset = self.collector
-            .collect_packed_u64_bitset(min_doc, max_doc)
-            .map_err(|e| {
-                format!(
-                    "collector.collect_packed_u64_bitset(rg={}, [{}, {})): {}",
-                    rg.index, min_doc, max_doc, e
-                )
-            })?;
-        if let Some(ref c) = self.ffm_collector_calls {
-            c.add(1);
-        }
+        // Page-prune to discover which row ranges survive.
+        let page_ranges: Option<Vec<(i32, i32)>> = self.pruning_predicate.as_ref().and_then(|pp| {
+            self.page_pruner
+                .prune_rg(pp, rg.index, self.page_prune_metrics.as_ref())
+                .map(|sel| {
+                    let mut ranges = Vec::new();
+                    let mut rg_pos: i64 = 0;
+                    for s in sel.iter() {
+                        if s.skip {
+                            rg_pos += s.row_count as i64;
+                        } else {
+                            let abs_min = min_doc + rg_pos as i32;
+                            let abs_max = min_doc + rg_pos as i32 + s.row_count as i32;
+                            ranges.push((abs_min, abs_max));
+                            rg_pos += s.row_count as i64;
+                        }
+                    }
+                    ranges
+                })
+        });
 
-        // Build RoaringBitmap in RG-relative space using the bulk
-        // `from_lsb0_bytes` API. This is O(container_count), not
-        // O(set_bits). The `offset` argument shifts Lucene's min_doc-
-        // relative bits into RG-relative space (bit 0 = rg.first_row).
-        //
-        // Cast u64 slice to u8 slice (same memory, same byte order on
-        // little-endian — OpenSearch-supported architectures are all LE).
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                bitset.as_ptr() as *const u8,
-                bitset.len() * 8,
-            )
+        // Dispatch collector call strategy.
+        let call_ranges: Vec<(i32, i32)> = match self.call_strategy {
+            CollectorCallStrategy::FullRange => {
+                // One call for the full RG, AND with page bitmap after.
+                vec![(min_doc, max_doc)]
+            }
+            CollectorCallStrategy::TightenOuterBounds => {
+                // One call with tightened [first_surviving, last_surviving).
+                match &page_ranges {
+                    Some(r) if r.is_empty() => return Ok(None),
+                    Some(r) => vec![(r.first().unwrap().0, r.last().unwrap().1)],
+                    None => vec![(min_doc, max_doc)],
+                }
+            }
+            CollectorCallStrategy::PageRangeSplit => {
+                // One call per contiguous surviving page range.
+                match &page_ranges {
+                    Some(r) if r.is_empty() => return Ok(None),
+                    Some(r) => r.clone(),
+                    None => vec![(min_doc, max_doc)],
+                }
+            }
         };
-        let rg_offset = (min_doc as i64 - rg.first_row) as u32; // >= 0 by construction
-        let mut candidates = RoaringBitmap::from_lsb0_bytes(rg_offset, bytes);
-        // `from_lsb0_bytes` may include padding bits past `max_doc` if
-        // the last u64 had extra set bits. Trim to the valid range
-        // `[rg_offset, rg_offset + (max_doc - min_doc))`.
-        let span = (max_doc - min_doc) as u32;
-        let upper_bound = rg_offset.saturating_add(span);
-        if upper_bound < u32::MAX {
-            candidates.remove_range(upper_bound..);
+
+        // Call collector for each range, merge into one RG-relative bitmap.
+        let mut candidates = RoaringBitmap::new();
+        for (r_min, r_max) in &call_ranges {
+            let bitset = self
+                .collector
+                .collect_packed_u64_bitset(*r_min, *r_max)
+                .map_err(|e| {
+                    format!(
+                        "collector.collect_packed_u64_bitset(rg={}, [{}, {})): {}",
+                        rg.index, r_min, r_max, e
+                    )
+                })?;
+            if let Some(ref c) = self.ffm_collector_calls {
+                c.add(1);
+            }
+            let offset = (*r_min as i64 - rg.first_row) as u32;
+            let num_docs = (*r_max - *r_min) as u32;
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(bitset.as_ptr() as *const u8, bitset.len() * 8)
+            };
+            let mut chunk = RoaringBitmap::from_lsb0_bytes(offset, bytes);
+            let upper = offset.saturating_add(num_docs);
+            if upper < u32::MAX {
+                chunk.remove_range(upper..);
+            }
+            candidates |= chunk;
         }
 
-        // Apply page-level pruning if we have a residual predicate.
-        if let Some(ref pp) = self.pruning_predicate {
-            if let Some(sel) = self.page_pruner.prune_rg(
-                pp,
-                rg.index,
-                self.page_prune_metrics.as_ref(),
-            ) {
-                let allowed = row_selection_to_bitmap(&sel);
+        // For FullRange and TightenOuterBounds, AND with page bitmap
+        // to remove rows in dead pages that the collector scanned.
+        if self.call_strategy != CollectorCallStrategy::PageRangeSplit {
+            if let Some(ref ranges) = page_ranges {
+                let mut allowed = RoaringBitmap::new();
+                for (r_min, r_max) in ranges {
+                    let lo = (*r_min as i64 - rg.first_row) as u32;
+                    let hi = (*r_max as i64 - rg.first_row) as u32;
+                    allowed.insert_range(lo..hi);
+                }
                 candidates &= allowed;
             }
-            // `None` → no pruning available for this RG → keep candidates
-            // unchanged (conservative).
         }
 
         if candidates.is_empty() {
@@ -400,7 +455,7 @@ mod tests {
             docs: vec![0, 3, 7],
         }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
-        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None);
+        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None, crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit);
 
         let rg = RowGroupInfo { index: 0, first_row: 0, num_rows: 8 };
         let prefetched = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
@@ -412,7 +467,7 @@ mod tests {
     fn on_batch_mask_returns_none_for_path_b() {
         let collector = Arc::new(StubCollector { docs: vec![0] }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
-        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None);
+        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None, crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit);
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let batch = datafusion::arrow::record_batch::RecordBatch::try_new(
             schema,
@@ -434,7 +489,7 @@ mod tests {
         // (it's the only post-decode filter we have on this path).
         let collector = Arc::new(StubCollector { docs: vec![0] }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
-        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None);
+        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None, crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit);
         assert!(eval.needs_row_mask());
     }
 
@@ -442,7 +497,7 @@ mod tests {
     fn empty_match_returns_none() {
         let collector = Arc::new(StubCollector { docs: vec![] }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
-        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None);
+        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None, crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit);
         let rg = RowGroupInfo { index: 0, first_row: 0, num_rows: 8 };
         assert!(eval.prefetch_rg(&rg, 0, 8).unwrap().is_none());
     }
@@ -457,7 +512,7 @@ mod tests {
         let collector = Arc::new(StubCollector { docs: vec![0, 3, 7] })
             as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
-        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None);
+        let eval = SingleCollectorEvaluator::new(collector, pruner, None, None, None, None, crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit);
 
         let rg = RowGroupInfo { index: 0, first_row: 0, num_rows: 8 };
         let prefetched = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");

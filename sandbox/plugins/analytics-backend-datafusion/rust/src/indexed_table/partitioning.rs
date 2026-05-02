@@ -20,7 +20,7 @@
 //! 2. Row indices within a RG are contiguous `[0, num_rows)`.
 //! 3. Doc IDs map 1:1 to row indices within each segment's parquet file.
 //!
-//! Reference: <https://github.com/apache/datafusion/blob/49776a6/datafusion/datasource/src/file_groups.rs#L204>
+//! Reference: <https://gthub.com/apache/datafusion/blob/49776a6/datafusion/datasource/src/file_groups.rs#L204>
 //!
 //! Ported verbatim from PR #21164.
 

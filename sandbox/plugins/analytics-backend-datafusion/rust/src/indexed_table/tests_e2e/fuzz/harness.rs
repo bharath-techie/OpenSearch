@@ -381,6 +381,7 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_single_collector(
                         ),
                     ),
                     stream_metrics.ffm_collector_calls.clone(),
+                    crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit,
                 ),
             );
             let _ = segment;

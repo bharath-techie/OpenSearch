@@ -1105,4 +1105,93 @@ public class SubstraitPlanBuilder {
     public static Type binaryType() {
         return Type.newBuilder().setBinary(Type.Binary.newBuilder()).build();
     }
+
+    /**
+     * Build AND(collector, (col &gt;= lo1 AND col &lt; hi1) OR (col &gt;= lo2 AND col &lt; hi2) OR ...).
+     * Each range is [lo, hi). Uses function refs: 0=index_filter, 1=gte, 2=lt, 3=and, 4=or, 5=count.
+     */
+    public byte[] buildCollectorWithRangesCount(
+        String tableName, String field, String value,
+        String predColumn, int[][] ranges
+    ) {
+        var extUri = extUri();
+        var indexFilterDecl = extDecl(0, "index_filter");
+        var gteDecl = extDecl(1, "gte");
+        var ltDecl = extDecl(2, "lt");
+        var andDecl = extDecl(3, "and");
+        var orDecl = extDecl(4, "or");
+        var countDecl = extDecl(5, "count");
+
+        var readRel = namedRead(tableName);
+        byte[] queryBytes = (field + "\0" + value).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        // Build each range: col >= lo AND col < hi
+        int colIdx = columnNames.indexOf(predColumn);
+        Expression[] rangeExprs = new Expression[ranges.length];
+        for (int i = 0; i < ranges.length; i++) {
+            var gteExpr = Expression.newBuilder().setScalarFunction(
+                Expression.ScalarFunction.newBuilder()
+                    .setFunctionReference(1)
+                    .setOutputType(Type.newBuilder().setBool(Type.Boolean.newBuilder()))
+                    .addArguments(FunctionArgument.newBuilder().setValue(fieldRef(colIdx)))
+                    .addArguments(FunctionArgument.newBuilder().setValue(
+                        Expression.newBuilder().setLiteral(Expression.Literal.newBuilder().setI32(ranges[i][0]))
+                    ))).build();
+            var ltExpr = Expression.newBuilder().setScalarFunction(
+                Expression.ScalarFunction.newBuilder()
+                    .setFunctionReference(2)
+                    .setOutputType(Type.newBuilder().setBool(Type.Boolean.newBuilder()))
+                    .addArguments(FunctionArgument.newBuilder().setValue(fieldRef(colIdx)))
+                    .addArguments(FunctionArgument.newBuilder().setValue(
+                        Expression.newBuilder().setLiteral(Expression.Literal.newBuilder().setI32(ranges[i][1]))
+                    ))).build();
+            rangeExprs[i] = Expression.newBuilder().setScalarFunction(
+                Expression.ScalarFunction.newBuilder()
+                    .setFunctionReference(3)
+                    .setOutputType(Type.newBuilder().setBool(Type.Boolean.newBuilder()))
+                    .addArguments(FunctionArgument.newBuilder().setValue(gteExpr))
+                    .addArguments(FunctionArgument.newBuilder().setValue(ltExpr))
+            ).build();
+        }
+
+        // OR all ranges together (n-ary to avoid protobuf recursion limit)
+        Expression rangeOr;
+        if (rangeExprs.length == 1) {
+            rangeOr = rangeExprs[0];
+        } else {
+            var orBuilder = Expression.ScalarFunction.newBuilder()
+                .setFunctionReference(4)
+                .setOutputType(Type.newBuilder().setBool(Type.Boolean.newBuilder()));
+            for (Expression re : rangeExprs) {
+                orBuilder.addArguments(FunctionArgument.newBuilder().setValue(re));
+            }
+            rangeOr = Expression.newBuilder().setScalarFunction(orBuilder).build();
+        }
+
+        // AND(collector, rangeOr)
+        var filterRel = FilterRel.newBuilder()
+            .setInput(Rel.newBuilder().setRead(readRel))
+            .setCondition(Expression.newBuilder().setScalarFunction(
+                Expression.ScalarFunction.newBuilder()
+                    .setFunctionReference(3)
+                    .setOutputType(Type.newBuilder().setBool(Type.Boolean.newBuilder()))
+                    .addArguments(FunctionArgument.newBuilder().setValue(indexFilterExpr(queryBytes)))
+                    .addArguments(FunctionArgument.newBuilder().setValue(rangeOr))
+            ).build())
+            .build();
+
+        var aggRel = AggregateRel.newBuilder()
+            .setInput(Rel.newBuilder().setFilter(filterRel))
+            .addGroupings(AggregateRel.Grouping.newBuilder())
+            .addMeasures(countMeasure(5))
+            .build();
+
+        return Plan.newBuilder()
+            .addRelations(PlanRel.newBuilder().setRoot(
+                RelRoot.newBuilder().setInput(Rel.newBuilder().setAggregate(aggRel))))
+            .addExtensionUris(extUri)
+            .addExtensions(indexFilterDecl).addExtensions(gteDecl).addExtensions(ltDecl)
+            .addExtensions(andDecl).addExtensions(orDecl).addExtensions(countDecl)
+            .build().toByteArray();
+    }
 }

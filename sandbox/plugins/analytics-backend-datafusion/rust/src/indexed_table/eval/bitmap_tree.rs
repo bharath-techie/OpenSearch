@@ -189,10 +189,21 @@ fn prefetch_node(
             indices.sort_by_key(|&i| subtree_cost(&children[i], ctx));
 
             let mut result_bitmap: Option<RoaringBitmap> = None;
+            // Collector range hint: tighten [min_doc, max_doc) for
+            // Collector FFM calls based on the AND accumulator's bounds.
+            let mut hint: Option<(i32, i32)> = ctx.collector_hint;
             for &i in &indices {
+                let child_ctx = if hint != ctx.collector_hint {
+                    RgEvalContext {
+                        collector_hint: hint,
+                        ..*ctx
+                    }
+                } else {
+                    *ctx
+                };
                 let child_bitmap = prefetch_node(
                     &children[i],
-                    ctx,
+                    &child_ctx,
                     leaves,
                     page_pruner,
                     pruning_predicates,
@@ -208,6 +219,19 @@ fn prefetch_node(
                         a
                     }
                 });
+
+                // Tighten the collector hint from the accumulator's
+                // surviving bit range. Bits are in min_doc-relative space.
+                if let Some(ref bm) = result_bitmap {
+                    if let (Some(lo), Some(hi)) = (bm.min(), bm.max()) {
+                        let abs_min = ctx.min_doc + lo as i32;
+                        let abs_max = ctx.min_doc + hi as i32 + 1;
+                        hint = Some(match hint {
+                            Some((prev_min, prev_max)) => (prev_min.max(abs_min), prev_max.min(abs_max)),
+                            None => (abs_min, abs_max),
+                        });
+                    }
+                }
 
                 // Short circuit case
                 // 1. Skip if subtree only consists of AND [ since all bits are not set here, no need to evaluate ]
@@ -789,26 +813,32 @@ impl LeafBitmapSource for CollectorLeafBitmaps {
             ResolvedNode::Collector { collector, .. } => collector,
             _ => return Err("CollectorLeafBitmaps: non-Collector node passed to leaf_bitmap".into()),
         };
-        let bitset = collector.collect_packed_u64_bitset(ctx.min_doc, ctx.max_doc)?;
+        // Use the narrowed hint range if available (set by AND evaluator
+        // after earlier children shrink the candidate set). The FFM call
+        // scans fewer Lucene postings; the bitmap is then shifted to
+        // min_doc-relative coordinates so all bitmaps share one space.
+        let (call_min, call_max) = ctx.collector_hint.unwrap_or((ctx.min_doc, ctx.max_doc));
+        let bitset = collector.collect_packed_u64_bitset(call_min, call_max)?;
         if let Some(ref c) = self.ffm_collector_calls {
             c.add(1);
         }
-        // Build RoaringBitmap from Lucene's packed LSB-first bits via the
-        // bulk `from_lsb0_bytes` API. O(container_count) allocation,
-        // no per-bit iteration. The tree evaluator walks the result in
-        // min_doc-relative space (bit 0 = ctx.min_doc), same convention
-        // as the old per-bit loop.
-        let num_docs = (ctx.max_doc - ctx.min_doc) as u32;
+        // Build RoaringBitmap from Lucene's packed LSB-first bits.
+        // `offset` shifts the bitmap so bit 0 of the bitset lands at
+        // position (call_min - ctx.min_doc) in the RoaringBitmap,
+        // keeping all bitmaps in ctx.min_doc-relative space.
+        let offset = (call_min - ctx.min_doc) as u32;
+        let num_docs = (call_max - call_min) as u32;
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
                 bitset.as_ptr() as *const u8,
                 bitset.len() * 8,
             )
         };
-        let mut result_bitmap = RoaringBitmap::from_lsb0_bytes(0, bytes);
-        // Trim bits past `num_docs` (last u64 may contain padding).
-        if num_docs < u32::MAX {
-            result_bitmap.remove_range(num_docs..);
+        let mut result_bitmap = RoaringBitmap::from_lsb0_bytes(offset, bytes);
+        // Trim bits past the valid range (last u64 may contain padding).
+        let upper = offset + num_docs;
+        if upper < u32::MAX {
+            result_bitmap.remove_range(upper..);
         }
         Ok(result_bitmap)
     }
@@ -850,6 +880,7 @@ mod tests {
             max_doc: 16,
             cost_predicate: 1,
             cost_collector: 10,
+            collector_hint: None,
         }
     }
 

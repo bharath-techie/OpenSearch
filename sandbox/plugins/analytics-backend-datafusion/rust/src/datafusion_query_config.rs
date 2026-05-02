@@ -5,6 +5,7 @@
 //! setup time and copied into hot-path fields — never dereferenced on a
 //! per-batch or per-row hot path.
 
+use crate::indexed_table::eval::single_collector::CollectorCallStrategy;
 use crate::indexed_table::stream::FilterStrategy;
 
 /// Query-scoped configuration. Owned by value after FFM decode.
@@ -38,6 +39,9 @@ pub struct DatafusionQueryConfig {
     /// sacrificed (see `BitmapTreeEvaluator::prefetch`): collectors
     /// beyond the first may run even if their result is not needed.
     pub max_collector_parallelism: usize,
+    /// How the SingleCollectorEvaluator calls the backend collector
+    /// relative to page-pruning results.
+    pub collector_call_strategy: CollectorCallStrategy,
 }
 
 impl Default for DatafusionQueryConfig {
@@ -57,6 +61,7 @@ impl Default for DatafusionQueryConfig {
             cost_predicate: 1,
             cost_collector: 10,
             max_collector_parallelism: 2,
+            collector_call_strategy: CollectorCallStrategy::PageRangeSplit,
         }
     }
 }
@@ -84,6 +89,8 @@ pub struct WireDatafusionQueryConfig {
     pub cost_predicate: i32,
     pub cost_collector: i32,
     pub max_collector_parallelism: i32,
+    /// 0 = FullRange, 1 = TightenOuterBounds, 2 = PageRangeSplit
+    pub collector_call_strategy: i32,
 }
 
 impl DatafusionQueryConfig {
@@ -123,6 +130,11 @@ impl DatafusionQueryConfig {
             cost_predicate: w.cost_predicate as u32,
             cost_collector: w.cost_collector as u32,
             max_collector_parallelism: (w.max_collector_parallelism as usize).max(1),
+            collector_call_strategy: match w.collector_call_strategy {
+                0 => CollectorCallStrategy::FullRange,
+                1 => CollectorCallStrategy::TightenOuterBounds,
+                _ => CollectorCallStrategy::PageRangeSplit,
+            },
         }
     }
 }
@@ -169,6 +181,7 @@ mod tests {
             cost_predicate: 3,
             cost_collector: 17,
             max_collector_parallelism: 4,
+            collector_call_strategy: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
@@ -198,6 +211,7 @@ mod tests {
             cost_predicate: 1,
             cost_collector: 10,
             max_collector_parallelism: 2,
+            collector_call_strategy: 2,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };

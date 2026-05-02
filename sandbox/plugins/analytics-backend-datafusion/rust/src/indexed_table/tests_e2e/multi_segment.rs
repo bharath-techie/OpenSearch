@@ -155,6 +155,7 @@ async fn run_two_segment_query(
                     None,
                     None,
                     None,
+                    crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit,
                 ),
             );
             Ok(eval)
@@ -362,6 +363,7 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
                     None,
                     None,
                     None,
+                    crate::indexed_table::eval::single_collector::CollectorCallStrategy::PageRangeSplit,
                 ),
             );
             Ok(eval)

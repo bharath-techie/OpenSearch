@@ -160,6 +160,13 @@ pub struct RgEvalContext {
     pub cost_predicate: u32,
     /// Candidate-stage leaf-reorder cost for `ResolvedNode::Collector`.
     pub cost_collector: u32,
+    /// Narrowed doc-id range hint for Collector FFM calls. Set by the
+    /// AND evaluator after earlier children shrink the candidate set.
+    /// Collectors call `collect_packed_u64_bitset(hint_min, hint_max)`
+    /// instead of `(min_doc, max_doc)` to scan fewer Lucene postings,
+    /// then the bitmap is shifted to min_doc-relative coordinates.
+    /// `None` = no narrowing (use full `[min_doc, max_doc)`).
+    pub collector_hint: Option<(i32, i32)>,
 }
 
 /// Candidate-stage output of a `TreeEvaluator`. `candidates` is a superset
@@ -307,6 +314,7 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             max_doc,
             cost_predicate: self.cost_predicate,
             cost_collector: self.cost_collector,
+            collector_hint: None,
         };
 
         // Optional: materialise all Collector leaves in parallel before
