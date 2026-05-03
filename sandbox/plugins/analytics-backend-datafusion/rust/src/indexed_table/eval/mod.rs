@@ -58,6 +58,23 @@ use datafusion::physical_optimizer::pruning::PruningPredicate;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+/// How a collector's doc-range is narrowed relative to page-pruning or
+/// accumulator results. Shared by both the single-collector and
+/// bitmap-tree evaluator paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectorCallStrategy {
+    /// Call collector once for the full `[min_doc, max_doc)` range.
+    /// One FFM call, simple.
+    FullRange,
+    /// Tighten to `[first_surviving, last_surviving)` before calling.
+    /// Skips leading/trailing dead ranges. One FFM call, never regresses.
+    TightenOuterBounds,
+    /// Call collector once per contiguous surviving range. Fewer docs
+    /// scanned per call but more FFM calls. Best when the collector is
+    /// expensive and pruning is heavy.
+    PageRangeSplit,
+}
+
 /// Per-row-group bitset producer. Plugs into `IndexedStream`.
 pub trait RowGroupBitsetSource: Send + Sync {
     /// Build candidate[pre-scan] bitset for this RG. `None` = skip RG entirely.
@@ -154,7 +171,7 @@ impl PrefetchedRg {
 /// Multi-filter tree path: pluggable tree evaluator + leaf bitmap source
 ///
 /// Context for evaluating a tree against one row group.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RgEvalContext {
     pub rg_idx: usize,
     pub rg_first_row: i64,
@@ -166,6 +183,15 @@ pub struct RgEvalContext {
     pub cost_predicate: u32,
     /// Candidate-stage leaf-reorder cost for `ResolvedNode::Collector`.
     pub cost_collector: u32,
+    /// Narrowed doc-id ranges for Collector FFM calls. Computed by the
+    /// AND evaluator from the accumulator bitmap after earlier children
+    /// shrink the candidate set.
+    /// `None` = no narrowing (use full `[min_doc, max_doc)`).
+    /// `Some(ranges)` = call collector once per range.
+    pub collector_call_ranges: Option<Vec<(i32, i32)>>,
+    /// Controls how the AND evaluator narrows collector ranges from the
+    /// accumulator bitmap.
+    pub collector_strategy: CollectorCallStrategy,
 }
 
 /// Candidate-stage output of a `TreeEvaluator`. `candidates` is a superset
@@ -284,6 +310,12 @@ pub struct TreeBitsetSource {
     /// leaf in the tree walk. Populated from the stream's
     /// `PartitionMetrics` at dispatch time.
     pub page_prune_metrics: Option<PagePruneMetrics>,
+    /// Controls how the AND evaluator narrows collector doc ranges.
+    /// `TightenOuterBounds` (default) uses a single `[min, max)` range.
+    /// `FullRange` disables narrowing. `PageRangeSplit` is not
+    /// recommended here — multiple FFM calls per collector per RG can
+    /// be expensive in multi-collector trees.
+    pub collector_strategy: CollectorCallStrategy,
 }
 
 impl RowGroupBitsetSource for TreeBitsetSource {
@@ -302,6 +334,8 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             max_doc,
             cost_predicate: self.cost_predicate,
             cost_collector: self.cost_collector,
+            collector_call_ranges: None,
+            collector_strategy: self.collector_strategy,
         };
 
         // Optional: materialise all Collector leaves in parallel before
@@ -335,10 +369,25 @@ impl RowGroupBitsetSource for TreeBitsetSource {
                 leaves_ref,
                 &self.page_pruner,
                 &self.pruning_predicates,
-                self.page_prune_metrics.as_ref(),
+                // Don't pass metrics here — per-leaf prune_rg calls would
+                // inflate counts. We compute final page-level metrics below
+                // after the bitmap tree is fully resolved.
+                None,
             )
             .map_err(|e| format!("TreeBitsetSource::prefetch_rg(rg={}): {}", rg.index, e))?;
         if prefetch.candidates.is_empty() {
+            // All candidates pruned — record that every page was pruned.
+            if let Some(ref m) = self.page_prune_metrics {
+                if let Some(page_row_counts) = self.page_pruner.page_row_counts(rg.index) {
+                    let num_pages = page_row_counts.len();
+                    if let Some(ref c) = m.pages_total {
+                        c.add(num_pages);
+                    }
+                    if let Some(ref c) = m.pages_pruned {
+                        c.add(num_pages);
+                    }
+                }
+            }
             return Ok(None);
         }
         // `prefetch.candidates` is in min_doc-relative space [0, max_doc - min_doc).
@@ -352,6 +401,33 @@ impl RowGroupBitsetSource for TreeBitsetSource {
                 rg_candidates.insert(shifted as u32);
             }
         }
+
+        // Compute final page-level pruning metrics from the resolved
+        // bitmap. A page is "pruned" if zero candidate bits fall within
+        // its row range; "kept" otherwise. This reflects the actual
+        // page-level decision after AND/OR/NOT combination, not the
+        // per-leaf intermediate results.
+        if let Some(ref m) = self.page_prune_metrics {
+            if let Some(page_row_counts) = self.page_pruner.page_row_counts(rg.index) {
+                let num_pages = page_row_counts.len();
+                let mut pruned = 0usize;
+                let mut row_offset = 0u32;
+                for &count in &page_row_counts {
+                    let page_end = row_offset + count as u32;
+                    if rg_candidates.range(row_offset..page_end).next().is_none() {
+                        pruned += 1;
+                    }
+                    row_offset = page_end;
+                }
+                if let Some(ref c) = m.pages_total {
+                    c.add(num_pages);
+                }
+                if let Some(ref c) = m.pages_pruned {
+                    c.add(pruned);
+                }
+            }
+        }
+
         Ok(Some(PrefetchedRg {
             candidates: rg_candidates,
             eval_nanos: t.elapsed().as_nanos() as u64,
@@ -647,6 +723,7 @@ mod tests {
             max_collector_parallelism: 1,
             pruning_predicates: std::sync::Arc::new(HashMap::new()),
             page_prune_metrics: None,
+            collector_strategy: CollectorCallStrategy::TightenOuterBounds,
         };
         assert!(!source.needs_row_mask());
     }

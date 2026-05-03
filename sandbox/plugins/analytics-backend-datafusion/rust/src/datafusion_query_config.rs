@@ -6,6 +6,7 @@
 //! per-batch or per-row hot path.
 
 use crate::indexed_table::stream::FilterStrategy;
+use crate::indexed_table::eval::single_collector::CollectorCallStrategy;
 
 /// Query-scoped configuration. Owned by value after FFM decode.
 #[derive(Debug, Clone)]
@@ -37,6 +38,9 @@ pub struct DatafusionQueryConfig {
     /// sacrificed (see `BitmapTreeEvaluator::prefetch`): collectors
     /// beyond the first may run even if their result is not needed.
     pub max_collector_parallelism: usize,
+    /// How the SingleCollectorEvaluator calls the backend collector
+    /// relative to page-pruning results.
+    pub collector_call_strategy: CollectorCallStrategy,
 }
 
 impl Default for DatafusionQueryConfig {
@@ -54,6 +58,7 @@ impl Default for DatafusionQueryConfig {
             cost_predicate: 1,
             cost_collector: 10, // TODO : should this be collector leaf specific
             max_collector_parallelism: 1,
+            collector_call_strategy: CollectorCallStrategy::PageRangeSplit,
         }
     }
 }
@@ -120,6 +125,7 @@ impl DatafusionQueryConfig {
             cost_predicate: w.cost_predicate as u32,
             cost_collector: w.cost_collector as u32,
             max_collector_parallelism: (w.max_collector_parallelism as usize).max(1),
+            collector_call_strategy: CollectorCallStrategy::PageRangeSplit,
         }
     }
 }

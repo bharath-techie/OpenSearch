@@ -133,6 +133,14 @@ impl PagePruner {
         }
         Some(to_row_selection(keep, &stats.page_row_counts))
     }
+
+    /// Return per-page row counts for the given RG, or `None` if the
+    /// page index is unavailable. Used by `TreeBitsetSource` to compute
+    /// final page-level pruning metrics after the bitmap tree is resolved.
+    pub fn page_row_counts(&self, rg_idx: usize) -> Option<Vec<usize>> {
+        let stats = MultiColumnPagesPruningStats::try_new(rg_idx, &self.schema, &self.metadata)?;
+        Some(stats.page_row_counts)
+    }
 }
 
 /// Per-call counter bundle for [`PagePruner::prune_rg`]. Callers with

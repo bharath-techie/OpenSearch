@@ -188,10 +188,19 @@ fn prefetch_node(
             indices.sort_by_key(|&i| subtree_cost(&children[i], ctx));
 
             let mut result_bitmap: Option<RoaringBitmap> = None;
+            let mut ranges: Option<Vec<(i32, i32)>> = ctx.collector_call_ranges.clone();
             for &i in &indices {
+                let child_ctx = if ranges != ctx.collector_call_ranges {
+                    RgEvalContext {
+                        collector_call_ranges: ranges.clone(),
+                        ..ctx.clone()
+                    }
+                } else {
+                    ctx.clone()
+                };
                 let child_bitmap = prefetch_node(
                     &children[i],
-                    ctx,
+                    &child_ctx,
                     leaves,
                     page_pruner,
                     pruning_predicates,
@@ -207,6 +216,19 @@ fn prefetch_node(
                         a
                     }
                 });
+
+                // Tighten collector call ranges from the accumulator bitmap,
+                // intersected with inherited ranges so nested ANDs never
+                // widen beyond what the parent already narrowed to.
+                if let Some(ref bm) = result_bitmap {
+                    if !bm.is_empty() {
+                        let new = ranges_from_bitmap(bm, ctx);
+                        ranges = Some(match ranges {
+                            Some(inherited) => intersect_range_lists(&inherited, &new),
+                            None => new,
+                        });
+                    }
+                }
 
                 // Short circuit case
                 // 1. Skip if subtree only consists of AND [ since all bits are not set here, no need to evaluate ]
@@ -439,6 +461,74 @@ fn predicate_page_bitmap(
         }
     }
     bm
+}
+
+/// Derive collector call ranges from a bitmap based on the strategy in `ctx`.
+///
+/// - `FullRange`: returns `[(min_doc, max_doc)]` (no narrowing).
+/// - `TightenOuterBounds`: returns `[(first_set + min_doc, last_set + min_doc + 1)]`.
+/// - `PageRangeSplit`: returns contiguous runs of set bits as absolute ranges.
+fn ranges_from_bitmap(bm: &RoaringBitmap, ctx: &RgEvalContext) -> Vec<(i32, i32)> {
+    use super::CollectorCallStrategy;
+    match ctx.collector_strategy {
+        CollectorCallStrategy::FullRange => vec![(ctx.min_doc, ctx.max_doc)],
+        CollectorCallStrategy::TightenOuterBounds => {
+            match (bm.min(), bm.max()) {
+                (Some(lo), Some(hi)) => {
+                    vec![(ctx.min_doc + lo as i32, ctx.min_doc + hi as i32 + 1)]
+                }
+                _ => vec![(ctx.min_doc, ctx.max_doc)],
+            }
+        }
+        CollectorCallStrategy::PageRangeSplit => {
+            // Extract contiguous runs of set bits as absolute doc ranges.
+            let mut ranges = Vec::new();
+            let mut iter = bm.iter();
+            let Some(first) = iter.next() else {
+                return vec![];
+            };
+            let mut run_start = first;
+            let mut run_end = first; // inclusive
+            for bit in iter {
+                if bit == run_end + 1 {
+                    run_end = bit;
+                } else {
+                    ranges.push((
+                        ctx.min_doc + run_start as i32,
+                        ctx.min_doc + run_end as i32 + 1,
+                    ));
+                    run_start = bit;
+                    run_end = bit;
+                }
+            }
+            ranges.push((
+                ctx.min_doc + run_start as i32,
+                ctx.min_doc + run_end as i32 + 1,
+            ));
+            ranges
+        }
+    }
+}
+
+/// Intersect two sorted, non-overlapping range lists. Both inputs are
+/// `(start, end)` half-open intervals in absolute doc-id space. The
+/// result contains only the portions where both lists overlap.
+fn intersect_range_lists(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        let lo = a[i].0.max(b[j].0);
+        let hi = a[i].1.min(b[j].1);
+        if lo < hi {
+            out.push((lo, hi));
+        }
+        if a[i].1 < b[j].1 {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    out
 }
 
 /// Cost weights used by `subtree_cost` to order AND/OR children in the
@@ -803,22 +893,32 @@ impl LeafBitmapSource for CollectorLeafBitmaps {
                 return Err("CollectorLeafBitmaps: non-Collector node passed to leaf_bitmap".into())
             }
         };
-        let bitset = collector.collect_packed_u64_bitset(ctx.min_doc, ctx.max_doc)?;
-        if let Some(ref c) = self.ffm_collector_calls {
-            c.add(1);
-        }
-        // Build RoaringBitmap from Lucene's packed LSB-first bits via the
-        // bulk `from_lsb0_bytes` API. O(container_count) allocation,
-        // no per-bit iteration. The tree evaluator walks the result in
-        // min_doc-relative space (bit 0 = ctx.min_doc), same convention
-        // as the old per-bit loop.
-        let num_docs = (ctx.max_doc - ctx.min_doc) as u32;
-        let bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(bitset.as_ptr() as *const u8, bitset.len() * 8) };
-        let mut result_bitmap = RoaringBitmap::from_lsb0_bytes(0, bytes);
-        // Trim bits past `num_docs` (last u64 may contain padding).
-        if num_docs < u32::MAX {
-            result_bitmap.remove_range(num_docs..);
+        // Use the narrowed call ranges if available (set by AND evaluator
+        // after earlier children shrink the candidate set). Each range
+        // produces one FFM call; results are merged into one bitmap in
+        // min_doc-relative coordinates.
+        let call_ranges = ctx
+            .collector_call_ranges
+            .clone()
+            .unwrap_or_else(|| vec![(ctx.min_doc, ctx.max_doc)]);
+
+        let mut result_bitmap = RoaringBitmap::new();
+        for (call_min, call_max) in &call_ranges {
+            let bitset = collector.collect_packed_u64_bitset(*call_min, *call_max)?;
+            if let Some(ref c) = self.ffm_collector_calls {
+                c.add(1);
+            }
+            let offset = (*call_min - ctx.min_doc) as u32;
+            let num_docs = (*call_max - *call_min) as u32;
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(bitset.as_ptr() as *const u8, bitset.len() * 8)
+            };
+            let mut chunk = RoaringBitmap::from_lsb0_bytes(offset, bytes);
+            let upper = offset + num_docs;
+            if upper < u32::MAX {
+                chunk.remove_range(upper..);
+            }
+            result_bitmap |= chunk;
         }
         Ok(result_bitmap)
     }
@@ -868,6 +968,8 @@ mod tests {
             max_doc: 16,
             cost_predicate: 1,
             cost_collector: 10,
+            collector_call_ranges: None,
+            collector_strategy: super::super::CollectorCallStrategy::TightenOuterBounds,
         }
     }
 

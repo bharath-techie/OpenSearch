@@ -155,3 +155,17 @@ async fn fuzz_single_row_group() {
 async fn fuzz_parallel_collectors() {
     run_fuzz("fuzz_parallel_collectors", 50, FixtureConfig::parallel_collectors).await;
 }
+
+/// AND(Predicate, Collector) focused: shallow depth-2 trees with 4
+/// collectors. Predicates evaluate first (sorted by cost), narrow the
+/// AND accumulator, then collectors get a tightened `collector_hint`
+/// range. Exercises the BitmapTree hint propagation path.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_and_predicate_collector() {
+    run_fuzz(
+        "fuzz_and_predicate_collector",
+        100,
+        FixtureConfig::and_predicate_collector,
+    )
+    .await;
+}

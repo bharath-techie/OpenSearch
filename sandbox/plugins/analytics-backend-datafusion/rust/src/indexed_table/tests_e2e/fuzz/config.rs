@@ -396,6 +396,30 @@ impl FixtureConfig {
             null_pct_overrides: std::collections::HashMap::new(),
         }
     }
+
+    /// AND(Predicate, Collector) focused: shallow trees (depth 2) with
+    /// high collector count. Exercises the BitmapTree AND-branch
+    /// collector_hint path — predicates evaluate first (cheap), narrow
+    /// the accumulator, then collectors get a tightened range.
+    pub fn and_predicate_collector(seed: u64) -> Self {
+        Self {
+            seed,
+            num_rows: 10_000,
+            num_segments: 2,
+            target_partitions: 1,
+            rows_per_row_group: 2_048,
+            rows_per_page: 256,
+            columns: default_columns(),
+            null_pct: 0.1,
+            num_collector_leaves: 4,
+            collector_density: 0.05,
+            tree_max_depth: 2,
+            tree_max_fanout: 4,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
+        }
+    }
 }
 
 /// Default column mix — covers every Predicate code path our evaluator
