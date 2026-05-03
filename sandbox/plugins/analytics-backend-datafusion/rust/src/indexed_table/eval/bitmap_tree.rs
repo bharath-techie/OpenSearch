@@ -1552,4 +1552,106 @@ mod tests {
         let pp = HashMap::new();
         assert!(subtree_cost(&nested, &ctx, &pruner, &pp) > subtree_cost(&single_collector, &ctx, &pruner, &pp));
     }
+
+    // ── intersect_range_lists unit tests ────────────────────────────
+
+    #[test]
+    fn intersect_empty_with_anything() {
+        assert_eq!(intersect_range_lists(&[], &[(0, 10)]), vec![]);
+        assert_eq!(intersect_range_lists(&[(0, 10)], &[]), vec![]);
+        assert_eq!(intersect_range_lists(&[], &[]), vec![]);
+    }
+
+    #[test]
+    fn intersect_non_overlapping() {
+        // [0,5) and [10,15) → empty
+        assert_eq!(intersect_range_lists(&[(0, 5)], &[(10, 15)]), vec![]);
+    }
+
+    #[test]
+    fn intersect_partial_overlap() {
+        // [0,10) ∩ [5,15) → [5,10)
+        assert_eq!(intersect_range_lists(&[(0, 10)], &[(5, 15)]), vec![(5, 10)]);
+    }
+
+    #[test]
+    fn intersect_one_contains_other() {
+        // [0,20) ∩ [5,10) → [5,10)
+        assert_eq!(intersect_range_lists(&[(0, 20)], &[(5, 10)]), vec![(5, 10)]);
+    }
+
+    #[test]
+    fn intersect_multiple_ranges() {
+        // a: [0,5), [10,20), [30,40)
+        // b: [3,12), [15,35)
+        // intersections: [3,5), [10,12), [15,20), [30,35)
+        let a = vec![(0, 5), (10, 20), (30, 40)];
+        let b = vec![(3, 12), (15, 35)];
+        assert_eq!(
+            intersect_range_lists(&a, &b),
+            vec![(3, 5), (10, 12), (15, 20), (30, 35)]
+        );
+    }
+
+    #[test]
+    fn intersect_identical() {
+        let a = vec![(10, 20), (30, 40)];
+        assert_eq!(intersect_range_lists(&a, &a), vec![(10, 20), (30, 40)]);
+    }
+
+    // ── ranges_from_bitmap unit tests ───────────────────────────────
+
+    #[test]
+    fn ranges_full_range_strategy() {
+        let mut ctx = test_ctx();
+        ctx.collector_strategy = super::super::CollectorCallStrategy::FullRange;
+        let mut bm = RoaringBitmap::new();
+        bm.insert_range(4..8);
+        // FullRange ignores the bitmap, returns [min_doc, max_doc)
+        assert_eq!(ranges_from_bitmap(&bm, &ctx), vec![(0, 16)]);
+    }
+
+    #[test]
+    fn ranges_tighten_outer_bounds_strategy() {
+        let mut ctx = test_ctx();
+        ctx.collector_strategy = super::super::CollectorCallStrategy::TightenOuterBounds;
+        let mut bm = RoaringBitmap::new();
+        bm.insert_range(4..8);
+        bm.insert(12);
+        // TightenOuterBounds: [min_doc + bm.min(), min_doc + bm.max() + 1)
+        assert_eq!(ranges_from_bitmap(&bm, &ctx), vec![(4, 13)]);
+    }
+
+    #[test]
+    fn ranges_page_range_split_contiguous() {
+        let mut ctx = test_ctx();
+        ctx.collector_strategy = super::super::CollectorCallStrategy::PageRangeSplit;
+        let mut bm = RoaringBitmap::new();
+        bm.insert_range(4..8);
+        // Single contiguous run → one range
+        assert_eq!(ranges_from_bitmap(&bm, &ctx), vec![(4, 8)]);
+    }
+
+    #[test]
+    fn ranges_page_range_split_with_gap() {
+        let mut ctx = test_ctx();
+        ctx.collector_strategy = super::super::CollectorCallStrategy::PageRangeSplit;
+        let mut bm = RoaringBitmap::new();
+        bm.insert_range(2..5);  // bits 2,3,4
+        bm.insert_range(8..11); // bits 8,9,10
+        bm.insert(14);          // bit 14
+        // Three contiguous runs → three ranges
+        assert_eq!(
+            ranges_from_bitmap(&bm, &ctx),
+            vec![(2, 5), (8, 11), (14, 15)]
+        );
+    }
+
+    #[test]
+    fn ranges_page_range_split_empty_bitmap() {
+        let mut ctx = test_ctx();
+        ctx.collector_strategy = super::super::CollectorCallStrategy::PageRangeSplit;
+        let bm = RoaringBitmap::new();
+        assert_eq!(ranges_from_bitmap(&bm, &ctx), vec![]);
+    }
 }

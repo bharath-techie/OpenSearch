@@ -234,7 +234,7 @@ pub async fn execute_indexed_query(
                 .as_ref()
                 .and_then(|expr| build_pruning_predicate(expr, Arc::clone(&schema_for_pruner)));
 
-            let call_strategy = query_config.collector_call_strategy;
+            let call_strategy = query_config.single_collector_strategy;
             Arc::new(
                 move |segment: &SegmentFileInfo, chunk, stream_metrics: &StreamMetrics| {
                     let collector = FfmSegmentCollector::create(
@@ -295,7 +295,7 @@ pub async fn execute_indexed_query(
             let cost_predicate = query_config.cost_predicate;
             let cost_collector = query_config.cost_collector;
             let max_collector_parallelism = query_config.max_collector_parallelism;
-            let collector_strategy = query_config.collector_call_strategy;
+            let collector_strategy = query_config.tree_collector_strategy;
 
             // Build one `PruningPredicate` per unique `Predicate` leaf
             // in the tree. Key = `Arc::as_ptr(expr) as usize` — the

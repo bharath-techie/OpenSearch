@@ -258,7 +258,11 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
                         stream_metrics,
                     ),
                 ),
-                collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
+                collector_strategy: [
+                    crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
+                    crate::indexed_table::eval::CollectorCallStrategy::FullRange,
+                    crate::indexed_table::eval::CollectorCallStrategy::PageRangeSplit,
+                ][seed as usize % 3],
             });
             Ok(eval)
         })

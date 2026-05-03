@@ -38,9 +38,14 @@ pub struct DatafusionQueryConfig {
     /// sacrificed (see `BitmapTreeEvaluator::prefetch`): collectors
     /// beyond the first may run even if their result is not needed.
     pub max_collector_parallelism: usize,
-    /// How the SingleCollectorEvaluator calls the backend collector
-    /// relative to page-pruning results.
-    pub collector_call_strategy: CollectorCallStrategy,
+    /// How the SingleCollectorEvaluator narrows collector doc ranges
+    /// relative to page-pruning results. `PageRangeSplit` is the default
+    /// — only one collector, so multiple FFM calls per RG is acceptable.
+    pub single_collector_strategy: CollectorCallStrategy,
+    /// How the bitmap tree evaluator narrows collector doc ranges.
+    /// `TightenOuterBounds` is the default — multiple collectors in the
+    /// tree means `PageRangeSplit` would multiply FFM calls.
+    pub tree_collector_strategy: CollectorCallStrategy,
 }
 
 impl Default for DatafusionQueryConfig {
@@ -58,7 +63,8 @@ impl Default for DatafusionQueryConfig {
             cost_predicate: 1,
             cost_collector: 10, // TODO : should this be collector leaf specific
             max_collector_parallelism: 1,
-            collector_call_strategy: CollectorCallStrategy::PageRangeSplit,
+            single_collector_strategy: CollectorCallStrategy::PageRangeSplit,
+            tree_collector_strategy: CollectorCallStrategy::TightenOuterBounds,
         }
     }
 }
@@ -125,7 +131,8 @@ impl DatafusionQueryConfig {
             cost_predicate: w.cost_predicate as u32,
             cost_collector: w.cost_collector as u32,
             max_collector_parallelism: (w.max_collector_parallelism as usize).max(1),
-            collector_call_strategy: CollectorCallStrategy::PageRangeSplit,
+            single_collector_strategy: CollectorCallStrategy::PageRangeSplit,
+            tree_collector_strategy: CollectorCallStrategy::TightenOuterBounds,
         }
     }
 }

@@ -12,15 +12,27 @@
 //!
 //! 4096 rows, 1 RG, 4 pages of 1024 rows each.
 //!
-//! | page | rows        | price range   | brand   |
-//! |------|-------------|---------------|---------|
-//! |  0   | 0–1023      | 0..1024       | "alpha" |
-//! |  1   | 1024–2047   | 10_000..11_024| "beta"  |
-//! |  2   | 2048–3071   | 20_000..21_024| "gamma" |
-//! |  3   | 3072–4095   | 30_000..31_024| "delta" |
+//! | page | rows        | price range    | brand     |
+//! |------|-------------|----------------|-----------|
+//! |  0   | 0–1023      | 0..1_024       | `"alpha"` |
+//! |  1   | 1024–2047   | 10_000..11_024 | `"beta"`  |
+//! |  2   | 2048–3071   | 20_000..21_024 | `"gamma"` |
+//! |  3   | 3072–4095   | 30_000..31_024 | `"delta"` |
 //!
 //! Price ranges are non-overlapping so predicates like `price < 1024`
 //! deterministically prune to page 0 only.
+//!
+//! # Mock collectors
+//!
+//! | tag | docs                          | description          |
+//! |-----|-------------------------------|----------------------|
+//! |  0  | all 4096                      | all docs             |
+//! |  1  | 0, 2, 4, …                   | even docs            |
+//! |  2  | first 2 per page              | sparse (8 docs)      |
+//! |  3  | 0..2048                       | pages 0+1            |
+//! |  4  | 2048..4096                    | pages 2+3            |
+//! |  5  | 1, 3, 5, …                   | odd docs             |
+//! |  6  | 3072..4096                    | page 3 only          |
 
 #![cfg(test)]
 
