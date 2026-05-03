@@ -185,7 +185,7 @@ fn prefetch_node(
     match node {
         ResolvedNode::And(children) => {
             let mut indices: Vec<usize> = (0..children.len()).collect();
-            indices.sort_by_key(|&i| subtree_cost(&children[i], ctx));
+            indices.sort_by_key(|&i| subtree_cost(&children[i], ctx, page_pruner, pruning_predicates));
 
             let mut result_bitmap: Option<RoaringBitmap> = None;
             let mut ranges: Option<Vec<(i32, i32)>> = ctx.collector_call_ranges.clone();
@@ -255,7 +255,7 @@ fn prefetch_node(
             let mut indices: Vec<usize> = (0..children.len()).collect();
 
             // sort the children by cost to prune children better
-            indices.sort_by_key(|&i| subtree_cost(&children[i], ctx));
+            indices.sort_by_key(|&i| subtree_cost(&children[i], ctx, page_pruner, pruning_predicates));
             let total_docs = (ctx.max_doc - ctx.min_doc) as u64;
 
             let mut result_bitmap = RoaringBitmap::new();
@@ -542,24 +542,85 @@ fn intersect_range_lists(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> 
 ///   queries, slower for wide ones) so "10" is a conservative default.
 ///   Tune (or make config-driven) if profiling shows it matters.
 
+/// Internal scale factor for cost computation. All costs are multiplied
+/// by this so integer division preserves meaningful selectivity differences.
+/// A predicate keeping 1/8 pages costs `1000 * 1/8 = 125` vs one keeping
+/// 5/8 pages at `1000 * 5/8 = 625`. Collector cost `10 * 1000 = 10_000`.
+pub(crate) const COST_SCALE: u32 = 1000;
+
 /// Recursively compute the accumulated cost of a subtree for
-/// candidate-stage ordering. Sum-of-leaves, not a tree-size metric: a
-/// Nested subtree of three Predicate leaves (cost 3) ranks ahead of a
-/// single Collector leaf (cost 10) — which matches the intuition that
-/// "three metadata scans are faster than one index bitmap fetch."
+/// candidate-stage ordering.
+///
+/// For `Predicate` leaves with a matching `PruningPredicate`, the cost
+/// is weighted by page-level selectivity: `cost_predicate * COST_SCALE * (surviving_pages / total_pages)`.
+/// More selective predicates (fewer surviving pages) get lower cost and
+/// are evaluated first in AND nodes, producing tighter ranges for
+/// subsequent Collector siblings.
+///
+/// Falls back to the static `cost_predicate * COST_SCALE` when page stats are
+/// unavailable (no page index, expression not translatable, etc.).
 ///
 /// `Not` passes through to its child; `And`/`Or` sum their children.
-///
-/// Unlike a static tier, this model sees *inside* nested subtrees and
-/// orders them meaningfully against each other and against leaves.
-fn subtree_cost(node: &ResolvedNode, ctx: &RgEvalContext) -> u32 {
+pub(crate) fn subtree_cost(
+    node: &ResolvedNode,
+    ctx: &RgEvalContext,
+    page_pruner: &PagePruner,
+    pruning_predicates: &HashMap<usize, Arc<PruningPredicate>>,
+) -> u32 {
     match node {
-        ResolvedNode::Predicate(_) => ctx.cost_predicate,
-        ResolvedNode::Collector { .. } => ctx.cost_collector,
-        ResolvedNode::Not(child) => subtree_cost(child, ctx),
-        ResolvedNode::And(children) | ResolvedNode::Or(children) => {
-            children.iter().map(|c| subtree_cost(c, ctx)).sum()
+        ResolvedNode::Predicate(expr) => {
+            let base = ctx.cost_predicate * COST_SCALE;
+            let key = Arc::as_ptr(expr) as *const () as usize;
+            if let Some(pp) = pruning_predicates.get(&key) {
+                if let Some(page_counts) = page_pruner.page_row_counts(ctx.rg_idx) {
+                    let total = page_counts.len() as u32;
+                    if total > 0 {
+                        if let Some(sel) = page_pruner.prune_rg(pp, ctx.rg_idx, None) {
+                            // Count pages with at least one selected row.
+                            // RowSelection merges adjacent same-decision
+                            // selectors, so we walk the selection and map
+                            // row offsets back to page boundaries.
+                            let mut kept_pages = 0u32;
+                            let mut row_offset = 0usize;
+                            let mut page_idx = 0usize;
+                            let mut page_start = 0usize;
+                            let mut page_end = page_counts[0];
+                            for s in sel.iter() {
+                                let seg_end = row_offset + s.row_count;
+                                while page_idx < total as usize {
+                                    if !s.skip && row_offset < page_end && seg_end > page_start {
+                                        kept_pages += 1;
+                                        // Advance to next page to avoid double-counting.
+                                        page_idx += 1;
+                                        if page_idx < total as usize {
+                                            page_start = page_end;
+                                            page_end += page_counts[page_idx];
+                                        }
+                                    } else if page_end <= seg_end {
+                                        page_idx += 1;
+                                        if page_idx < total as usize {
+                                            page_start = page_end;
+                                            page_end += page_counts[page_idx];
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                row_offset = seg_end;
+                            }
+                            return (base * kept_pages + total - 1) / total;
+                        }
+                    }
+                }
+            }
+            base
         }
+        ResolvedNode::Collector { .. } => ctx.cost_collector * COST_SCALE,
+        ResolvedNode::Not(child) => subtree_cost(child, ctx, page_pruner, pruning_predicates),
+        ResolvedNode::And(children) | ResolvedNode::Or(children) => children
+            .iter()
+            .map(|c| subtree_cost(c, ctx, page_pruner, pruning_predicates))
+            .sum(),
     }
 }
 
@@ -1432,41 +1493,42 @@ mod tests {
     #[test]
     fn subtree_cost_leaf_nodes() {
         let ctx = test_ctx();
+        let pruner = empty_pruner();
+        let pp = HashMap::new();
         assert_eq!(
-            subtree_cost(&test_predicate_node(), &ctx),
-            ctx.cost_predicate
+            subtree_cost(&test_predicate_node(), &ctx, &pruner, &pp),
+            ctx.cost_predicate * COST_SCALE
         );
-        assert_eq!(subtree_cost(&collector_leaf(0), &ctx), ctx.cost_collector);
+        assert_eq!(subtree_cost(&collector_leaf(0), &ctx, &pruner, &pp), ctx.cost_collector * COST_SCALE);
     }
 
     #[test]
     fn subtree_cost_not_passes_through() {
         let ctx = test_ctx();
+        let pruner = empty_pruner();
+        let pp = HashMap::new();
         let wrapped = ResolvedNode::Not(Box::new(test_predicate_node()));
-        assert_eq!(subtree_cost(&wrapped, &ctx), ctx.cost_predicate);
+        assert_eq!(subtree_cost(&wrapped, &ctx, &pruner, &pp), ctx.cost_predicate * COST_SCALE);
     }
 
     #[test]
     fn subtree_cost_sums_children() {
         let ctx = test_ctx();
-        // AND(Predicate, Predicate, Collector) = 1 + 1 + 10 = 12
+        let pruner = empty_pruner();
+        let pp = HashMap::new();
         let tree = ResolvedNode::And(vec![
             test_predicate_node(),
             test_predicate_node(),
             collector_leaf(0),
         ]);
         assert_eq!(
-            subtree_cost(&tree, &ctx),
-            2 * ctx.cost_predicate + ctx.cost_collector
+            subtree_cost(&tree, &ctx, &pruner, &pp),
+            (2 * ctx.cost_predicate + ctx.cost_collector) * COST_SCALE
         );
     }
 
     #[test]
     fn subtree_cost_predicate_heavy_nested_beats_single_collector() {
-        // Key property: a Nested subtree of 3 Predicates (cost 3) ranks
-        // lower than a single Collector (cost 10). The old tier-based
-        // ordering got this backwards because it treated every Nested
-        // subtree as uniformly "most expensive."
         let nested = ResolvedNode::And(vec![
             test_predicate_node(),
             test_predicate_node(),
@@ -1474,22 +1536,20 @@ mod tests {
         ]);
         let single_collector = collector_leaf(0);
         let ctx = test_ctx();
+        let pruner = empty_pruner();
+        let pp = HashMap::new();
         assert!(
-            subtree_cost(&nested, &ctx) < subtree_cost(&single_collector, &ctx),
-            "predicate-heavy nested should cost less than single collector \
-             (got nested={}, collector={})",
-            subtree_cost(&nested, &ctx),
-            subtree_cost(&single_collector, &ctx),
+            subtree_cost(&nested, &ctx, &pruner, &pp) < subtree_cost(&single_collector, &ctx, &pruner, &pp),
         );
     }
 
     #[test]
     fn subtree_cost_collector_heavy_nested_exceeds_single_collector() {
-        // Symmetric: a Nested subtree of 2 Collectors (cost 20) ranks
-        // higher than a single Collector (cost 10).
         let nested = ResolvedNode::And(vec![collector_leaf(0), collector_leaf(1)]);
         let single_collector = collector_leaf(0);
         let ctx = test_ctx();
-        assert!(subtree_cost(&nested, &ctx) > subtree_cost(&single_collector, &ctx));
+        let pruner = empty_pruner();
+        let pp = HashMap::new();
+        assert!(subtree_cost(&nested, &ctx, &pruner, &pp) > subtree_cost(&single_collector, &ctx, &pruner, &pp));
     }
 }
