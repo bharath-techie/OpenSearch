@@ -236,7 +236,7 @@ task cargoTest(type: Exec) {
 check.dependsOn cargoTest
 
 // Standalone perf test — runs IndexedQueryPerfMain as a Java application.
-// Usage: ./gradlew -Dsandbox.enabled=true :sandbox:plugins:analytics-backend-datafusion:perfMain -PshardDir=/path/to/shard/0
+// Usage: ./gradlew -Dsandbox.enabled=true :sandbox:plugins:analytics-backend-datafusion:perfMain -PtreeStrategy=1 -PsingleStrategy=2
 task perfMain(type: JavaExec) {
   description = 'Run the standalone indexed query perf test'
   group = 'verification'
@@ -246,6 +246,8 @@ task perfMain(type: JavaExec) {
   jvmArgs += ['--add-opens', 'java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED']
   jvmArgs += ['-Xmx4g']
   systemProperty 'native.lib.path', project.findProperty('nativeLibPath') ?: project(':sandbox:libs:dataformat-native').ext.nativeLibPath.absolutePath
+  systemProperty 'treeStrategy', project.findProperty('treeStrategy') ?: '1'
+  systemProperty 'singleStrategy', project.findProperty('singleStrategy') ?: '2'
   args = [project.findProperty('shardDir') ?: '/Users/abandeji/Public/work-dump/experiments/data/nodes/0/indices/ATTb8ViJT0mrLoeWpkEtrA/0']
   dependsOn ':sandbox:libs:dataformat-native:buildRustLibrary'
 }

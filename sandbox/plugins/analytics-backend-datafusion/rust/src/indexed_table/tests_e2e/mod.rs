@@ -24,13 +24,13 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::ScalarValue;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Operator;
-use datafusion::parquet::arrow::ArrowWriter;
 use datafusion::parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+use datafusion::parquet::arrow::ArrowWriter;
 use futures::StreamExt;
 use tempfile::NamedTempFile;
 
 use super::bool_tree::BoolNode;
-use super::eval::bitmap_tree::{CollectorLeafBitmaps, BitmapTreeEvaluator};
+use super::eval::bitmap_tree::{BitmapTreeEvaluator, CollectorLeafBitmaps};
 use super::eval::{RowGroupBitsetSource, TreeBitsetSource};
 use super::index::RowGroupDocsCollector;
 use super::page_pruner::PagePruner;
@@ -42,6 +42,7 @@ mod fuzz;
 mod metrics;
 mod multi_segment;
 mod null_columns;
+mod page_pruning;
 mod schema_drift;
 mod streaming_at_scale;
 
@@ -67,23 +68,33 @@ mod streaming_at_scale;
 // | 15  | google |    55 | active    | electronics |
 
 const BRANDS: [&str; 16] = [
-    "amazon", "amazon", "amazon", "amazon",
-    "apple", "apple", "apple", "apple",
-    "google", "google", "samsung", "samsung",
-    "amazon", "apple", "samsung", "google",
+    "amazon", "amazon", "amazon", "amazon", "apple", "apple", "apple", "apple", "google", "google",
+    "samsung", "samsung", "amazon", "apple", "samsung", "google",
 ];
-const PRICES: [i32; 16] = [50, 150, 80, 120, 90, 95, 200, 60, 40, 300, 70, 150, 30, 45, 99, 55];
+const PRICES: [i32; 16] = [
+    50, 150, 80, 120, 90, 95, 200, 60, 40, 300, 70, 150, 30, 45, 99, 55,
+];
 const STATUSES: [&str; 16] = [
-    "active", "archived", "active", "active",
-    "active", "archived", "active", "active",
-    "active", "archived", "active", "active",
-    "archived", "archived", "active", "active",
+    "active", "archived", "active", "active", "active", "archived", "active", "active", "active",
+    "archived", "active", "active", "archived", "archived", "active", "active",
 ];
 const CATEGORIES: [&str; 16] = [
-    "electronics", "electronics", "books", "electronics",
-    "electronics", "electronics", "books", "electronics",
-    "electronics", "electronics", "electronics", "books",
-    "electronics", "electronics", "electronics", "electronics",
+    "electronics",
+    "electronics",
+    "books",
+    "electronics",
+    "electronics",
+    "electronics",
+    "books",
+    "electronics",
+    "electronics",
+    "electronics",
+    "electronics",
+    "books",
+    "electronics",
+    "electronics",
+    "electronics",
+    "electronics",
 ];
 
 fn build_fixture_schema() -> SchemaRef {
@@ -114,8 +125,7 @@ fn write_fixture_parquet() -> NamedTempFile {
         .set_max_row_group_size(8)
         .set_statistics_enabled(datafusion::parquet::file::properties::EnabledStatistics::Page)
         .build();
-    let mut w =
-        ArrowWriter::try_new(tmp.reopen().unwrap(), schema, Some(props)).unwrap();
+    let mut w = ArrowWriter::try_new(tmp.reopen().unwrap(), schema, Some(props)).unwrap();
     w.write(&batch).unwrap();
     w.close().unwrap();
     tmp
@@ -177,22 +187,29 @@ async fn run_tree(tree: BoolNode) -> Vec<(String, i32, String, String)> {
 /// read metrics off it after execution.
 async fn run_tree_and_plan(
     tree: BoolNode,
-) -> (Vec<(String, i32, String, String)>, std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>) {
+) -> (
+    Vec<(String, i32, String, String)>,
+    std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+) {
     let tmp = write_fixture_parquet();
     let path = tmp.path().to_path_buf();
     let size = std::fs::metadata(&path).unwrap().len();
 
     // Load parquet metadata for the SegmentFileInfo.
     let file = std::fs::File::open(&path).unwrap();
-    let meta = ArrowReaderMetadata::load(&file, ArrowReaderOptions::new().with_page_index(true))
-        .unwrap();
+    let meta =
+        ArrowReaderMetadata::load(&file, ArrowReaderOptions::new().with_page_index(true)).unwrap();
     let schema = meta.schema().clone();
     let parquet_meta = meta.metadata().clone();
     let mut rgs = Vec::new();
     let mut offset = 0i64;
     for i in 0..parquet_meta.num_row_groups() {
         let n = parquet_meta.row_group(i).num_rows();
-        rgs.push(RowGroupInfo { index: i, first_row: offset, num_rows: n });
+        rgs.push(RowGroupInfo {
+            index: i,
+            first_row: offset,
+            num_rows: n,
+        });
         offset += n;
     }
 
@@ -228,9 +245,11 @@ async fn run_tree_and_plan(
             let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(TreeBitsetSource {
                 tree: Arc::new(resolved),
                 evaluator: Arc::new(BitmapTreeEvaluator),
-                leaves: Arc::new(crate::indexed_table::eval::bitmap_tree::CollectorLeafBitmaps {
-                    ffm_collector_calls: _stream_metrics.ffm_collector_calls.clone(),
-                }),
+                leaves: Arc::new(
+                    crate::indexed_table::eval::bitmap_tree::CollectorLeafBitmaps {
+                        ffm_collector_calls: _stream_metrics.ffm_collector_calls.clone(),
+                    },
+                ),
                 page_pruner: pruner,
                 cost_predicate: 1,
                 cost_collector: 10,
@@ -241,6 +260,7 @@ async fn run_tree_and_plan(
                         _stream_metrics,
                     ),
                 ),
+                collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
             });
             Ok(eval)
         })
@@ -248,8 +268,7 @@ async fn run_tree_and_plan(
 
     let store: Arc<dyn object_store::ObjectStore> =
         Arc::new(object_store::local::LocalFileSystem::new());
-    let store_url =
-        datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
+    let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
         segments: vec![segment],
@@ -264,20 +283,22 @@ async fn run_tree_and_plan(
         force_strategy: Some(FilterStrategy::BooleanMask),
         force_pushdown: Some(false),
         pushdown_predicate: None,
-        query_config: std::sync::Arc::new(crate::datafusion_query_config::DatafusionQueryConfig::default()),
+        query_config: std::sync::Arc::new(
+            crate::datafusion_query_config::DatafusionQueryConfig::default(),
+        ),
         predicate_columns: vec![],
     }));
 
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();
-    let df = ctx.sql("SELECT brand, price, status, category FROM t").await.unwrap();
+    let df = ctx
+        .sql("SELECT brand, price, status, category FROM t")
+        .await
+        .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
     let task_ctx = ctx.task_ctx();
-    let mut stream = datafusion::physical_plan::execute_stream(
-        std::sync::Arc::clone(&plan),
-        task_ctx,
-    )
-    .unwrap();
+    let mut stream =
+        datafusion::physical_plan::execute_stream(std::sync::Arc::clone(&plan), task_ctx).unwrap();
     let mut rows: Vec<(String, i32, String, String)> = Vec::new();
     while let Some(batch) = stream.next().await {
         let b = batch.unwrap();
@@ -305,19 +326,21 @@ async fn run_tree_and_plan(
 // Collector leaf, matching the tag to a fixture-specific mock.
 
 fn index_leaf(tag: u8) -> BoolNode {
-    BoolNode::Collector { query_bytes: Arc::from(&[tag][..]) }
+    BoolNode::Collector {
+        query_bytes: Arc::from(&[tag][..]),
+    }
 }
 
 /// Build a `BoolNode::Predicate(expr)` for `col op <int value>`.
 fn pred_int(col: &str, op: Operator, v: i32) -> BoolNode {
     let schema = build_fixture_schema();
     let col_idx = schema.index_of(col).expect("column in fixture schema");
-    let left: Arc<dyn datafusion::physical_expr::PhysicalExpr> =
-        Arc::new(datafusion::physical_expr::expressions::Column::new(col, col_idx));
-    let right: Arc<dyn datafusion::physical_expr::PhysicalExpr> =
-        Arc::new(datafusion::physical_expr::expressions::Literal::new(
-            ScalarValue::Int32(Some(v)),
-        ));
+    let left: Arc<dyn datafusion::physical_expr::PhysicalExpr> = Arc::new(
+        datafusion::physical_expr::expressions::Column::new(col, col_idx),
+    );
+    let right: Arc<dyn datafusion::physical_expr::PhysicalExpr> = Arc::new(
+        datafusion::physical_expr::expressions::Literal::new(ScalarValue::Int32(Some(v))),
+    );
     BoolNode::Predicate(Arc::new(
         datafusion::physical_expr::expressions::BinaryExpr::new(left, op, right),
     ))
@@ -327,8 +350,9 @@ fn pred_int(col: &str, op: Operator, v: i32) -> BoolNode {
 fn pred_str(col: &str, op: Operator, v: &str) -> BoolNode {
     let schema = build_fixture_schema();
     let col_idx = schema.index_of(col).expect("column in fixture schema");
-    let left: Arc<dyn datafusion::physical_expr::PhysicalExpr> =
-        Arc::new(datafusion::physical_expr::expressions::Column::new(col, col_idx));
+    let left: Arc<dyn datafusion::physical_expr::PhysicalExpr> = Arc::new(
+        datafusion::physical_expr::expressions::Column::new(col, col_idx),
+    );
     let right: Arc<dyn datafusion::physical_expr::PhysicalExpr> =
         Arc::new(datafusion::physical_expr::expressions::Literal::new(
             ScalarValue::Utf8(Some(v.to_string())),
@@ -363,4 +387,3 @@ fn wire(node: &BoolNode, out: &mut Vec<Arc<dyn RowGroupDocsCollector>>) {
         BoolNode::Predicate(_) => {}
     }
 }
-

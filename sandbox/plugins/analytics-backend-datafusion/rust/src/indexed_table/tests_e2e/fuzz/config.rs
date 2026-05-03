@@ -20,38 +20,20 @@
 #[derive(Debug, Clone, Copy)]
 pub(in crate::indexed_table::tests_e2e) enum ColumnKind {
     /// Utf8. Generated via a distinct-values pool; controls cardinality.
-    Utf8 {
-        num_distinct: usize,
-        max_len: usize,
-    },
+    Utf8 { num_distinct: usize, max_len: usize },
     /// Int32. Generated from a `[min, max)` value range.
-    Int32 {
-        min: i32,
-        max: i32,
-    },
+    Int32 { min: i32, max: i32 },
     /// Int64. Same.
-    Int64 {
-        min: i64,
-        max: i64,
-    },
+    Int64 { min: i64, max: i64 },
     /// Float64. Generated from a `[min, max)` range.
-    Float64 {
-        min: f64,
-        max: f64,
-    },
+    Float64 { min: f64, max: f64 },
     /// Boolean.
     Boolean,
     /// Date32. Days since epoch; generated from a `[min, max)` range.
-    Date32 {
-        min: i32,
-        max: i32,
-    },
+    Date32 { min: i32, max: i32 },
     /// Timestamp(Nanosecond, None). Nanoseconds since epoch; generated
     /// from a `[min, max)` range.
-    TimestampNanos {
-        min: i64,
-        max: i64,
-    },
+    TimestampNanos { min: i64, max: i64 },
 }
 
 /// Shape of the fixture. All parameters are deterministic given the
@@ -107,6 +89,20 @@ pub(in crate::indexed_table::tests_e2e) struct FixtureConfig {
 
     /// Maximum fanout at each AND / OR node.
     pub tree_max_fanout: usize,
+
+    /// Override batch_size for the DataFusion query config. `None` uses
+    /// the harness default (`[128, 1024, 8192][seed % 3]`).
+    pub batch_size: Option<usize>,
+
+    /// Override max_collector_parallelism. `None` uses the harness
+    /// default (`[1, 1, 2, 4][seed % 4]`).
+    pub max_collector_parallelism: Option<usize>,
+
+    /// Per-column null probability overrides. When non-empty, the
+    /// corpus generator uses `null_pct_overrides[col_name]` instead of
+    /// the global `null_pct` for that column. Columns not in the map
+    /// fall back to `null_pct`.
+    pub null_pct_overrides: std::collections::HashMap<String, f64>,
 }
 
 impl FixtureConfig {
@@ -126,6 +122,9 @@ impl FixtureConfig {
             collector_density: 0.05,
             tree_max_depth: 5,
             tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -145,6 +144,9 @@ impl FixtureConfig {
             collector_density: 0.03,
             tree_max_depth: 6,
             tree_max_fanout: 6,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -164,6 +166,9 @@ impl FixtureConfig {
             collector_density: 0.01, // very sparse → long skip runs
             tree_max_depth: 5,
             tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -182,6 +187,9 @@ impl FixtureConfig {
             collector_density: 0.1,
             tree_max_depth: 5,
             tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -218,10 +226,7 @@ impl FixtureConfig {
                         max_len: 8,
                     },
                 ),
-                (
-                    "tiny_int".to_string(),
-                    ColumnKind::Int32 { min: 0, max: 2 },
-                ),
+                ("tiny_int".to_string(), ColumnKind::Int32 { min: 0, max: 2 }),
                 (
                     "wide_int".to_string(),
                     ColumnKind::Int32 {
@@ -245,6 +250,9 @@ impl FixtureConfig {
             collector_density: 0.05,
             tree_max_depth: 4,
             tree_max_fanout: 4,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -267,6 +275,149 @@ impl FixtureConfig {
             collector_density: 0.05,
             tree_max_depth: 5,
             tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// batch_size=1: stresses coalescer and mask-slicing at every row
+    /// boundary. Catches off-by-one bugs in `current_mask` indexing.
+    pub fn batch_size_one(seed: u64) -> Self {
+        Self {
+            seed,
+            num_rows: 5_000,
+            num_segments: 1,
+            target_partitions: 1,
+            rows_per_row_group: 1_024,
+            rows_per_page: 256,
+            columns: default_columns(),
+            null_pct: 0.1,
+            num_collector_leaves: 3,
+            collector_density: 0.05,
+            tree_max_depth: 4,
+            tree_max_fanout: 4,
+            batch_size: Some(1),
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// All-null columns: `brand` and `qty` are 100% null, others at
+    /// 10%. Exercises page stats with absent min/max and `IS NULL`
+    /// predicates that always return TRUE on those columns.
+    pub fn all_null_columns(seed: u64) -> Self {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("brand".to_string(), 1.0);
+        overrides.insert("qty".to_string(), 1.0);
+        Self {
+            seed,
+            num_rows: 10_000,
+            num_segments: 1,
+            target_partitions: 1,
+            rows_per_row_group: 2_048,
+            rows_per_page: 256,
+            columns: default_columns(),
+            null_pct: 0.1,
+            num_collector_leaves: 3,
+            collector_density: 0.05,
+            tree_max_depth: 5,
+            tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: overrides,
+        }
+    }
+
+    /// Empty-result stress: very low collector density (0.1%) and only
+    /// 1 collector leaf. Most trees produce zero matching rows,
+    /// exercising short-circuit and empty-batch paths.
+    pub fn empty_result(seed: u64) -> Self {
+        Self {
+            seed,
+            num_rows: 10_000,
+            num_segments: 1,
+            target_partitions: 1,
+            rows_per_row_group: 2_048,
+            rows_per_page: 256,
+            columns: default_columns(),
+            null_pct: 0.1,
+            num_collector_leaves: 1,
+            collector_density: 0.001,
+            tree_max_depth: 5,
+            tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Single row group: `rows_per_row_group >= num_rows` so the
+    /// entire segment is one RG. No RG boundary transitions in the
+    /// streaming loop.
+    pub fn single_row_group(seed: u64) -> Self {
+        Self {
+            seed,
+            num_rows: 10_000,
+            num_segments: 1,
+            target_partitions: 1,
+            rows_per_row_group: 100_000,
+            rows_per_page: 512,
+            columns: default_columns(),
+            null_pct: 0.1,
+            num_collector_leaves: 3,
+            collector_density: 0.05,
+            tree_max_depth: 5,
+            tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Always-parallel collectors: `max_collector_parallelism = 4` so
+    /// `PrecomputedLeafCache` concurrent path is always exercised.
+    pub fn parallel_collectors(seed: u64) -> Self {
+        Self {
+            seed,
+            num_rows: 10_000,
+            num_segments: 2,
+            target_partitions: 2,
+            rows_per_row_group: 2_048,
+            rows_per_page: 256,
+            columns: default_columns(),
+            null_pct: 0.1,
+            num_collector_leaves: 4,
+            collector_density: 0.05,
+            tree_max_depth: 5,
+            tree_max_fanout: 5,
+            batch_size: None,
+            max_collector_parallelism: Some(4),
+            null_pct_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// AND(Predicate, Collector) focused: shallow trees (depth 2) with
+    /// high collector count. Exercises the BitmapTree AND-branch
+    /// collector_hint path — predicates evaluate first (cheap), narrow
+    /// the accumulator, then collectors get a tightened range.
+    pub fn and_predicate_collector(seed: u64) -> Self {
+        Self {
+            seed,
+            num_rows: 10_000,
+            num_segments: 2,
+            target_partitions: 1,
+            rows_per_row_group: 2_048,
+            rows_per_page: 256,
+            columns: default_columns(),
+            null_pct: 0.1,
+            num_collector_leaves: 4,
+            collector_density: 0.05,
+            tree_max_depth: 2,
+            tree_max_fanout: 4,
+            batch_size: None,
+            max_collector_parallelism: None,
+            null_pct_overrides: std::collections::HashMap::new(),
         }
     }
 }
@@ -289,10 +440,7 @@ fn default_columns() -> Vec<(String, ColumnKind)> {
                 max_len: 8,
             },
         ),
-        (
-            "price".to_string(),
-            ColumnKind::Int32 { min: 0, max: 1000 },
-        ),
+        ("price".to_string(), ColumnKind::Int32 { min: 0, max: 1000 }),
         (
             "qty".to_string(),
             ColumnKind::Int64 {

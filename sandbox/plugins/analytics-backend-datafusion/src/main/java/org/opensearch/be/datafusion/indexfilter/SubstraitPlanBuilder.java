@@ -1194,4 +1194,45 @@ public class SubstraitPlanBuilder {
             .addExtensions(andDecl).addExtensions(orDecl).addExtensions(countDecl)
             .build().toByteArray();
     }
+
+    /**
+     * Build AND(predicate, OR(collector1, collector2)) COUNT(*).
+     * Predicate at AND level narrows the accumulator before OR's collectors evaluate.
+     */
+    public byte[] buildAndPredicateOrCollectorsCount(
+        String tableName,
+        String predCol, String predOp, int predVal,
+        String f1, String v1, String f2, String v2
+    ) {
+        var extUri = extUri();
+        var indexFilterDecl = extDecl(0, "index_filter");
+        var compDecl = extDecl(1, compFuncName(predOp));
+        var andDecl = extDecl(2, "and");
+        var orDecl = extDecl(3, "or");
+        var countDecl = extDecl(4, "count");
+
+        var readRel = namedRead(tableName);
+        byte[] q1 = (f1 + "\0" + v1).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] q2 = (f2 + "\0" + v2).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        var filterExpr = andExpr(compExpr(predCol, predVal), orExpr(indexFilterExpr(q1), indexFilterExpr(q2)));
+
+        var filterRel = FilterRel.newBuilder()
+            .setInput(Rel.newBuilder().setRead(readRel))
+            .setCondition(filterExpr).build();
+
+        var aggRel = AggregateRel.newBuilder()
+            .setInput(Rel.newBuilder().setFilter(filterRel))
+            .addGroupings(AggregateRel.Grouping.newBuilder())
+            .addMeasures(countMeasure(4))
+            .build();
+
+        return Plan.newBuilder()
+            .addRelations(PlanRel.newBuilder().setRoot(
+                RelRoot.newBuilder().setInput(Rel.newBuilder().setAggregate(aggRel))))
+            .addExtensionUris(extUri)
+            .addExtensions(indexFilterDecl).addExtensions(compDecl)
+            .addExtensions(andDecl).addExtensions(orDecl).addExtensions(countDecl)
+            .build().toByteArray();
+    }
 }

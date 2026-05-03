@@ -5,8 +5,8 @@
 //! setup time and copied into hot-path fields — never dereferenced on a
 //! per-batch or per-row hot path.
 
-use crate::indexed_table::eval::single_collector::CollectorCallStrategy;
 use crate::indexed_table::stream::FilterStrategy;
+use crate::indexed_table::eval::single_collector::CollectorCallStrategy;
 
 /// Query-scoped configuration. Owned by value after FFM decode.
 #[derive(Debug, Clone)]
@@ -32,36 +32,39 @@ pub struct DatafusionQueryConfig {
     /// Maximum number of Collector-leaf FFM calls issued in parallel per
     /// RG prefetch. 1 = today's fully-sequential behaviour (lowest CPU,
     /// fastest short-circuit). `target_partitions × max_collector_parallelism`
-    /// bounds total concurrent Lucene threads; default 2 is chosen so a
-    /// 4-partition query peaks at 8 Lucene threads on a typical box.
+    /// bounds total concurrent Lucene threads; default is 1
     ///
     /// At higher values, short-circuit savings in AND/OR groups are
     /// sacrificed (see `BitmapTreeEvaluator::prefetch`): collectors
     /// beyond the first may run even if their result is not needed.
     pub max_collector_parallelism: usize,
-    /// How the SingleCollectorEvaluator calls the backend collector
-    /// relative to page-pruning results.
-    pub collector_call_strategy: CollectorCallStrategy,
+    /// How the SingleCollectorEvaluator narrows collector doc ranges
+    /// relative to page-pruning results. `PageRangeSplit` is the default
+    /// — only one collector, so multiple FFM calls per RG is acceptable.
+    pub single_collector_strategy: CollectorCallStrategy,
+    /// How the bitmap tree evaluator narrows collector doc ranges.
+    /// `TightenOuterBounds` is the default — multiple collectors in the
+    /// tree means `PageRangeSplit` would multiply FFM calls.
+    pub tree_collector_strategy: CollectorCallStrategy,
 }
 
 impl Default for DatafusionQueryConfig {
     fn default() -> Self {
         Self {
             batch_size: 8192,
-            // TEMP: forced to 1 for perf-harness apples-to-apples comparison.
-            // Production callers pass a wire struct; this default is only
-            // used by the perf main (which passes query_config_ptr=0).
+            // TODO: change this default value ?
             target_partitions: 1,
             parquet_pushdown_filters: false,
-            min_skip_run_default: 1024,
-            min_skip_run_selectivity_threshold: 0.03,
+            min_skip_run_default: 1024, // Todo: tune based on benchmarks
+            min_skip_run_selectivity_threshold: 0.03, // Todo : tune based on benchmarks
             indexed_pushdown_filters: true,
             force_strategy: None,
             force_pushdown: None,
             cost_predicate: 1,
-            cost_collector: 10,
-            max_collector_parallelism: 2,
-            collector_call_strategy: CollectorCallStrategy::PageRangeSplit,
+            cost_collector: 10, // TODO : should this be collector leaf specific
+            max_collector_parallelism: 1,
+            single_collector_strategy: CollectorCallStrategy::PageRangeSplit,
+            tree_collector_strategy: CollectorCallStrategy::TightenOuterBounds,
         }
     }
 }
@@ -90,7 +93,9 @@ pub struct WireDatafusionQueryConfig {
     pub cost_collector: i32,
     pub max_collector_parallelism: i32,
     /// 0 = FullRange, 1 = TightenOuterBounds, 2 = PageRangeSplit
-    pub collector_call_strategy: i32,
+    pub single_collector_strategy: i32,
+    /// 0 = FullRange, 1 = TightenOuterBounds, 2 = PageRangeSplit
+    pub tree_collector_strategy: i32,
 }
 
 impl DatafusionQueryConfig {
@@ -130,10 +135,15 @@ impl DatafusionQueryConfig {
             cost_predicate: w.cost_predicate as u32,
             cost_collector: w.cost_collector as u32,
             max_collector_parallelism: (w.max_collector_parallelism as usize).max(1),
-            collector_call_strategy: match w.collector_call_strategy {
+            single_collector_strategy: match w.single_collector_strategy {
                 0 => CollectorCallStrategy::FullRange,
                 1 => CollectorCallStrategy::TightenOuterBounds,
                 _ => CollectorCallStrategy::PageRangeSplit,
+            },
+            tree_collector_strategy: match w.tree_collector_strategy {
+                0 => CollectorCallStrategy::FullRange,
+                2 => CollectorCallStrategy::PageRangeSplit,
+                _ => CollectorCallStrategy::TightenOuterBounds,
             },
         }
     }
@@ -181,7 +191,8 @@ mod tests {
             cost_predicate: 3,
             cost_collector: 17,
             max_collector_parallelism: 4,
-            collector_call_strategy: 1,
+            single_collector_strategy: 2,
+            tree_collector_strategy: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
@@ -211,7 +222,8 @@ mod tests {
             cost_predicate: 1,
             cost_collector: 10,
             max_collector_parallelism: 2,
-            collector_call_strategy: 2,
+            single_collector_strategy: 2,
+            tree_collector_strategy: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };

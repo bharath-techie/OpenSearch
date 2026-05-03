@@ -37,9 +37,59 @@ import io.substrait.proto.Type;
 /** Standalone e2e perf test. No test framework. */
 public class IndexedQueryPerfMain {
 
+    static long queryConfigPtr = 0L;
+
+    /**
+     * Allocate a WireDatafusionQueryConfig in off-heap memory.
+     * Layout must match the Rust #[repr(C)] struct exactly.
+     * @param treeStrategy 0=FullRange, 1=TightenOuterBounds, 2=PageRangeSplit
+     * @param singleStrategy 0=FullRange, 1=TightenOuterBounds, 2=PageRangeSplit
+     */
+    static long allocateQueryConfig(int treeStrategy, int singleStrategy) {
+        var arena = java.lang.foreign.Arena.global();
+        // 3×i64 + 1×f64 + 9×i32 = 24 + 8 + 36 = 68 bytes, align 8
+        var layout = java.lang.foreign.MemoryLayout.structLayout(
+            java.lang.foreign.ValueLayout.JAVA_LONG.withName("batch_size"),
+            java.lang.foreign.ValueLayout.JAVA_LONG.withName("target_partitions"),
+            java.lang.foreign.ValueLayout.JAVA_LONG.withName("min_skip_run_default"),
+            java.lang.foreign.ValueLayout.JAVA_DOUBLE.withName("min_skip_run_selectivity_threshold"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("parquet_pushdown_filters"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("indexed_pushdown_filters"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("force_strategy"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("force_pushdown"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("cost_predicate"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("cost_collector"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("max_collector_parallelism"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("single_collector_strategy"),
+            java.lang.foreign.ValueLayout.JAVA_INT.withName("tree_collector_strategy")
+        );
+        var seg = arena.allocate(layout);
+        seg.set(java.lang.foreign.ValueLayout.JAVA_LONG, 0, 8192L);   // batch_size
+        seg.set(java.lang.foreign.ValueLayout.JAVA_LONG, 8, 1L);      // target_partitions
+        seg.set(java.lang.foreign.ValueLayout.JAVA_LONG, 16, 1024L);  // min_skip_run_default
+        seg.set(java.lang.foreign.ValueLayout.JAVA_DOUBLE, 24, 0.03); // min_skip_run_selectivity_threshold
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 32, 0);       // parquet_pushdown_filters
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 36, 1);       // indexed_pushdown_filters
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 40, -1);      // force_strategy (None)
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 44, -1);      // force_pushdown (None)
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 48, 1);       // cost_predicate
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 52, 10);      // cost_collector
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 56, 1);       // max_collector_parallelism
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 60, singleStrategy); // single_collector_strategy
+        seg.set(java.lang.foreign.ValueLayout.JAVA_INT, 64, treeStrategy);   // tree_collector_strategy
+        return seg.address();
+    }
+
     public static void main(String[] args) throws Exception {
         String dir = args.length > 0 ? args[0]
             : "/Users/abandeji/Public/work-dump/experiments/data/nodes/0/indices/ATTb8ViJT0mrLoeWpkEtrA/0";
+
+        // Parse strategy: -DtreeStrategy=0|1|2, -DsingleStrategy=0|1|2
+        int treeStrat = Integer.parseInt(System.getProperty("treeStrategy", "1"));  // default TightenOuterBounds
+        int singleStrat = Integer.parseInt(System.getProperty("singleStrategy", "2")); // default PageRangeSplit
+        queryConfigPtr = allocateQueryConfig(treeStrat, singleStrat);
+        System.out.println("Config: treeStrategy=" + treeStrat + " singleStrategy=" + singleStrat);
+
         Path shardDir = Path.of(dir);
 
         NativeBridge.initTokioRuntimeManager(4);
@@ -360,6 +410,91 @@ public class IndexedQueryPerfMain {
                 new int[][]{{0, 1000}, {15000, 16000}, {30000, 31000}, {45000, 46000}, {60000, 61000}, {75000, 76000}, {90000, 91000}, {105000, 106000}, {120000, 121000}, {135000, 136000}, {150000, 151000}, {165000, 166000}, {180000, 181000}, {195000, 196000}, {210000, 211000}, {225000, 226000}, {240000, 241000}, {255000, 256000}, {270000, 271000}, {285000, 286000}, {300000, 301000}, {315000, 316000}, {330000, 331000}, {345000, 346000}, {360000, 361000}, {375000, 376000}, {390000, 391000}, {405000, 406000}, {420000, 421000}, {435000, 436000}, {450000, 451000}, {465000, 466000}, {480000, 481000}, {495000, 496000}, {510000, 511000}, {525000, 526000}, {540000, 541000}, {555000, 556000}, {570000, 571000}, {585000, 586000}, {600000, 601000}, {615000, 616000}, {630000, 631000}, {645000, 646000}, {660000, 661000}, {675000, 676000}, {690000, 691000}, {705000, 706000}, {720000, 721000}, {735000, 736000}, {750000, 751000}, {765000, 766000}, {780000, 781000}, {795000, 796000}, {810000, 811000}, {825000, 826000}, {840000, 841000}, {855000, 856000}, {870000, 871000}, {885000, 886000}, {900000, 901000}, {915000, 916000}, {930000, 931000}, {945000, 946000}, {960000, 961000}, {975000, 976000}, {990000, 991000}, {1005000, 1006000}, {1020000, 1021000}, {1035000, 1036000}}),
             "SELECT COUNT(*) FROM test_table WHERE client_ip LIKE '%1%' AND ___row_id < 1036000");
 
+        // ══════════════════════════════════════════════════════════════
+        // BitmapTree queries — moderate wildcards (few terms, long postings)
+        // + tight ___row_id so hint narrows posting-list scan significantly
+        // ══════════════════════════════════════════════════════════════
+
+        // BT1: AND(P, C1 OR C2) — P narrows, then 2 moderate wildcards
+        // HTTP/1.* = 2 terms (HTTP/1.0 + HTTP/1.1), 70% match → long postings
+        compare(reader, runtime, pb, "BT1",
+            pb.buildMixedOrCount("test_table",
+                "http_version", "HTTP/1.*", "___row_id", "lt", 3000,
+                "http_version", "HTTP/2.0", "___row_id", "lt", 3000),
+            "SELECT COUNT(*) FROM test_table WHERE (http_version LIKE 'HTTP/1.%' OR ___row_id < 3000) AND (http_version = 'HTTP/2.0' OR ___row_id < 3000)");
+
+        // BT2: AND(row_id<5K, C1, C2) — 2 fat term collectors narrowed by predicate
+        compare(reader, runtime, pb, "BT2",
+            pb.buildThreeCollectorAndPredicateCount("test_table",
+                "http_version", "HTTP/1.1",
+                "http_version", "HTTP/2.0",
+                "http_version", "HTTP/1.0",
+                "___row_id", "lt", 5000),
+            "SELECT COUNT(*) FROM test_table WHERE http_version='HTTP/1.1' AND http_version='HTTP/2.0' AND http_version='HTTP/1.0' AND ___row_id < 5000");
+
+        // BT3: depth-4, 6 moderate wildcards + tight row_id
+        compare(reader, runtime, pb, "BT3",
+            pb.buildDeepTreeCount("test_table",
+                new String[]{"http_version", "http_version", "http_version", "http_version", "http_version", "http_version"},
+                new String[]{"HTTP/1.*", "HTTP/*", "HTTP/1.*", "HTTP/*", "HTTP/1.*", "HTTP/*"},
+                new String[]{"___row_id", "___row_id", "___row_id"},
+                new String[]{"lt", "lt", "lt"},
+                new int[]{3000, 3000, 3000}),
+            "SELECT COUNT(*) FROM test_table WHERE (http_version LIKE 'HTTP/1.%' OR http_version LIKE 'HTTP/%') AND ((http_version LIKE 'HTTP/1.%' AND ___row_id<3000) OR (http_version LIKE 'HTTP/%' AND ___row_id<3000)) AND (http_version LIKE 'HTTP/1.%' OR (http_version LIKE 'HTTP/%' AND ___row_id<3000))");
+
+        // BT4: depth-5, 7 moderate wildcards + very tight row_id<1000
+        compare(reader, runtime, pb, "BT4",
+            pb.buildExtraDeepTreeCount("test_table",
+                new String[]{"http_version", "http_version", "http_version", "http_version", "http_version", "http_version", "http_version"},
+                new String[]{"HTTP/1.*", "HTTP/*", "HTTP/1.*", "HTTP/*", "HTTP/1.*", "HTTP/*", "HTTP/1.*"},
+                new String[]{"___row_id", "___row_id", "___row_id"},
+                new String[]{"lt", "lt", "lt"},
+                new int[]{1000, 1000, 1000}),
+            "SELECT COUNT(*) FROM test_table WHERE ((http_version LIKE 'HTTP/1.%' AND http_version LIKE 'HTTP/%') OR (http_version LIKE 'HTTP/1.%' AND ___row_id<1000)) AND ((http_version LIKE 'HTTP/%' OR http_version LIKE 'HTTP/1.%') AND (http_version LIKE 'HTTP/%' OR ___row_id<1000)) AND (http_version LIKE 'HTTP/1.%' AND ___row_id<1000)");
+
+        // BT5: 4 fat term collectors in OR-groups + row_id<5K
+        compare(reader, runtime, pb, "BT5",
+            pb.buildMixedOrCount("test_table",
+                "http_version", "HTTP/1.1", "___row_id", "lt", 5000,
+                "http_version", "HTTP/2.0", "___row_id", "lt", 5000),
+            "SELECT COUNT(*) FROM test_table WHERE (http_version='HTTP/1.1' OR ___row_id < 5000) AND (http_version='HTTP/2.0' OR ___row_id < 5000)");
+
+        // BT6: OR(AND(fat_C, tight_P), AND(fat_C, tight_P))
+        compare(reader, runtime, pb, "BT6",
+            pb.buildTwoGroupOrCount("test_table",
+                "http_version", "HTTP/1.*", "___row_id", "lt", 2000,
+                "http_version", "HTTP/*", "___row_id", "lt", 2000),
+            "SELECT COUNT(*) FROM test_table WHERE (http_version LIKE 'HTTP/1.%' AND ___row_id < 2000) OR (http_version LIKE 'HTTP/%' AND ___row_id < 2000)");
+
+        // BT7: AND(row_id<3K, OR(expensive_C, expensive_C)) — predicate at AND level
+        // narrows accumulator, then OR's collectors get tightened hint
+        compare(reader, runtime, pb, "BT7",
+            pb.buildAndPredicateOrCollectorsCount("test_table",
+                "___row_id", "lt", 3000,
+                "client_ip", "*1*", "backend_ip", "*1*"),
+            "SELECT COUNT(*) FROM test_table WHERE ___row_id < 3000 AND (client_ip LIKE '%1%' OR backend_ip LIKE '%1%')");
+
+        // BT8: AND(row_id<1K, OR(expensive_C, expensive_C)) — very tight
+        compare(reader, runtime, pb, "BT8",
+            pb.buildAndPredicateOrCollectorsCount("test_table",
+                "___row_id", "lt", 1000,
+                "client_ip", "*1*", "backend_ip", "*1*"),
+            "SELECT COUNT(*) FROM test_table WHERE ___row_id < 1000 AND (client_ip LIKE '%1%' OR backend_ip LIKE '%1%')");
+
+        // BT9: AND(row_id<5K, OR(expensive_C, expensive_C)) — moderate
+        compare(reader, runtime, pb, "BT9",
+            pb.buildAndPredicateOrCollectorsCount("test_table",
+                "___row_id", "lt", 5000,
+                "client_ip", "*1*", "backend_ip", "*99*"),
+            "SELECT COUNT(*) FROM test_table WHERE ___row_id < 5000 AND (client_ip LIKE '%1%' OR backend_ip LIKE '%99%')");
+
+        // BT10: AND(row_id<500, OR(expensive_C, expensive_C)) — extremely tight
+        compare(reader, runtime, pb, "BT10",
+            pb.buildAndPredicateOrCollectorsCount("test_table",
+                "___row_id", "lt", 500,
+                "client_ip", "*1*", "backend_ip", "*1*"),
+            "SELECT COUNT(*) FROM test_table WHERE ___row_id < 500 AND (client_ip LIKE '%1%' OR backend_ip LIKE '%1%')");
+
         csvWriter.close();
         System.out.println("\nCSV written to: " + csvPath);
 
@@ -471,7 +606,7 @@ public class IndexedQueryPerfMain {
     /** Execute a plan and return a string representation of all result rows. */
     static String runAndPrint(ReaderHandle reader, NativeRuntimeHandle runtime, byte[] plan) throws Exception {
         long streamPtr = call(l -> NativeBridge.executeQueryAsync(
-            reader.getPointer(), "test_table", plan, runtime.getPointer(), 0L, l));
+            reader.getPointer(), "test_table", plan, runtime.getPointer(), queryConfigPtr, l));
         try (StreamHandle stream = new StreamHandle(streamPtr, runtime);
              RootAllocator alloc = new RootAllocator(Long.MAX_VALUE);
              CDataDictionaryProvider dp = new CDataDictionaryProvider()) {

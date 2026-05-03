@@ -32,6 +32,7 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::common::{DFSchema, ScalarValue};
 use datafusion::execution::context::ExecutionProps;
 use datafusion::logical_expr::{
@@ -137,7 +138,9 @@ fn convert_expr(
             let unqualified = strip_column_qualifiers(other);
             let phys = create_physical_expr(&unqualified, df_schema, props)
                 .map_err(|e| format!("create_physical_expr for {:?}: {}", unqualified, e))?;
-            let return_type = phys.data_type(schema).map_err(|e| format!("data_type: {}", e))?;
+            let return_type = phys
+                .data_type(schema)
+                .map_err(|e| format!("data_type: {}", e))?;
             if return_type != DataType::Boolean {
                 return Err(format!(
                     "indexed-query expression must be boolean-valued, got {:?}: {:?}",
@@ -166,19 +169,19 @@ fn convert_collector_function(args: &[Expr]) -> Result<BoolNode, String> {
 /// DataFusion's substrait consumer qualifies field references with the
 /// NamedScan table name, but the parquet schema has bare column names.
 fn strip_column_qualifiers(expr: &Expr) -> Expr {
-    use datafusion::common::tree_node::TreeNode;
-    expr.clone().transform(|e| {
-        if let Expr::Column(col) = &e {
-            if col.relation.is_some() {
-                return Ok(datafusion::common::tree_node::Transformed::yes(
-                    Expr::Column(datafusion::common::Column::new_unqualified(&col.name)),
-                ));
+    expr.clone()
+        .transform(|e| {
+            if let Expr::Column(col) = &e {
+                if col.relation.is_some() {
+                    return Ok(datafusion::common::tree_node::Transformed::yes(
+                        Expr::Column(datafusion::common::Column::new_unqualified(&col.name)),
+                    ));
+                }
             }
-        }
-        Ok(datafusion::common::tree_node::Transformed::no(e))
-    })
-    .unwrap()
-    .data
+            Ok(datafusion::common::tree_node::Transformed::no(e))
+        })
+        .unwrap()
+        .data
 }
 
 fn extract_binary_literal(expr: &Expr) -> Result<Arc<[u8]>, String> {
@@ -302,13 +305,11 @@ impl ScalarUDFImpl for IndexFilterUdf {
         // function. If we reach here, classification missed the marker and
         // would otherwise silently return all-true, masking the bug and
         // producing wrong results. Fail loudly instead.
-        Err(datafusion::common::DataFusionError::Internal(
-            format!(
-                "{} UDF body invoked — classify_filter did not recognize the marker; \
+        Err(datafusion::common::DataFusionError::Internal(format!(
+            "{} UDF body invoked — classify_filter did not recognize the marker; \
                  treat as a serious correctness bug",
-                COLLECTOR_FUNCTION_NAME
-            ),
-        ))
+            COLLECTOR_FUNCTION_NAME
+        )))
     }
 }
 
@@ -321,6 +322,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::logical_expr::{col, lit};
+    use datafusion::physical_expr::expressions::{Column as PhysColumn, Literal};
     use std::sync::Arc;
 
     fn test_schema() -> SchemaRef {
@@ -456,7 +458,6 @@ mod tests {
     fn dummy_predicate() -> BoolNode {
         // A stand-in Predicate leaf — classify only cares about shape,
         // not expression contents. Build a minimal boolean PhysicalExpr.
-        use datafusion::physical_expr::expressions::{Column as PhysColumn, Literal};
         let schema = test_schema();
         let col_idx = schema.index_of("price").unwrap();
         let left: Arc<dyn PhysicalExpr> = Arc::new(PhysColumn::new("price", col_idx));
@@ -490,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_and_with_two_collectors_and_predicate_is_single() {
+    fn classify_and_with_two_collectors_is_single() {
         // AND(C, C, P) — all collectors under AND-only path → SingleCollector.
         let tree = BoolNode::And(vec![collector(b"x"), collector(b"y"), dummy_predicate()]);
         assert_eq!(classify_filter(&tree), FilterClass::SingleCollector);
@@ -513,6 +514,93 @@ mod tests {
         let tree = BoolNode::And(vec![
             BoolNode::Or(vec![collector(b"x"), dummy_predicate()]),
             dummy_predicate(),
+        ]);
+        assert_eq!(classify_filter(&tree), FilterClass::Tree);
+    }
+
+    // ── Nested AND shapes → SingleCollector ──────────────────────────
+
+    #[test]
+    fn classify_nested_and_collector_plus_predicate_is_single() {
+        // AND(C₁, AND(C₂, P)) — nested AND, all collectors under AND-only path.
+        let tree = BoolNode::And(vec![
+            collector(b"x"),
+            BoolNode::And(vec![collector(b"y"), dummy_predicate()]),
+        ]);
+        assert_eq!(classify_filter(&tree), FilterClass::SingleCollector);
+    }
+
+    #[test]
+    fn classify_deeply_nested_and_is_single() {
+        // AND(P, AND(C₁, AND(C₂, AND(C₃, P)))) — depth 4, all AND.
+        let tree = BoolNode::And(vec![
+            dummy_predicate(),
+            BoolNode::And(vec![
+                collector(b"a"),
+                BoolNode::And(vec![
+                    collector(b"b"),
+                    BoolNode::And(vec![collector(b"c"), dummy_predicate()]),
+                ]),
+            ]),
+        ]);
+        assert_eq!(classify_filter(&tree), FilterClass::SingleCollector);
+    }
+
+    #[test]
+    fn classify_nested_and_only_collectors_is_single() {
+        // AND(AND(C₁, C₂), AND(C₃, C₄)) — nested AND of only collectors.
+        let tree = BoolNode::And(vec![
+            BoolNode::And(vec![collector(b"a"), collector(b"b")]),
+            BoolNode::And(vec![collector(b"c"), collector(b"d")]),
+        ]);
+        assert_eq!(classify_filter(&tree), FilterClass::SingleCollector);
+    }
+
+    #[test]
+    fn classify_nested_and_with_or_predicate_is_single() {
+        // AND(C, AND(P, OR(P, P))) — OR contains only predicates, no collectors.
+        let tree = BoolNode::And(vec![
+            collector(b"x"),
+            BoolNode::And(vec![
+                dummy_predicate(),
+                BoolNode::Or(vec![dummy_predicate(), dummy_predicate()]),
+            ]),
+        ]);
+        assert_eq!(classify_filter(&tree), FilterClass::SingleCollector);
+    }
+
+    #[test]
+    fn classify_nested_and_with_not_predicate_is_single() {
+        // AND(C, NOT(P)) — NOT wraps a predicate, not a collector.
+        let tree = BoolNode::And(vec![
+            collector(b"x"),
+            BoolNode::Not(Box::new(dummy_predicate())),
+        ]);
+        assert_eq!(classify_filter(&tree), FilterClass::SingleCollector);
+    }
+
+    #[test]
+    fn classify_nested_and_or_containing_collector_is_tree() {
+        // AND(C₁, AND(OR(C₂, P), P)) — OR above C₂ → Tree.
+        let tree = BoolNode::And(vec![
+            collector(b"x"),
+            BoolNode::And(vec![
+                BoolNode::Or(vec![collector(b"y"), dummy_predicate()]),
+                dummy_predicate(),
+            ]),
+        ]);
+        assert_eq!(classify_filter(&tree), FilterClass::Tree);
+    }
+
+    #[test]
+    fn classify_nested_and_not_containing_collector_is_tree() {
+        // AND(C₁, AND(NOT(C₂), P)) — NOT above C₂ → Tree.
+        let tree = BoolNode::And(vec![
+            collector(b"x"),
+            BoolNode::And(vec![
+                BoolNode::Not(Box::new(collector(b"y"))),
+                dummy_predicate(),
+            ]),
         ]);
         assert_eq!(classify_filter(&tree), FilterClass::Tree);
     }
