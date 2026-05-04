@@ -72,6 +72,7 @@ pub(in crate::indexed_table::tests_e2e) fn generate_tree(
         num_collectors,
         corpus.config.tree_max_depth,
         corpus.config.tree_max_fanout.max(2),
+        corpus.config.multi_column_or_pct,
     );
 
     GeneratedTree {
@@ -89,9 +90,10 @@ fn gen_node(
     num_collectors: usize,
     depth_remaining: u32,
     max_fanout: usize,
+    multi_column_or_pct: f64,
 ) -> BoolNode {
     if depth_remaining == 0 {
-        return gen_leaf(rng, schema, num_collectors);
+        return gen_leaf(rng, schema, num_collectors, multi_column_or_pct);
     }
     // Strongly favor connectives so trees actually reach `tree_max_depth`.
     // Previously the 70/40 split stopped most trees around depth 1–2.
@@ -101,7 +103,7 @@ fn gen_node(
         _ => 0.50,
     };
     if !rng.gen_bool(connective_prob) {
-        return gen_leaf(rng, schema, num_collectors);
+        return gen_leaf(rng, schema, num_collectors, multi_column_or_pct);
     }
     // Fanout skew: bias upward. `2..=max` uniform gives mean ≈ (max+2)/2;
     // we pick two candidates and take the larger, which pulls the mean up
@@ -117,7 +119,14 @@ fn gen_node(
             let n = pick_fanout(rng);
             let children: Vec<BoolNode> = (0..n)
                 .map(|_| {
-                    gen_node(rng, schema, num_collectors, depth_remaining - 1, max_fanout)
+                    gen_node(
+                        rng,
+                        schema,
+                        num_collectors,
+                        depth_remaining - 1,
+                        max_fanout,
+                        multi_column_or_pct,
+                    )
                 })
                 .collect();
             BoolNode::And(children)
@@ -126,7 +135,14 @@ fn gen_node(
             let n = pick_fanout(rng);
             let children: Vec<BoolNode> = (0..n)
                 .map(|_| {
-                    gen_node(rng, schema, num_collectors, depth_remaining - 1, max_fanout)
+                    gen_node(
+                        rng,
+                        schema,
+                        num_collectors,
+                        depth_remaining - 1,
+                        max_fanout,
+                        multi_column_or_pct,
+                    )
                 })
                 .collect();
             BoolNode::Or(children)
@@ -137,11 +153,17 @@ fn gen_node(
             num_collectors,
             depth_remaining - 1,
             max_fanout,
+            multi_column_or_pct,
         ))),
     }
 }
 
-fn gen_leaf(rng: &mut StdRng, schema: &SchemaRef, num_collectors: usize) -> BoolNode {
+fn gen_leaf(
+    rng: &mut StdRng,
+    schema: &SchemaRef,
+    num_collectors: usize,
+    multi_column_or_pct: f64,
+) -> BoolNode {
     // 35% collector, 65% predicate — predicates are cheaper to evaluate
     // and we want more of them for coverage, but we still want Collector
     // leaves to show up in every tree.
@@ -152,7 +174,7 @@ fn gen_leaf(rng: &mut StdRng, schema: &SchemaRef, num_collectors: usize) -> Bool
             query_bytes: Arc::from(&[id][..]),
         }
     } else {
-        gen_predicate_leaf(rng, schema)
+        gen_predicate_leaf(rng, schema, multi_column_or_pct)
     }
 }
 
@@ -184,13 +206,50 @@ fn pick_predicate_shape(rng: &mut StdRng, has_string_col: bool) -> PredicateShap
 }
 
 /// Build a `Predicate(Arc<dyn PhysicalExpr>)`. Dispatches to the chosen
-/// shape builder.
-fn gen_predicate_leaf(rng: &mut StdRng, schema: &SchemaRef) -> BoolNode {
+/// shape builder. With probability `multi_column_or_pct`, emits a
+/// multi-column single-expression OR: `BinaryExpr(Or, pred(a), pred(b))`
+/// over two different columns. This is the exact shape DataFusion's
+/// `split_conjunction` discards at the top level but the grid pruner
+/// handles.
+fn gen_predicate_leaf(
+    rng: &mut StdRng,
+    schema: &SchemaRef,
+    multi_column_or_pct: f64,
+) -> BoolNode {
     let has_string_col = schema
         .fields()
         .iter()
         .skip(1) // skip __doc_id
         .any(|f| matches!(f.data_type(), DataType::Utf8));
+
+    // Occasionally emit a multi-column OR inside a single expression.
+    // Only valid for `Binary` shape — InList / IsNull / Like don't
+    // compose this way cleanly. Also requires at least two user
+    // columns (> 2 fields total including __doc_id).
+    let can_multi_col_or = schema.fields().len() >= 3;
+    if can_multi_col_or && multi_column_or_pct > 0.0 && rng.gen_bool(multi_column_or_pct) {
+        let left = gen_binary_predicate_on_col(rng, schema, None);
+        // Pick a second column different from the first.
+        let (_, first_col_idx) = extract_binary_col(&left).expect("binary has a column");
+        let second_col_idx = {
+            let n = schema.fields().len();
+            // n >= 3 ensures at least 2 user columns to choose from
+            let mut idx = rng.gen_range(1..n);
+            while idx == first_col_idx {
+                idx = rng.gen_range(1..n);
+            }
+            idx
+        };
+        let right = gen_binary_predicate_on_col(rng, schema, Some(second_col_idx));
+        // Extract the inner expressions (both are Predicate(Arc<dyn PhysicalExpr>))
+        // and combine via a single Or BinaryExpr node.
+        let (l_expr, _) = extract_binary_col(&left).unwrap();
+        let (r_expr, _) = extract_binary_col(&right).unwrap();
+        let or_expr: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(l_expr, Operator::Or, r_expr));
+        return BoolNode::Predicate(or_expr);
+    }
+
     match pick_predicate_shape(rng, has_string_col) {
         PredicateShape::Binary => gen_binary_predicate(rng, schema),
         PredicateShape::InList => gen_in_list_predicate(rng, schema),
@@ -199,8 +258,26 @@ fn gen_predicate_leaf(rng: &mut StdRng, schema: &SchemaRef) -> BoolNode {
     }
 }
 
-fn gen_binary_predicate(rng: &mut StdRng, schema: &SchemaRef) -> BoolNode {
-    let col_idx = rng.gen_range(1..schema.fields().len());
+/// Extract the underlying expression + column index from a
+/// `BoolNode::Predicate` produced by `gen_binary_predicate_on_col`.
+/// Returns `None` for non-binary predicate shapes.
+fn extract_binary_col(node: &BoolNode) -> Option<(Arc<dyn PhysicalExpr>, usize)> {
+    let BoolNode::Predicate(expr) = node else {
+        return None;
+    };
+    let bin = expr.as_any().downcast_ref::<BinaryExpr>()?;
+    let col = bin.left().as_any().downcast_ref::<Column>()?;
+    Some((Arc::clone(expr), col.index()))
+}
+
+/// Build a binary comparison predicate on a specific column (if
+/// `col_idx` is `Some`) or a randomly chosen one.
+fn gen_binary_predicate_on_col(
+    rng: &mut StdRng,
+    schema: &SchemaRef,
+    col_idx: Option<usize>,
+) -> BoolNode {
+    let col_idx = col_idx.unwrap_or_else(|| rng.gen_range(1..schema.fields().len()));
     let field = schema.field(col_idx);
     let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), col_idx));
     let ops = [
@@ -215,6 +292,10 @@ fn gen_binary_predicate(rng: &mut StdRng, schema: &SchemaRef) -> BoolNode {
     let literal = pick_literal_for(rng, field.data_type());
     let lit_expr: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(literal));
     BoolNode::Predicate(Arc::new(BinaryExpr::new(col_expr, op, lit_expr)))
+}
+
+fn gen_binary_predicate(rng: &mut StdRng, schema: &SchemaRef) -> BoolNode {
+    gen_binary_predicate_on_col(rng, schema, None)
 }
 
 /// `col IN (lit, lit, ...)` with 1..=4 literals. With some probability,

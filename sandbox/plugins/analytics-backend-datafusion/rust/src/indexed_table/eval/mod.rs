@@ -393,14 +393,51 @@ impl RowGroupBitsetSource for TreeBitsetSource {
         // `prefetch.candidates` is in min_doc-relative space [0, max_doc - min_doc).
         // `PrefetchedRg.candidates` is in RG-relative space [0, rg.num_rows).
         // anchor = (min_doc - rg.first_row) shifts each relative bit.
+        //
+        // Fast path: if `anchor == 0`, clone directly — no shift
+        // needed. Otherwise walk the source in sorted order and
+        // coalesce consecutive bits into `insert_range` calls so we
+        // get one O(log n) call per run instead of O(1) per bit.
         let anchor = (min_doc as i64) - rg.first_row;
-        let mut rg_candidates = RoaringBitmap::new();
-        for rel in prefetch.candidates.iter() {
-            let shifted = rel as i64 + anchor;
-            if shifted >= 0 && shifted <= u32::MAX as i64 {
-                rg_candidates.insert(shifted as u32);
+        let rg_candidates = if anchor == 0 {
+            prefetch.candidates.clone()
+        } else {
+            let mut rg_candidates = RoaringBitmap::new();
+            let mut run_start: Option<u32> = None;
+            let mut run_end: u32 = 0; // inclusive
+            let mut flush = |bm: &mut RoaringBitmap, start: u32, end_inclusive: u32| {
+                // Range API is half-open; end_inclusive+1 handles the
+                // edge case at u32::MAX via saturating add (roaring
+                // clamps at u32::MAX internally).
+                let end = end_inclusive.saturating_add(1);
+                bm.insert_range(start..end);
+            };
+            for rel in prefetch.candidates.iter() {
+                let shifted = rel as i64 + anchor;
+                if shifted < 0 || shifted > u32::MAX as i64 {
+                    continue;
+                }
+                let v = shifted as u32;
+                match run_start {
+                    None => {
+                        run_start = Some(v);
+                        run_end = v;
+                    }
+                    Some(_) if v == run_end + 1 => {
+                        run_end = v;
+                    }
+                    Some(s) => {
+                        flush(&mut rg_candidates, s, run_end);
+                        run_start = Some(v);
+                        run_end = v;
+                    }
+                }
             }
-        }
+            if let Some(s) = run_start {
+                flush(&mut rg_candidates, s, run_end);
+            }
+            rg_candidates
+        };
 
         // Compute final page-level pruning metrics from the resolved
         // bitmap. A page is "pruned" if zero candidate bits fall within

@@ -439,16 +439,27 @@ fn predicate_page_bitmap(
     match selection {
         Some(sel) => {
             // The selection is RG-relative. Translate to min_doc-relative
-            // space (the bitmap the tree evaluator walks over).
+            // space (the bitmap the tree evaluator walks over). Each
+            // kept selector covers a contiguous row range; insert it as
+            // a range in one call. `RoaringBitmap::insert_range` handles
+            // a full page of rows in O(log n) per container (or O(1) for
+            // full-container runs), vs. the naive one-bit-at-a-time loop
+            // which is O(rows_kept) with per-insert overhead.
             let rg_offset = (ctx.rg_first_row as i32 - ctx.min_doc) as i64;
+            let span = (ctx.max_doc - ctx.min_doc) as i64;
             let mut rg_pos: i64 = 0;
             for s in sel.iter() {
                 if !s.skip {
-                    for i in 0..s.row_count as i64 {
-                        let rel = rg_pos + i + rg_offset;
-                        if rel >= 0 && rel < (ctx.max_doc - ctx.min_doc) as i64 {
-                            bm.insert(rel as u32);
-                        }
+                    // Selector covers [rg_pos, rg_pos + s.row_count) in
+                    // RG-relative space; shift into scope-relative space
+                    // and clamp to [0, span) since the scope bitmap only
+                    // covers rows inside [min_doc, max_doc).
+                    let start_rel = rg_pos + rg_offset;
+                    let end_rel = start_rel + s.row_count as i64;
+                    let lo = start_rel.max(0);
+                    let hi = end_rel.min(span);
+                    if lo < hi {
+                        bm.insert_range(lo as u32..hi as u32);
                     }
                 }
                 rg_pos += s.row_count as i64;

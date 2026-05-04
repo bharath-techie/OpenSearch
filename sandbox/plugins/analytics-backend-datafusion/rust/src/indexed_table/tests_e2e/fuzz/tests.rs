@@ -169,3 +169,30 @@ async fn fuzz_and_predicate_collector() {
     )
     .await;
 }
+
+/// Misaligned per-column page layouts: dictionary encoding off + tight
+/// page byte budget so Utf8 columns flush far more often than Int32/
+/// Boolean. Exercises `PagePruner`'s common-grid code path where a
+/// single grid cell inherits stats from different pages per column.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_misaligned_pages() {
+    run_fuzz("fuzz_misaligned_pages", 50, FixtureConfig::misaligned_pages).await;
+}
+
+/// Clustered nulls: each column's nulls form 256-row contiguous runs.
+/// Produces pages that are fully-null, fully-non-null, or mixed-null.
+/// Exercises the `PagePruner` grid null-count splitting rule
+/// (`0 / page_row_count / unknown`) across all three branches.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_clustered_nulls() {
+    run_fuzz("fuzz_clustered_nulls", 50, FixtureConfig::clustered_nulls).await;
+}
+
+/// Multi-column OR inside a single expression: ~30% of generated
+/// binary-op predicate leaves are wrapped as `BinaryExpr(Or, a<5, b>10)`
+/// over two different columns. Exercises the grid multi-column-OR
+/// pruning path that DataFusion's `split_conjunction` discards.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_multi_column_or() {
+    run_fuzz("fuzz_multi_column_or", 50, FixtureConfig::multi_column_or).await;
+}

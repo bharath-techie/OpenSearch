@@ -138,6 +138,24 @@ fn eval_predicate(
     let any = expr.as_any();
 
     if let Some(bin) = any.downcast_ref::<BinaryExpr>() {
+        // Logical operators inside a single `PhysicalExpr`:
+        // `BinaryExpr(And, pred, pred)` or `BinaryExpr(Or, pred, pred)`.
+        // Tree-gen emits these when `multi_column_or_pct > 0` to
+        // exercise the grid pruner's multi-column-OR path. Recurse
+        // and combine via 3VL on the oracle side.
+        match bin.op() {
+            Operator::And => {
+                let l = eval_predicate(bin.left(), corpus, row);
+                let r = eval_predicate(bin.right(), corpus, row);
+                return l.and(r);
+            }
+            Operator::Or => {
+                let l = eval_predicate(bin.left(), corpus, row);
+                let r = eval_predicate(bin.right(), corpus, row);
+                return l.or(r);
+            }
+            _ => { /* fall through to column-op-literal handling */ }
+        }
         let col = bin
             .left()
             .as_any()
