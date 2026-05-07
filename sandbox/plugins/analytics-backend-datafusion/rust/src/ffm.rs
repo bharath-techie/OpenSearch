@@ -164,16 +164,45 @@ pub unsafe extern "C" fn df_execute_query(
     let plan_bytes = slice::from_raw_parts(plan_ptr, plan_len as usize);
     let query_config =
         crate::datafusion_query_config::DatafusionQueryConfig::from_ffm_ptr(query_config_ptr);
+
+    // Copy the plan bytes so the spawned future can own them (`cpu_executor.spawn`
+    // requires `'static`). The `shard_view_ptr`, `runtime_ptr` are raw pointers
+    // held live by the caller for the duration of the FFM downcall — safe to
+    // capture by value (they are `Copy`).
+    let plan_vec = plan_bytes.to_vec();
+    let table_name_owned = table_name.to_string();
+    let mgr_for_inner = Arc::clone(&mgr);
+    let mgr_for_spawn = Arc::clone(&mgr);
+
+    // Wrap plan setup in `cpu_executor.spawn` so DataFusion operators that
+    // eagerly spawn in their `execute()` method (RepartitionExec,
+    // CoalescePartitionsExec, AggregateExec, ...) inherit the CPU executor
+    // instead of the IO runtime. Without this wrap those operator drain tasks
+    // land on IO workers at plan-setup time and the IO runtime ends up doing
+    // all the work. The IO runtime still drives the outer `block_on`
+    // (bridging the synchronous FFM call to the async spawn handle); only
+    // the plan construction and stream wrapping hop to CPU.
     mgr.io_runtime
-        .block_on(api::execute_query(
-            shard_view_ptr,
-            table_name,
-            plan_bytes,
-            runtime_ptr,
-            &mgr,
-            context_id,
-            query_config,
-        ))
+        .block_on(async move {
+            let inner_fut = async move {
+                api::execute_query(
+                    shard_view_ptr,
+                    &table_name_owned,
+                    &plan_vec,
+                    runtime_ptr,
+                    &mgr_for_inner,
+                    context_id,
+                    query_config,
+                )
+                .await
+            };
+            match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
+                Ok(inner) => inner,
+                Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
+                    "df_execute_query: CPU spawn failed: {e:?}"
+                ))),
+            }
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -613,11 +642,32 @@ pub unsafe extern "C" fn df_execute_with_context(
     let mgr = get_rt_manager()?;
     let plan_bytes = slice::from_raw_parts(plan_ptr, plan_len as usize);
     let cpu_executor = mgr.cpu_executor();
+
+    // See `df_execute_query` for the rationale behind wrapping the inner
+    // async work in `cpu_executor.spawn`. In short: DataFusion operators
+    // (RepartitionExec, CoalescePartitionsExec, AggregateExec) eagerly
+    // spawn in `execute()`. Without this wrap those spawns inherit the IO
+    // runtime and do all the work there, leaving the CPU runtime idle.
+    let plan_vec = plan_bytes.to_vec();
+    let cpu_for_cross = cpu_executor.clone();
+    let mgr_for_spawn = Arc::clone(&mgr);
+
     mgr.io_runtime
-        .block_on(crate::query_executor::execute_with_context(
-            session_handle,
-            plan_bytes,
-            cpu_executor,
-        ))
+        .block_on(async move {
+            let inner_fut = async move {
+                crate::query_executor::execute_with_context(
+                    session_handle,
+                    &plan_vec,
+                    cpu_for_cross,
+                )
+                .await
+            };
+            match mgr_for_spawn.cpu_executor().spawn(inner_fut).await {
+                Ok(inner) => inner,
+                Err(e) => Err(datafusion::error::DataFusionError::Execution(format!(
+                    "df_execute_with_context: CPU spawn failed: {e:?}"
+                ))),
+            }
+        })
         .map_err(|e| e.to_string())
 }
