@@ -85,6 +85,12 @@ incremental = true
 debug = "line-tables-only"
 strip = false
 
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+opt-level = 2
+
 [profile.dev]
 opt-level = 1
 lto = false
