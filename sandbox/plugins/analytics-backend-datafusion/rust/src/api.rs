@@ -618,8 +618,9 @@ pub async unsafe fn execute_local_plan(
     // Wrap the output in the same CrossRtStream + RecordBatchStreamAdapter
     // shape as `execute_query`, so existing `stream_next` / `stream_close`
     // drain this handle unchanged.
+    let default_depth = crate::datafusion_query_config::DatafusionQueryConfig::default().channel_depth;
     let cross_rt_stream =
-        CrossRtStream::new_with_df_error_stream(df_stream, manager.cpu_executor());
+        CrossRtStream::new_with_df_error_stream_buffered(df_stream, manager.cpu_executor(), default_depth);
     let wrapped = RecordBatchStreamAdapter::new(cross_rt_stream.schema(), cross_rt_stream);
 
     let handle = QueryStreamHandle::new(wrapped, query_context);

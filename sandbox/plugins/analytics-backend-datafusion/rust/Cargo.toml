@@ -57,3 +57,7 @@ rand = "0.8"
 [[bench]]
 name = "query_bench"
 harness = false
+
+[[bench]]
+name = "cross_rt_throughput_bench"
+harness = false

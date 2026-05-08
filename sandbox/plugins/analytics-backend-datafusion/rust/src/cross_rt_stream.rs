@@ -39,7 +39,15 @@ impl CrossRtStream {
         F: FnOnce(Sender<Result<RecordBatch, DataFusionError>>) -> Fut,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let (tx, rx) = channel(1);
+        Self::new_with_tx_buffered(f, schema, 1)
+    }
+
+    fn new_with_tx_buffered<F, Fut>(f: F, schema: SchemaRef, channel_depth: usize) -> Self
+    where
+        F: FnOnce(Sender<Result<RecordBatch, DataFusionError>>) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let (tx, rx) = channel(channel_depth);
         let driver = f(tx).boxed();
         Self {
             driver,
@@ -54,8 +62,16 @@ impl CrossRtStream {
         stream: SendableRecordBatchStream,
         exec: DedicatedExecutor,
     ) -> Self {
+        Self::new_with_df_error_stream_buffered(stream, exec, 1)
+    }
+
+    pub fn new_with_df_error_stream_buffered(
+        stream: SendableRecordBatchStream,
+        exec: DedicatedExecutor,
+        channel_depth: usize,
+    ) -> Self {
         let schema = stream.schema();
-        Self::new_with_tx(
+        Self::new_with_tx_buffered(
             |tx| {
                 let tx_captured = tx.clone();
                 let fut = async move {
@@ -81,6 +97,7 @@ impl CrossRtStream {
                 }
             },
             schema,
+            channel_depth,
         )
     }
 

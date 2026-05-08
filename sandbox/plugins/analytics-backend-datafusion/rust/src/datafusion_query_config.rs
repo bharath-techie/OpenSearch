@@ -46,6 +46,9 @@ pub struct DatafusionQueryConfig {
     /// `TightenOuterBounds` is the default — multiple collectors in the
     /// tree means `PageRangeSplit` would multiply FFM calls.
     pub tree_collector_strategy: CollectorCallStrategy,
+    /// CrossRtStream mpsc channel depth. Controls how many batches the
+    /// producer can buffer ahead of the consumer. Default 2.
+    pub channel_depth: usize,
 }
 
 /// FFM wire format. Must stay in lockstep with the Java `MemoryLayout`.
@@ -75,6 +78,8 @@ pub struct WireDatafusionQueryConfig {
     pub single_collector_strategy: i32,
     /// 0 = FullRange, 1 = TightenOuterBounds, 2 = PageRangeSplit
     pub tree_collector_strategy: i32,
+    /// CrossRtStream channel depth. 0 = use default (2).
+    pub channel_depth: i32,
 }
 
 impl DatafusionQueryConfig {
@@ -162,6 +167,7 @@ impl DatafusionQueryConfig {
                 2 => CollectorCallStrategy::PageRangeSplit,
                 _ => CollectorCallStrategy::TightenOuterBounds,
             },
+            channel_depth: if w.channel_depth > 0 { w.channel_depth as usize } else { 2 },
         }
     }
 }
@@ -272,6 +278,7 @@ mod tests {
             max_collector_parallelism: 4,
             single_collector_strategy: 2,
             tree_collector_strategy: 1,
+            channel_depth: 4,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
@@ -285,6 +292,7 @@ mod tests {
         assert_eq!(c.force_pushdown, Some(false));
         assert_eq!(c.cost_predicate, 3);
         assert_eq!(c.cost_collector, 17);
+        assert_eq!(c.channel_depth, 4);
     }
 
     #[test]
@@ -303,10 +311,12 @@ mod tests {
             max_collector_parallelism: 2,
             single_collector_strategy: 2,
             tree_collector_strategy: 1,
+            channel_depth: 0,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
         assert_eq!(c.force_strategy, None);
         assert_eq!(c.force_pushdown, None);
+        assert_eq!(c.channel_depth, 2); // 0 → default
     }
 }
