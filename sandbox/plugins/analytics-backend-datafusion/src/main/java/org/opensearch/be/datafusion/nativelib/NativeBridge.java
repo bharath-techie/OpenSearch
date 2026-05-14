@@ -22,6 +22,7 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.util.LinkedHashMap;
+import java.util.List;
 
 /**
  * FFM bridge to native DataFusion library.
@@ -136,11 +137,12 @@ public final class NativeBridge {
             lib.find("df_create_reader").orElseThrow(),
             FunctionDescriptor.of(
                 ValueLayout.JAVA_LONG,
-                ValueLayout.ADDRESS,
-                ValueLayout.JAVA_LONG,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS,
-                ValueLayout.JAVA_LONG
+                ValueLayout.ADDRESS,    // table_path_ptr
+                ValueLayout.JAVA_LONG,  // table_path_len
+                ValueLayout.ADDRESS,    // files_ptr
+                ValueLayout.ADDRESS,    // files_len_ptr
+                ValueLayout.ADDRESS,    // writer_generations_ptr
+                ValueLayout.JAVA_LONG   // count (applies to all three parallel arrays)
             )
         );
 
@@ -562,12 +564,25 @@ public final class NativeBridge {
     /**
      * Creates a native reader. Returns an opaque native pointer.
      * Freed by {@link #closeDatafusionReader}.
+     *
+     * <p>Callers pass {@link SegmentFile} records — each carries a filename paired with
+     * the writer generation of the segment that produced it. Marshalling to the FFM wire
+     * format (parallel arrays) is an internal concern of this method.
      */
-    public static long createDatafusionReader(String path, String[] files) {
+    public static long createDatafusionReader(String path, List<SegmentFile> segmentFiles) {
+        int n = segmentFiles.size();
+        String[] files = new String[n];
+        long[] writerGenerations = new long[n];
+        for (int i = 0; i < n; i++) {
+            SegmentFile sf = segmentFiles.get(i);
+            files[i] = sf.fileName();
+            writerGenerations[i] = sf.writerGeneration();
+        }
         try (var call = new NativeCall()) {
             var p = call.str(path);
             var f = call.strArray(files);
-            return call.invoke(CREATE_READER, p.segment(), p.len(), f.ptrs(), f.lens(), f.count());
+            var gens = call.longs(writerGenerations);
+            return call.invoke(CREATE_READER, p.segment(), p.len(), f.ptrs(), f.lens(), gens, f.count());
         }
     }
 
