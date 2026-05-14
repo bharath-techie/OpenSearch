@@ -17,7 +17,7 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 import org.opensearch.be.datafusion.nativelib.ReaderHandle;
-import org.opensearch.be.datafusion.nativelib.SegmentFile;
+import org.opensearch.index.engine.exec.MonoFileWriterSet;
 import org.opensearch.be.datafusion.nativelib.StreamHandle;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.test.OpenSearchTestCase;
@@ -56,7 +56,7 @@ public class DataFusionQueryExecutionTests extends OpenSearchTestCase {
         Path dataDir = createTempDir("datafusion-data");
         Path testParquet = Path.of(getClass().getClassLoader().getResource("test.parquet").toURI());
         Files.copy(testParquet, dataDir.resolve("test.parquet"));
-        readerHandle = new ReaderHandle(dataDir.toString(), List.of(new SegmentFile(0L, "test.parquet")));
+        readerHandle = new ReaderHandle(dataDir.toString(), List.of(MonoFileWriterSet.of(".", 0L, "test.parquet", 0L)));
 
         configArena = Arena.ofConfined();
         MemorySegment configSegment = configArena.allocate(WireConfigSnapshot.BYTE_SIZE);

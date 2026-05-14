@@ -11,13 +11,12 @@ package org.opensearch.be.datafusion;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.be.datafusion.nativelib.ReaderHandle;
-import org.opensearch.be.datafusion.nativelib.SegmentFile;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.index.engine.exec.MonoFileWriterSet;
 import org.opensearch.index.engine.exec.WriterFileSet;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
@@ -40,28 +39,22 @@ public class DatafusionReader implements Closeable {
     /**
      * Creates a DatafusionReader for the given shard directory and per-segment files.
      * <p>
-     * Each {@link WriterFileSet} carries its writer generation and the files that make up
-     * one segment. We flatten into a {@code List<SegmentFile>}: one entry per file, with
-     * the segment's generation attached.
+     * Each {@link WriterFileSet} is narrowed to a {@link MonoFileWriterSet} — Parquet
+     * produces exactly one file per segment. This fails fast if a multi-file set is
+     * encountered, preventing silent correctness bugs in the native reader.
      *
      * @param directoryPath shard data directory
      * @param writerFileSets the per-segment file sets from the catalog snapshot
      */
     public DatafusionReader(String directoryPath, Collection<WriterFileSet> writerFileSets) {
         this.directoryPath = directoryPath;
-        List<SegmentFile> segmentFiles;
+        List<MonoFileWriterSet> segments;
         if (writerFileSets == null || writerFileSets.isEmpty()) {
-            segmentFiles = List.of();
+            segments = List.of();
         } else {
-            segmentFiles = new ArrayList<>();
-            for (WriterFileSet wfs : writerFileSets) {
-                long gen = wfs.writerGeneration();
-                for (String file : wfs.files()) {
-                    segmentFiles.add(new SegmentFile(gen, file));
-                }
-            }
+            segments = writerFileSets.stream().map(MonoFileWriterSet::from).toList();
         }
-        readerHandle = new ReaderHandle(directoryPath, segmentFiles);
+        readerHandle = new ReaderHandle(directoryPath, segments);
     }
 
     /**

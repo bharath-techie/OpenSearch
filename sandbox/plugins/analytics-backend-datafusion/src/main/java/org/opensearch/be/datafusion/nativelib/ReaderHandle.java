@@ -9,6 +9,7 @@
 package org.opensearch.be.datafusion.nativelib;
 
 import org.opensearch.analytics.backend.jni.NativeHandle;
+import org.opensearch.index.engine.exec.MonoFileWriterSet;
 
 import java.util.List;
 
@@ -21,15 +22,14 @@ public final class ReaderHandle extends NativeHandle {
 
     /**
      * Creates a reader handle by allocating a native DataFusion reader for the given path
-     * and {@link SegmentFile}s. Each {@link SegmentFile} pairs one parquet file with the
-     * writer generation of the segment that produced it; that generation is sourced from
-     * the catalog snapshot's {@code WriterFileSet.writerGeneration}.
+     * and {@link MonoFileWriterSet}s. Each entry represents one parquet segment — a single
+     * file paired with its writer generation (sourced from the catalog snapshot).
      *
      * @param path the directory path containing data files
-     * @param segmentFiles the files to read, each tagged with its writer generation
+     * @param segments the per-segment file sets to read
      */
-    public ReaderHandle(String path, List<SegmentFile> segmentFiles) {
-        super(NativeBridge.createDatafusionReader(path, segmentFiles));
+    public ReaderHandle(String path, List<MonoFileWriterSet> segments) {
+        super(NativeBridge.createDatafusionReader(path, segments));
         this.ownsPointer = true;
     }
 

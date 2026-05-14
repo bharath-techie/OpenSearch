@@ -11,7 +11,7 @@ package org.opensearch.be.datafusion;
 import org.opensearch.analytics.backend.jni.NativeHandle;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 import org.opensearch.be.datafusion.nativelib.ReaderHandle;
-import org.opensearch.be.datafusion.nativelib.SegmentFile;
+import org.opensearch.index.engine.exec.MonoFileWriterSet;
 import org.opensearch.be.datafusion.nativelib.SessionContextHandle;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.test.OpenSearchTestCase;
@@ -62,7 +62,7 @@ public class DataFusionNativeBridgeTests extends OpenSearchTestCase {
         Files.copy(testParquet, dataDir.resolve("test.parquet"));
 
         // Create reader
-        ReaderHandle readerHandle = new ReaderHandle(dataDir.toString(), java.util.List.of(new SegmentFile(0L, "test.parquet")));
+        ReaderHandle readerHandle = new ReaderHandle(dataDir.toString(), java.util.List.of(MonoFileWriterSet.of(".", 0L, "test.parquet", 0L)));
         assertTrue("Reader pointer should be non-zero", readerHandle.getPointer() != 0);
 
         // Close reader
@@ -81,7 +81,7 @@ public class DataFusionNativeBridgeTests extends OpenSearchTestCase {
         Path testParquet = Path.of(getClass().getClassLoader().getResource("test.parquet").toURI());
         Files.copy(testParquet, dataDir.resolve("test.parquet"));
 
-        ReaderHandle readerHandle = new ReaderHandle(dataDir.toString(), java.util.List.of(new SegmentFile(0L, "test.parquet")));
+        ReaderHandle readerHandle = new ReaderHandle(dataDir.toString(), java.util.List.of(MonoFileWriterSet.of(".", 0L, "test.parquet", 0L)));
 
         // Create session context with table registered
         long queryConfigPtr;
