@@ -565,23 +565,14 @@ public final class NativeBridge {
      * Creates a native reader. Returns an opaque native pointer.
      * Freed by {@link #closeDatafusionReader}.
      *
-     * <p>Callers pass {@link SegmentFile} records — each carries a filename paired with
-     * the writer generation of the segment that produced it. Marshalling to the FFM wire
-     * format (parallel arrays) is an internal concern of this method.
+     * @param path     shard data directory
+     * @param segments per-segment metadata — each carries a single filename and writer generation
      */
-    public static long createDatafusionReader(String path, List<SegmentFile> segmentFiles) {
-        int n = segmentFiles.size();
-        String[] files = new String[n];
-        long[] writerGenerations = new long[n];
-        for (int i = 0; i < n; i++) {
-            SegmentFile sf = segmentFiles.get(i);
-            files[i] = sf.fileName();
-            writerGenerations[i] = sf.writerGeneration();
-        }
+    public static long createDatafusionReader(String path, List<org.opensearch.index.engine.exec.MonoFileWriterSet> segments) {
         try (var call = new NativeCall()) {
             var p = call.str(path);
-            var f = call.strArray(files);
-            var gens = call.longs(writerGenerations);
+            var f = call.strArray(segments.stream().map(org.opensearch.index.engine.exec.MonoFileWriterSet::file).toArray(String[]::new));
+            var gens = call.longs(segments.stream().mapToLong(org.opensearch.index.engine.exec.MonoFileWriterSet::writerGeneration).toArray());
             return call.invoke(CREATE_READER, p.segment(), p.len(), f.ptrs(), f.lens(), gens, f.count());
         }
     }
