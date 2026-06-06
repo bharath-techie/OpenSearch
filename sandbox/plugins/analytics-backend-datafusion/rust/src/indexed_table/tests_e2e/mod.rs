@@ -50,6 +50,7 @@ mod row_id_emission;
 mod row_id_strategies;
 mod schema_drift;
 mod streaming_at_scale;
+mod work_stealing;
 
 // ── Test fixture: parquet table with 16 rows ────────────────────────
 //

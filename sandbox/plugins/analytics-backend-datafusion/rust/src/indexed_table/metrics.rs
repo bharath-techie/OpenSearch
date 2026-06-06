@@ -109,6 +109,11 @@ pub struct StreamMetrics {
     /// RGs that became prunable only after the filter tightened further between
     /// prefetch (which runs ~1 RG ahead) and processing.
     pub dynamic_filter_rg_pruned_at_poll: Option<Count>,
+    /// Count of chunks this partition processed beyond its own static assignment
+    /// — i.e. stolen from the shared work queue (work-stealing). Zero unless
+    /// `indexed_work_stealing` is on. Summed across partitions, a non-zero total
+    /// proves the rebalancing path fired.
+    pub work_stolen_chunks: Option<Count>,
     /// Accumulated inner `DataSourceExec` parquet metrics (shared across partitions).
     pub inner_parquet_metrics: Option<Arc<std::sync::Mutex<Vec<MetricsSet>>>>,
 }
@@ -150,6 +155,7 @@ impl StreamMetrics {
             parquet_poll_time: None,
             dynamic_filter_rg_pruned_at_prefetch: None,
             dynamic_filter_rg_pruned_at_poll: None,
+            work_stolen_chunks: None,
             inner_parquet_metrics: None,
         }
     }
@@ -190,6 +196,7 @@ pub struct PartitionMetrics {
     pub parquet_poll_time: Time,
     pub dynamic_filter_rg_pruned_at_prefetch: Count,
     pub dynamic_filter_rg_pruned_at_poll: Count,
+    pub work_stolen_chunks: Count,
 }
 
 impl PartitionMetrics {
@@ -234,6 +241,7 @@ impl PartitionMetrics {
                 .subset_time("parquet_poll_time", partition),
             dynamic_filter_rg_pruned_at_prefetch: counter("dynamic_filter_rg_pruned_at_prefetch"),
             dynamic_filter_rg_pruned_at_poll: counter("dynamic_filter_rg_pruned_at_poll"),
+            work_stolen_chunks: counter("work_stolen_chunks"),
         }
     }
 
@@ -276,6 +284,7 @@ impl PartitionMetrics {
             parquet_poll_time: Some(self.parquet_poll_time),
             dynamic_filter_rg_pruned_at_prefetch: Some(self.dynamic_filter_rg_pruned_at_prefetch),
             dynamic_filter_rg_pruned_at_poll: Some(self.dynamic_filter_rg_pruned_at_poll),
+            work_stolen_chunks: Some(self.work_stolen_chunks),
             inner_parquet_metrics,
         }
     }
