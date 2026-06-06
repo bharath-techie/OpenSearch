@@ -79,6 +79,14 @@ pub struct DatafusionQueryConfig {
     /// `FilterExec`), so behaviour is identical to before this feature. Exposed
     /// as a toggle to A/B the performance impact.
     pub indexed_dynamic_filter_pushdown: bool,
+    /// Whether sibling partition streams of the indexed scan share one queue of
+    /// row-group chunks and steal work from it at runtime, instead of each
+    /// partition draining a fixed set assigned at planning time. Rebalances
+    /// uneven scans (the common case under dynamic filtering, where one
+    /// partition's RGs get pruned while another's don't). Off → today's static
+    /// per-partition assignment. Port of DataFusion PR #21351. See
+    /// `docs/dynamic-work-stealing-indexed-table.md`.
+    pub indexed_work_stealing: bool,
 }
 
 /// FFM wire format. Must stay in lockstep with the Java `MemoryLayout`.
@@ -114,6 +122,8 @@ pub struct WireDatafusionQueryConfig {
     pub bloom_filter_on_read: i32,
     /// 0 = false, 1 = true
     pub indexed_dynamic_filter_pushdown: i32,
+    /// 0 = false, 1 = true
+    pub indexed_work_stealing: i32,
 }
 
 impl DatafusionQueryConfig {
@@ -141,6 +151,8 @@ impl DatafusionQueryConfig {
             // On by default — matches the Java cluster-setting default
             // (`datafusion.indexed.dynamic_filter_pushdown`). Toggle to A/B perf.
             indexed_dynamic_filter_pushdown: true,
+            // Off by default — opt-in while the work-stealing path beds in.
+            indexed_work_stealing: false,
         }
     }
 
@@ -213,6 +225,7 @@ impl DatafusionQueryConfig {
             },
             bloom_filter_on_read: w.bloom_filter_on_read != 0,
             indexed_dynamic_filter_pushdown: w.indexed_dynamic_filter_pushdown != 0,
+            indexed_work_stealing: w.indexed_work_stealing != 0,
         }
     }
 }
@@ -285,6 +298,10 @@ impl DatafusionQueryConfigBuilder {
         self.0.indexed_dynamic_filter_pushdown = v;
         self
     }
+    pub fn indexed_work_stealing(mut self, v: bool) -> Self {
+        self.0.indexed_work_stealing = v;
+        self
+    }
     pub fn build(self) -> DatafusionQueryConfig {
         self.0
     }
@@ -308,6 +325,7 @@ mod tests {
         assert_eq!(c.cost_predicate, 1);
         assert_eq!(c.cost_collector, 10);
         assert!(c.indexed_dynamic_filter_pushdown);
+        assert!(!c.indexed_work_stealing);
     }
 
     #[test]
@@ -335,11 +353,13 @@ mod tests {
             query_strategy: 1,
             bloom_filter_on_read: 1,
             indexed_dynamic_filter_pushdown: 1,
+            indexed_work_stealing: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
         assert_eq!(c.batch_size, 16384);
         assert!(c.indexed_dynamic_filter_pushdown);
+        assert!(c.indexed_work_stealing);
         assert_eq!(c.target_partitions, 8);
         assert_eq!(c.min_skip_run_default, 512);
         assert!((c.min_skip_run_selectivity_threshold - 0.07).abs() < 1e-9);
@@ -371,11 +391,13 @@ mod tests {
             query_strategy: 0,
             bloom_filter_on_read: 0,
             indexed_dynamic_filter_pushdown: 0,
+            indexed_work_stealing: 0,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
         assert_eq!(c.force_strategy, None);
         assert!(!c.indexed_dynamic_filter_pushdown);
+        assert!(!c.indexed_work_stealing);
         assert_eq!(c.force_pushdown, None);
         assert_eq!(c.query_strategy, QueryStrategy::None);
     }

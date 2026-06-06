@@ -56,6 +56,8 @@ use super::partitioning::{
     PartitionAssignment, SegmentChunk, SegmentLayout,
 };
 use super::stream::{FilterStrategy, IndexedExec, RowGroupInfo};
+use super::work_source::{IndexedWorkSource, ReorderKey, SharedChunkQueue, WorkItem};
+use std::sync::OnceLock;
 use crate::datafusion_query_config::DatafusionQueryConfig;
 use crate::indexed_table::metrics::StreamMetrics;
 use crate::indexed_table::page_pruner::StatsPruneTree;
@@ -421,6 +423,7 @@ impl TableProvider for IndexedTableProvider {
             row_id_output_index,
             dynamic_filters: Vec::new(),
             advertised_ordering,
+            shared_queue: OnceLock::new(),
         }))
     }
 
@@ -466,6 +469,15 @@ pub struct QueryShardExec {
     /// the same ordering so DataFusion's `EnforceSorting` can substitute
     /// `SortPreservingMergeExec` for the outer `SortExec(TopK)`.
     advertised_ordering: Option<LexOrdering>,
+    /// Shared work queue for cross-partition work-stealing, built lazily on the
+    /// first `execute()` so all sibling partitions of one execution share a
+    /// single `Arc`-backed queue. `None` inside the lock means stealing is off
+    /// (the `indexed_work_stealing` flag is false) — every partition then uses a
+    /// `Local` work source equivalent to today's static assignment. A fresh
+    /// empty `OnceLock` is minted wherever this node is reconstructed, so a
+    /// re-planned node never inherits a drained queue. See
+    /// `docs/dynamic-work-stealing-indexed-table.md`.
+    shared_queue: OnceLock<Option<SharedChunkQueue>>,
 }
 
 impl fmt::Debug for QueryShardExec {
@@ -624,45 +636,218 @@ impl ExecutionPlan for QueryShardExec {
             (!self.dynamic_filters.is_empty())
                 .then(|| datafusion::physical_expr::utils::conjunction(self.dynamic_filters.clone()));
 
-        let mut streams: Vec<SendableRecordBatchStream> =
-            Vec::with_capacity(assignment.chunks.len());
-        for chunk in &assignment.chunks {
-            let segment = self.config.segments.get(chunk.segment_idx).ok_or_else(|| {
-                DataFusionError::Internal(format!("segment_idx {} out of range", chunk.segment_idx))
-            })?;
+        // Build (once per execution) the shared work queue, or stay on the
+        // static per-partition path. `get_or_init` guarantees a single queue
+        // across all sibling `execute(partition)` calls of this node.
+        let shared = self.shared_queue.get_or_init(|| {
+            self.config
+                .query_config
+                .indexed_work_stealing
+                .then(|| SharedChunkQueue::from_assignments(&self.assignments))
+        });
 
-            let rg_set: HashSet<usize> = chunk.row_group_indices.iter().copied().collect();
-            let row_groups: Vec<RowGroupInfo> = segment
-                .row_groups
-                .iter()
-                .filter(|rg| rg_set.contains(&rg.index))
-                .cloned()
-                .collect();
+        let work = match shared {
+            // Steal from the cross-partition pool.
+            Some(q) => IndexedWorkSource::Shared(q.clone()),
+            // Feature off: this partition's own chunks, in assignment order —
+            // byte-identical to the pre-work-stealing behaviour.
+            None => IndexedWorkSource::Local(
+                assignment
+                    .chunks
+                    .iter()
+                    .map(|chunk| WorkItem {
+                        segment_idx: chunk.segment_idx,
+                        chunk: chunk.clone(),
+                    })
+                    .collect(),
+            ),
+        };
 
-            if row_groups.is_empty() {
-                continue;
-            }
+        let is_shared = matches!(work, IndexedWorkSource::Shared(_));
 
-            // Build stats prune tree for segment/RG/subtree-level pruning.
-            let stats_prune_tree = self.config.prune_tree_config.as_ref().map(|(tree, preds, schema)| {
-                let rg_indices: Vec<usize> = row_groups.iter().map(|rg| rg.index).collect();
-                StatsPruneTree::build_from_bool_node(
-                    tree, preds, &segment.metadata, schema, &rg_indices,
-                )
-            });
-
-            // Segment-level skip: if no RG in the chunk can match, skip entirely.
-            if let Some(ref spt) = stats_prune_tree {
-                if !spt.rg_can_match.iter().any(|&k| k) {
-                    native_bridge_common::log_debug!("[segment-skip] skipping chunk — pruned by segment-level stats");
-                    continue;
+        if !is_shared {
+            // Local path: build all chunk streams eagerly and chain them, exactly
+            // as before. (A partition's chunks are serialized anyway, so eager
+            // construction costs nothing and keeps the simple path simple.)
+            let mut work = work;
+            let mut streams: Vec<SendableRecordBatchStream> =
+                Vec::with_capacity(assignment.chunks.len());
+            while let Some(item) = work.pop() {
+                if let Some(stream) =
+                    self.build_chunk_stream(&item, &context, &stream_metrics, &dynamic_filter)?
+                {
+                    streams.push(stream);
                 }
             }
+            return self.chain_streams(streams, context);
+        }
 
-            let evaluator = (self.config.evaluator_factory)(segment, chunk, &stream_metrics, stats_prune_tree.as_ref())
-                .map_err(|e| DataFusionError::External(e.into()))?;
+        // Shared path: drive lazily so a partition takes its *next* chunk only
+        // when it has finished the current one — that is what produces real
+        // load-balancing. Eagerly popping the whole queue here would just
+        // re-freeze the static split.
+        //
+        // We must NOT hold the queue mutex across an `.await`: `pop()` returns
+        // owned data and releases the lock immediately, then we build + execute.
+        let exec_self = Arc::new(self.shallow_for_driver());
+        let driver_metrics = stream_metrics.clone();
+        let driver = futures::stream::unfold(
+            (work, 0usize, false),
+            move |(mut work, popped, mut done_reorder)| {
+                let exec_self = Arc::clone(&exec_self);
+                let context = Arc::clone(&context);
+                let stream_metrics = driver_metrics.clone();
+                let dynamic_filter = dynamic_filter.clone();
+                async move {
+                    loop {
+                        // Tier 2 (PR #21956): once the TopK dynamic filter has
+                        // tightened to a concrete `col <op> threshold`, reorder
+                        // the *remaining* queued chunks by their segment's
+                        // min(sort_col) so the most-promising segments run next.
+                        // One-shot and idempotent; retried each iteration only
+                        // until it fires (filter starts as a `true` placeholder).
+                        if !done_reorder {
+                            if let IndexedWorkSource::Shared(ref q) = work {
+                                if let Some((col_idx, descending)) =
+                                    exec_self.dynamic_filter_reorder_key()
+                                {
+                                    let exec_for_key = Arc::clone(&exec_self);
+                                    q.reorder_remaining(descending, move |seg| {
+                                        exec_for_key.segment_min_key(seg, col_idx)
+                                    });
+                                    done_reorder = true;
+                                }
+                            }
+                        }
 
-            // When the sort-aware path fired (`advertised_ordering: Some`), the
+                        let item = work.pop()?;
+                        // Count every chunk beyond this partition's own first as
+                        // "stolen" work. (The very first chunk a partition takes
+                        // is morally its own; subsequent ones evidence stealing /
+                        // rebalancing. Summed across partitions this stays a
+                        // faithful indicator that the path engaged.)
+                        if popped > 0 {
+                            if let Some(ref c) = stream_metrics.work_stolen_chunks {
+                                c.add(1);
+                            }
+                        }
+                        match exec_self.build_chunk_stream(
+                            &item,
+                            &context,
+                            &stream_metrics,
+                            &dynamic_filter,
+                        ) {
+                            Ok(Some(stream)) => {
+                                return Some((Ok(stream), (work, popped + 1, done_reorder)));
+                            }
+                            // Empty chunk (no row groups after subsetting) — skip
+                            // and pull the next one without emitting a stream.
+                            Ok(None) => continue,
+                            Err(e) => return Some((Err(e), (work, popped + 1, done_reorder))),
+                        }
+                    }
+                }
+            },
+        );
+
+        // `driver` is a Stream<Item = Result<SendableRecordBatchStream>>. Map each
+        // item to a batch stream (an Err becomes a one-element error stream) and
+        // flatten into a single per-partition batch stream.
+        let schema = self.projected_schema.clone();
+        let flattened = driver
+            .map(|res| -> futures::stream::BoxStream<'static, Result<datafusion::arrow::record_batch::RecordBatch>> {
+                match res {
+                    Ok(s) => Box::pin(s),
+                    Err(e) => Box::pin(futures::stream::once(async move { Err(e) })),
+                }
+            })
+            .flatten();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, flattened)))
+    }
+}
+
+/// Map a parquet `min` scalar to a [`ReorderKey`] for Tier-2 segment reorder.
+/// Supports the signed-integer, temporal, and float column types a TopK sort is
+/// realistically on; everything else (strings, decimals, unsigned, null) yields
+/// `None`, which sorts the segment last — a no-op for the reorder, never a
+/// correctness issue.
+fn scalar_to_reorder_key(
+    v: datafusion::common::ScalarValue,
+) -> Option<ReorderKey> {
+    use datafusion::common::ScalarValue as S;
+    let int = |x: i128| Some(ReorderKey::Int(x));
+    match v {
+        S::Int8(Some(x)) => int(x as i128),
+        S::Int16(Some(x)) => int(x as i128),
+        S::Int32(Some(x)) => int(x as i128),
+        S::Int64(Some(x)) => int(x as i128),
+        S::Date32(Some(x)) => int(x as i128),
+        S::Date64(Some(x)) => int(x as i128),
+        S::TimestampSecond(Some(x), _)
+        | S::TimestampMillisecond(Some(x), _)
+        | S::TimestampMicrosecond(Some(x), _)
+        | S::TimestampNanosecond(Some(x), _) => int(x as i128),
+        S::Time32Second(Some(x)) | S::Time32Millisecond(Some(x)) => int(x as i128),
+        S::Time64Microsecond(Some(x)) | S::Time64Nanosecond(Some(x)) => int(x as i128),
+        S::Float16(Some(x)) => Some(ReorderKey::Float(
+            super::work_source::OrderedF64(f32::from(x) as f64),
+        )),
+        S::Float32(Some(x)) => Some(ReorderKey::Float(super::work_source::OrderedF64(x as f64))),
+        S::Float64(Some(x)) => Some(ReorderKey::Float(super::work_source::OrderedF64(x))),
+        _ => None,
+    }
+}
+
+impl QueryShardExec {
+    /// Build the `IndexedExec` stream for one work item (chunk), or `None` if the
+    /// chunk has no row groups after subsetting. Shared by the eager `Local` loop
+    /// and the lazy `Shared` driver, so both paths construct streams identically.
+    fn build_chunk_stream(
+        &self,
+        item: &WorkItem,
+        context: &Arc<datafusion::execution::TaskContext>,
+        stream_metrics: &StreamMetrics,
+        dynamic_filter: &Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    ) -> Result<Option<SendableRecordBatchStream>> {
+        let chunk = &item.chunk;
+        let segment = self.config.segments.get(item.segment_idx).ok_or_else(|| {
+            DataFusionError::Internal(format!("segment_idx {} out of range", item.segment_idx))
+        })?;
+
+        // Subset the segment's row groups to just this chunk's.
+        let rg_set: HashSet<usize> = chunk.row_group_indices.iter().copied().collect();
+        let row_groups: Vec<RowGroupInfo> = segment
+            .row_groups
+            .iter()
+            .filter(|rg| rg_set.contains(&rg.index))
+            .cloned()
+            .collect();
+
+        if row_groups.is_empty() {
+            return Ok(None);
+        }
+
+        // Build stats prune tree for segment/RG/subtree-level pruning.
+        let stats_prune_tree = self.config.prune_tree_config.as_ref().map(|(tree, preds, schema)| {
+            let rg_indices: Vec<usize> = row_groups.iter().map(|rg| rg.index).collect();
+            StatsPruneTree::build_from_bool_node(
+                tree, preds, &segment.metadata, schema, &rg_indices,
+            )
+        });
+
+        // Segment-level skip: if no RG in the chunk can match, skip entirely.
+        if let Some(ref spt) = stats_prune_tree {
+            if !spt.rg_can_match.iter().any(|&k| k) {
+                native_bridge_common::log_debug!("[segment-skip] skipping chunk — pruned by segment-level stats");
+                return Ok(None);
+            }
+        }
+
+        // Build evaluator for this chunk.
+        let evaluator = (self.config.evaluator_factory)(segment, chunk, stream_metrics, stats_prune_tree.as_ref())
+            .map_err(|e| DataFusionError::External(e.into()))?;
+
+        // When the sort-aware path fired (`advertised_ordering: Some`), the
             // chain-aware partitioning guarantees this chunk is one whole
             // segment, and the writer's k-way-merge guarantees rows in this
             // segment are in lead-key order. So this `IndexedExec` produces a
@@ -675,55 +860,62 @@ impl ExecutionPlan for QueryShardExec {
                     self.projected_schema.clone(),
                     vec![lex.clone()],
                 ),
-                None => EquivalenceProperties::new(self.projected_schema.clone()),
+            None => EquivalenceProperties::new(self.projected_schema.clone()),
             };
             let props = Arc::new(PlanProperties::new(
                 exec_eq_props,
-                Partitioning::UnknownPartitioning(1),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            ));
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
 
-            let exec = IndexedExec {
-                schema: self.projected_schema.clone(),
-                full_schema: self.full_schema.clone(),
-                object_path: segment.object_path.clone(),
-                file_size: segment.parquet_size,
-                store: Arc::clone(&self.config.store),
-                store_url: self.config.store_url.clone(),
-                row_groups,
-                projection: self.projection.clone(),
-                properties: props,
-                metadata: Arc::clone(&segment.metadata),
-                predicate: self.predicate.clone(),
-                evaluator: std::sync::Mutex::new(Some(evaluator)),
-                doc_range: Some((chunk.doc_min, chunk.doc_max)),
-                metrics: ExecutionPlanMetricsSet::new(),
-                stream_metrics: stream_metrics.clone(),
-                query_config: Arc::clone(&self.config.query_config),
-                global_base: segment.global_base,
-                emit_row_ids: self.config.emit_row_ids,
-                row_id_output_index: self.row_id_output_index,
-                dynamic_filter: dynamic_filter.clone(),
-            };
-            streams.push(exec.execute(0, Arc::clone(&context))?);
-        }
+        let exec = IndexedExec {
+            schema: self.projected_schema.clone(),
+            full_schema: self.full_schema.clone(),
+            object_path: segment.object_path.clone(),
+            file_size: segment.parquet_size,
+            store: Arc::clone(&self.config.store),
+            store_url: self.config.store_url.clone(),
+            row_groups,
+            projection: self.projection.clone(),
+            properties: props,
+            metadata: Arc::clone(&segment.metadata),
+            predicate: self.predicate.clone(),
+            evaluator: std::sync::Mutex::new(Some(evaluator)),
+            doc_range: Some((chunk.doc_min, chunk.doc_max)),
+            metrics: ExecutionPlanMetricsSet::new(),
+            stream_metrics: stream_metrics.clone(),
+            query_config: Arc::clone(&self.config.query_config),
+            global_base: segment.global_base,
+            emit_row_ids: self.config.emit_row_ids,
+            row_id_output_index: self.row_id_output_index,
+            dynamic_filter: dynamic_filter.clone(),
+        };
+        Ok(Some(exec.execute(0, Arc::clone(context))?))
+    }
 
-        let stream: SendableRecordBatchStream = match streams.len() {
+    /// Chain per-chunk streams into a single per-partition stream. Sequential
+    /// (`flatten`) — chunks within a partition are serialized — avoiding a
+    /// Union/Coalesce hop.
+    fn chain_streams(
+        &self,
+        streams: Vec<SendableRecordBatchStream>,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        match streams.len() {
             0 => {
                 let empty = datafusion::physical_plan::empty::EmptyExec::new(
                     self.projected_schema.clone(),
                 );
-                empty.execute(0, context)?
+                empty.execute(0, context)
             }
-            1 => streams.into_iter().next().unwrap(),
+            1 => Ok(streams.into_iter().next().unwrap()),
             _ => {
                 let schema = self.projected_schema.clone();
                 let chained = futures::stream::iter(streams).flatten();
-                Box::pin(RecordBatchStreamAdapter::new(schema, chained))
+                Ok(Box::pin(RecordBatchStreamAdapter::new(schema, chained)))
             }
-        };
-        Ok(stream)
+        }
     }
 }
 
@@ -738,6 +930,111 @@ impl Drop for QueryShardExec {
 }
 
 impl QueryShardExec {
+    /// A lightweight clone usable inside the lazy work-stealing driver closure
+    /// (which is `'static`). Shares all `Arc` fields; mints a fresh metrics set
+    /// (per-chunk `IndexedExec`s get their own anyway) and an empty queue cell
+    /// (the live queue is captured separately in the driver). The dynamic filters
+    /// are cloned so [`dynamic_filter_reorder_key`] can read the sort column.
+    fn shallow_for_driver(&self) -> Self {
+        QueryShardExec {
+            config: Arc::clone(&self.config),
+            full_schema: self.full_schema.clone(),
+            projected_schema: self.projected_schema.clone(),
+            projection: self.projection.clone(),
+            assignments: self.assignments.clone(),
+            properties: Arc::clone(&self.properties),
+            predicate: self.predicate.clone(),
+            metrics: ExecutionPlanMetricsSet::new(),
+            inner_parquet_metrics: Arc::clone(&self.inner_parquet_metrics),
+            io_stats: Arc::clone(&self.io_stats),
+            row_id_output_index: self.row_id_output_index,
+            dynamic_filters: self.dynamic_filters.clone(),
+            shared_queue: OnceLock::new(),
+        }
+    }
+
+    /// Tier-2 reorder key (PR #21956): the `(col_idx, descending)` to reorder the
+    /// shared queue by, derived from the accepted dynamic filter once it has
+    /// tightened to a concrete `col <op> threshold`.
+    ///
+    /// Returns `None` while the filter is still the bare `true` placeholder
+    /// (no comparison yet), when no dynamic filter was accepted, or when the
+    /// referenced column isn't in our parquet schema — in all of which cases the
+    /// queue stays in its current (FIFO) order, which is always correct.
+    ///
+    /// Direction mirrors the TopK's own filter construction
+    /// (`df:topk/mod.rs::build_filter_expression`): a DESC sort tightens to
+    /// `col > threshold` (keep larger values) → `descending = true`; an ASC sort
+    /// tightens to `col < threshold` → `descending = false`.
+    fn dynamic_filter_reorder_key(&self) -> Option<(usize, bool)> {
+        use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+        use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
+
+        if self.dynamic_filters.is_empty() {
+            return None;
+        }
+        let conjoined =
+            datafusion::physical_expr::utils::conjunction(self.dynamic_filters.clone());
+        // Flatten DynamicFilterPhysicalExpr nodes to their current concrete value.
+        let snapshot = snapshot_physical_expr(conjoined).ok()?;
+
+        let mut found: Option<(usize, bool)> = None;
+        let _ = snapshot.apply(|e| {
+            if let Some(bin) = e.downcast_ref::<BinaryExpr>() {
+                let descending = match bin.op() {
+                    Operator::Gt | Operator::GtEq => Some(true),
+                    Operator::Lt | Operator::LtEq => Some(false),
+                    _ => None,
+                };
+                if let Some(descending) = descending {
+                    // The column may be on either side of the comparison.
+                    let col = bin
+                        .left()
+                        .downcast_ref::<Column>()
+                        .or_else(|| bin.right().downcast_ref::<Column>());
+                    if let Some(col) = col {
+                        if let Ok(idx) = self.full_schema.index_of(col.name()) {
+                            found = Some((idx, descending));
+                            return Ok(TreeNodeRecursion::Stop);
+                        }
+                    }
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        found
+    }
+
+    /// The segment's `min` statistic for column `col_idx`, mapped to a
+    /// [`ReorderKey`] — the minimum across all of the segment's row groups. Used
+    /// as the Tier-2 sort key. `None` (sorts the segment last) when stats are
+    /// missing, the column type isn't orderable here, or anything fails — never a
+    /// correctness concern, only an ordering one.
+    fn segment_min_key(&self, segment_idx: usize, col_idx: usize) -> Option<ReorderKey> {
+        use datafusion::parquet::arrow::arrow_reader::statistics::StatisticsConverter;
+
+        let segment = self.config.segments.get(segment_idx)?;
+        let col_name = self.full_schema.field(col_idx).name();
+        let metadata = &segment.metadata;
+        let converter = StatisticsConverter::try_new(
+            col_name,
+            self.full_schema.as_ref(),
+            metadata.file_metadata().schema_descr(),
+        )
+        .ok()?;
+        let mins = converter.row_group_mins(metadata.row_groups().iter()).ok()?;
+        // Reduce the per-RG mins to a single key = the smallest across RGs.
+        (0..mins.len())
+            .filter_map(|i| {
+                datafusion::common::ScalarValue::try_from_array(&mins, i)
+                    .ok()
+                    .and_then(scalar_to_reorder_key)
+            })
+            .min()
+    }
+
     /// True if `filter` can be used for per-RG statistics pruning: every column
     /// it references must exist in our full (parquet) schema. Dynamic filters
     /// reference sort columns; a sort on a Lucene-only / computed column (not in
@@ -791,6 +1088,9 @@ impl QueryShardExec {
             row_id_output_index: self.row_id_output_index,
             dynamic_filters,
             advertised_ordering: self.advertised_ordering.clone(),
+            // Fresh queue: the rewrite happens before execution, so nothing is
+            // drained yet, but we must not share a OnceLock cell with the old node.
+            shared_queue: OnceLock::new(),
         }
     }
 }
