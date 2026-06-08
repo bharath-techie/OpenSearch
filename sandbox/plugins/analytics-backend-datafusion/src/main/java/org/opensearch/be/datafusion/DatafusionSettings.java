@@ -61,6 +61,25 @@ public final class DatafusionSettings {
     );
 
     /**
+     * Whether the indexed read path applies the residual predicate during parquet decode
+     * via {@code RowFilter} pushdown (the {@code indexed_pushdown_filters} wire field, read by
+     * {@code IndexedStream}). When true (default), row-granular selections — and, since the
+     * {@code PredicateOnlyEvaluator} no longer requires a row mask, block-granular pure-parquet
+     * scans — push the predicate into the decoder so non-matching rows are never materialized.
+     * When false, the evaluator applies the residual post-decode.
+     * <p>
+     * Distinct from {@link #INDEXED_PARQUET_PUSHDOWN_FILTERS}, which (despite its name) drives
+     * DataFusion's pushdown on the VANILLA {@code ListingTable} path (wire offset 32). This one
+     * controls the INDEXED path (wire offset 36).
+     */
+    public static final Setting<Boolean> INDEXED_INDEXED_PUSHDOWN_FILTERS = Setting.boolSetting(
+        "datafusion.indexed.indexed_pushdown_filters",
+        true,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
      * Whether to use parquet bloom filters for row-group pruning on the indexed read path.
      * When true, equality predicates are checked against the SBBF (Split Block Bloom Filter)
      * embedded in the parquet footer before invoking the expensive FFM collector call.
@@ -175,6 +194,22 @@ public final class DatafusionSettings {
         Setting.Property.Dynamic
     );
 
+    /**
+     * Whether pure-parquet queries (no Lucene-delegated filters, no row-ids) are routed
+     * through the indexed executor instead of the vanilla {@code ListingTable} path.
+     * <p>
+     * Default false keeps the vanilla path as the default. When true, pure-parquet queries
+     * run through {@code QueryShardExec} + {@code PredicateOnlyEvaluator}, collapsing the two
+     * scan implementations into one and surfacing the indexed path's per-operator metrics for
+     * pure-parquet queries. Intended as a diff aid: flag off vs on should return identical rows.
+     */
+    public static final Setting<Boolean> INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED = Setting.boolSetting(
+        "datafusion.indexed.route_pure_parquet_through_indexed",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     // ── Concurrency gate settings ──
 
     /** Datanode concurrency gate multiplier: max concurrent partition-equivalents = cpu_threads × multiplier. */
@@ -267,13 +302,15 @@ public final class DatafusionSettings {
         // Indexed query settings — per-query tuning knobs for the indexed execution path
         INDEXED_BATCH_SIZE,
         INDEXED_PARQUET_PUSHDOWN_FILTERS,
+        INDEXED_INDEXED_PUSHDOWN_FILTERS,
         INDEXED_BLOOM_FILTER_ON_READ,
         INDEXED_MIN_SKIP_RUN_DEFAULT,
         INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD,
         INDEXED_SINGLE_COLLECTOR_STRATEGY,
         INDEXED_TREE_COLLECTOR_STRATEGY,
         INDEXED_MAX_COLLECTOR_PARALLELISM,
-        INDEXED_QUERY_STRATEGY
+        INDEXED_QUERY_STRATEGY,
+        INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED
     );
 
     // ── Snapshot management ──
@@ -309,6 +346,7 @@ public final class DatafusionSettings {
             .batchSize(INDEXED_BATCH_SIZE.get(settings))
             .targetPartitions(deriveTargetPartitions(this.concurrentSearchMode, this.maxSliceCount))
             .parquetPushdownFilters(INDEXED_PARQUET_PUSHDOWN_FILTERS.get(settings))
+            .indexedPushdownFilters(INDEXED_INDEXED_PUSHDOWN_FILTERS.get(settings))
             .bloomFilterOnRead(INDEXED_BLOOM_FILTER_ON_READ.get(settings))
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
@@ -316,6 +354,7 @@ public final class DatafusionSettings {
             .treeCollectorStrategy(strategyToWireValue(INDEXED_TREE_COLLECTOR_STRATEGY.get(settings)))
             .maxCollectorParallelism(INDEXED_MAX_COLLECTOR_PARALLELISM.get(settings))
             .queryStrategy(queryStrategyToWireValue(INDEXED_QUERY_STRATEGY.get(settings)))
+            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .build();
 
         registerListeners(clusterSettings);
@@ -333,6 +372,7 @@ public final class DatafusionSettings {
             .batchSize(INDEXED_BATCH_SIZE.get(settings))
             .targetPartitions(deriveTargetPartitions(this.concurrentSearchMode, this.maxSliceCount))
             .parquetPushdownFilters(INDEXED_PARQUET_PUSHDOWN_FILTERS.get(settings))
+            .indexedPushdownFilters(INDEXED_INDEXED_PUSHDOWN_FILTERS.get(settings))
             .bloomFilterOnRead(INDEXED_BLOOM_FILTER_ON_READ.get(settings))
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
@@ -340,6 +380,7 @@ public final class DatafusionSettings {
             .treeCollectorStrategy(strategyToWireValue(INDEXED_TREE_COLLECTOR_STRATEGY.get(settings)))
             .maxCollectorParallelism(INDEXED_MAX_COLLECTOR_PARALLELISM.get(settings))
             .queryStrategy(queryStrategyToWireValue(INDEXED_QUERY_STRATEGY.get(settings)))
+            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .build();
     }
 
@@ -350,6 +391,10 @@ public final class DatafusionSettings {
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_PARQUET_PUSHDOWN_FILTERS, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).parquetPushdownFilters(newValue).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_INDEXED_PUSHDOWN_FILTERS, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).indexedPushdownFilters(newValue).build();
         });
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_BLOOM_FILTER_ON_READ, newValue -> {
@@ -378,6 +423,10 @@ public final class DatafusionSettings {
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_QUERY_STRATEGY, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).queryStrategy(queryStrategyToWireValue(newValue)).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).routePureParquetThroughIndexed(newValue).build();
         });
 
         clusterSettings.addSettingsUpdateConsumer(SearchService.CONCURRENT_SEGMENT_SEARCH_TARGET_MAX_SLICE_COUNT_SETTING, newValue -> {

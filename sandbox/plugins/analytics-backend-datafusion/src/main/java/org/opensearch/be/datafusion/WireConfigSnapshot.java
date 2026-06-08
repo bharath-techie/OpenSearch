@@ -26,11 +26,12 @@ import java.lang.foreign.ValueLayout;
 public final class WireConfigSnapshot {
 
     /** Total byte size of the wire struct ({@code WireDatafusionQueryConfig}). */
-    public static final long BYTE_SIZE = 76;
+    public static final long BYTE_SIZE = 80;
 
     private final int batchSize;
     private final int targetPartitions;
     private final boolean parquetPushdownFilters;
+    private final boolean indexedPushdownFilters;
     private final boolean bloomFilterOnRead;
     private final int minSkipRunDefault;
     private final double minSkipRunSelectivityThreshold;
@@ -38,11 +39,13 @@ public final class WireConfigSnapshot {
     private final int singleCollectorStrategy;
     private final int treeCollectorStrategy;
     private final int queryStrategy;
+    private final boolean routePureParquetThroughIndexed;
 
     private WireConfigSnapshot(Builder builder) {
         this.batchSize = builder.batchSize;
         this.targetPartitions = builder.targetPartitions;
         this.parquetPushdownFilters = builder.parquetPushdownFilters;
+        this.indexedPushdownFilters = builder.indexedPushdownFilters;
         this.bloomFilterOnRead = builder.bloomFilterOnRead;
         this.minSkipRunDefault = builder.minSkipRunDefault;
         this.minSkipRunSelectivityThreshold = builder.minSkipRunSelectivityThreshold;
@@ -50,6 +53,7 @@ public final class WireConfigSnapshot {
         this.singleCollectorStrategy = builder.singleCollectorStrategy;
         this.treeCollectorStrategy = builder.treeCollectorStrategy;
         this.queryStrategy = builder.queryStrategy;
+        this.routePureParquetThroughIndexed = builder.routePureParquetThroughIndexed;
     }
 
     public static Builder builder() {
@@ -64,13 +68,15 @@ public final class WireConfigSnapshot {
         return new Builder().batchSize(current.batchSize)
             .targetPartitions(current.targetPartitions)
             .parquetPushdownFilters(current.parquetPushdownFilters)
+            .indexedPushdownFilters(current.indexedPushdownFilters)
             .bloomFilterOnRead(current.bloomFilterOnRead)
             .minSkipRunDefault(current.minSkipRunDefault)
             .minSkipRunSelectivityThreshold(current.minSkipRunSelectivityThreshold)
             .maxCollectorParallelism(current.maxCollectorParallelism)
             .singleCollectorStrategy(current.singleCollectorStrategy)
             .treeCollectorStrategy(current.treeCollectorStrategy)
-            .queryStrategy(current.queryStrategy);
+            .queryStrategy(current.queryStrategy)
+            .routePureParquetThroughIndexed(current.routePureParquetThroughIndexed);
     }
 
     public int batchSize() {
@@ -83,6 +89,10 @@ public final class WireConfigSnapshot {
 
     public boolean parquetPushdownFilters() {
         return parquetPushdownFilters;
+    }
+
+    public boolean indexedPushdownFilters() {
+        return indexedPushdownFilters;
     }
 
     public boolean bloomFilterOnRead() {
@@ -113,6 +123,10 @@ public final class WireConfigSnapshot {
         return queryStrategy;
     }
 
+    public boolean routePureParquetThroughIndexed() {
+        return routePureParquetThroughIndexed;
+    }
+
     /**
      * Writes this snapshot into a {@code MemorySegment} matching the
      * {@code WireDatafusionQueryConfig} {@code #[repr(C)]} layout.
@@ -128,7 +142,7 @@ public final class WireConfigSnapshot {
      * 16      8     min_skip_run_default                 i64      from snapshot
      * 24      8     min_skip_run_selectivity_threshold   f64      from snapshot
      * 32      4     parquet_pushdown_filters             i32      from snapshot (0/1)
-     * 36      4     indexed_pushdown_filters             i32      hardcoded 1
+     * 36      4     indexed_pushdown_filters             i32      from snapshot (0/1)
      * 40      4     force_strategy                       i32      hardcoded -1
      * 44      4     force_pushdown                       i32      hardcoded -1
      * 48      4     cost_predicate                       i32      hardcoded 1
@@ -138,8 +152,9 @@ public final class WireConfigSnapshot {
      * 64      4     tree_collector_strategy              i32      from snapshot
      * 68      4     query_strategy                       i32      from snapshot (0/1/2)
      * 72      4     bloom_filter_on_read                 i32      from snapshot (0/1)
+     * 76      4     route_pure_parquet_through_indexed   i32      from snapshot (0/1)
      * ──────  ────
-     * Total: 76 bytes
+     * Total: 80 bytes
      * </pre>
      *
      * @param segment the target memory segment (at least {@link #BYTE_SIZE} bytes)
@@ -155,8 +170,8 @@ public final class WireConfigSnapshot {
         segment.set(ValueLayout.JAVA_DOUBLE, 24, minSkipRunSelectivityThreshold);
         // Offset 32: parquet_pushdown_filters (i32) — 0 = false, 1 = true
         segment.set(ValueLayout.JAVA_INT, 32, parquetPushdownFilters ? 1 : 0);
-        // Offset 36: indexed_pushdown_filters (i32) — always 1 (hardcoded)
-        segment.set(ValueLayout.JAVA_INT, 36, 1);
+        // Offset 36: indexed_pushdown_filters (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 36, indexedPushdownFilters ? 1 : 0);
         // Offset 40: force_strategy (i32) — always -1 (None)
         segment.set(ValueLayout.JAVA_INT, 40, -1);
         // Offset 44: force_pushdown (i32) — always -1 (None)
@@ -175,6 +190,8 @@ public final class WireConfigSnapshot {
         segment.set(ValueLayout.JAVA_INT, 68, queryStrategy);
         // Offset 72: bloom_filter_on_read (i32) — 0 = false, 1 = true
         segment.set(ValueLayout.JAVA_INT, 72, bloomFilterOnRead ? 1 : 0);
+        // Offset 76: route_pure_parquet_through_indexed (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 76, routePureParquetThroughIndexed ? 1 : 0);
     }
 
     /**
@@ -185,6 +202,7 @@ public final class WireConfigSnapshot {
         private int batchSize = 8192;
         private int targetPartitions = 4;
         private boolean parquetPushdownFilters = false;
+        private boolean indexedPushdownFilters = true;
         private boolean bloomFilterOnRead = true;
         private int minSkipRunDefault = 1024;
         private double minSkipRunSelectivityThreshold = 0.03;
@@ -192,6 +210,7 @@ public final class WireConfigSnapshot {
         private int singleCollectorStrategy = 2; // PageRangeSplit
         private int treeCollectorStrategy = 1;   // TightenOuterBounds
         private int queryStrategy = 2;           // IndexedPredicateOnly (matches DatafusionSettings default "indexed")
+        private boolean routePureParquetThroughIndexed = false;
 
         private Builder() {}
 
@@ -207,6 +226,11 @@ public final class WireConfigSnapshot {
 
         public Builder parquetPushdownFilters(boolean parquetPushdownFilters) {
             this.parquetPushdownFilters = parquetPushdownFilters;
+            return this;
+        }
+
+        public Builder indexedPushdownFilters(boolean indexedPushdownFilters) {
+            this.indexedPushdownFilters = indexedPushdownFilters;
             return this;
         }
 
@@ -242,6 +266,11 @@ public final class WireConfigSnapshot {
 
         public Builder queryStrategy(int queryStrategy) {
             this.queryStrategy = queryStrategy;
+            return this;
+        }
+
+        public Builder routePureParquetThroughIndexed(boolean routePureParquetThroughIndexed) {
+            this.routePureParquetThroughIndexed = routePureParquetThroughIndexed;
             return this;
         }
 
