@@ -1,0 +1,1 @@
+source = clickbench | where match(URL, 'http') | stats sum(AdvEngineID), count(), avg(ResolutionWidth)

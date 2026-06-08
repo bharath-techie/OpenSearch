@@ -1,0 +1,1 @@
+source = clickbench | where (like(URL, '%google%') and SearchPhrase != '') and match(URL, 'yandex') | stats count() as c by SearchPhrase | sort - c | head 10

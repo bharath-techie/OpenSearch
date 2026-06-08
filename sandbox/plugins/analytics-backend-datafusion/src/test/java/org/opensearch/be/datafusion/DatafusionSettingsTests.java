@@ -74,6 +74,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_SPILL_DIRECTORY));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_BATCH_SIZE));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_PARQUET_PUSHDOWN_FILTERS));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_INDEXED_PUSHDOWN_FILTERS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_BLOOM_FILTER_ON_READ));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD));
@@ -83,6 +84,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_QUERY_STRATEGY));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_DYNAMIC_FILTER_PUSHDOWN));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_WORK_STEALING));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED));
     }
 
     public void testDefaultSnapshotValuesMatchDefaults() {
@@ -101,6 +103,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertEquals(2, snapshot.queryStrategy()); // indexed
         assertEquals(true, snapshot.indexedDynamicFilterPushdown()); // on by default
         assertEquals(true, snapshot.indexedWorkStealing()); // on by default
+        assertEquals(false, snapshot.routePureParquetThroughIndexed());
     }
 
     public void testTargetPartitionsPassthroughWhenNonZero() {

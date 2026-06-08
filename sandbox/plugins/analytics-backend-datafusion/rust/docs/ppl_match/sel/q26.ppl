@@ -1,0 +1,1 @@
+source = clickbench | where (SearchPhrase != '') and match(URL, 'yandex') | fields SearchPhrase | sort SearchPhrase | head 10

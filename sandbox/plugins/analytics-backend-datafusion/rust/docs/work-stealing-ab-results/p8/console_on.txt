@@ -1,0 +1,47 @@
+  q1: cold= 0.018s warm_best=  0.014s  rows=1  OK
+  q2: cold= 0.056s warm_best=  0.050s  rows=1  OK
+  q3: cold= 0.248s warm_best=  0.264s  rows=1  OK
+  q4: cold= 0.163s warm_best=  0.149s  rows=1  OK
+  q5: cold= 0.224s warm_best=  0.210s  rows=1  OK
+  q6: cold= 3.137s warm_best=  3.454s  rows=1  OK
+  q7: cold= 0.014s warm_best=  0.013s  rows=1  OK
+  q8: cold= 0.068s warm_best=  0.044s  rows=18  OK
+  q9: cold= 2.394s warm_best=  1.945s  rows=10  OK
+ q10: cold= 2.376s warm_best=  2.280s  rows=10  OK
+ q11: cold= 0.678s warm_best=  0.650s  rows=10  OK
+ q12: cold= 0.770s warm_best=  0.757s  rows=10  OK
+ q13: cold= 1.227s warm_best=  1.063s  rows=10  OK
+ q14: cold=152.788s warm_best=     n/a  rows=None  ERR:HTTP 500: {
+  "error": {
+    "reason": "Error occurred in Op
+ q15: cold= 2.005s warm_best=  0.879s  rows=10  OK
+ q16: cold= 0.817s warm_best=  0.848s  rows=10  OK
+ q17: cold= 1.856s warm_best=  1.583s  rows=10  OK
+ q18: cold= 1.840s warm_best=  2.095s  rows=10  OK
+ q19: cold=12.941s warm_best=  5.418s  rows=10  OK
+ q20: cold= 0.107s warm_best=  0.114s  rows=4  OK
+ q21: cold= 2.229s warm_best=  1.912s  rows=1  OK
+ q22: cold= 1.984s warm_best=  2.029s  rows=10  OK
+ q23: cold= 3.927s warm_best=  3.742s  rows=10  OK
+ q24: cold=18.990s warm_best= 19.708s  rows=10  OK
+ q25: cold= 0.290s warm_best=  0.297s  rows=10  OK
+ q26: cold= 0.520s warm_best=  0.507s  rows=10  OK
+ q27: cold= 0.375s warm_best=  0.342s  rows=10  OK
+ q28: cold= 2.859s warm_best=  2.281s  rows=25  OK
+ q29: cold=14.894s warm_best= 13.138s  rows=25  OK
+ q30: cold= 0.567s warm_best=  0.559s  rows=1  OK
+ q31: cold= 0.976s warm_best=  0.979s  rows=10  OK
+ q32: cold= 1.338s warm_best=  1.068s  rows=10  OK
+ q33: cold= 6.077s warm_best=  4.040s  rows=10  OK
+ q34: cold= 5.604s warm_best=  4.373s  rows=10  OK
+ q35: cold= 4.728s warm_best=  3.463s  rows=10  OK
+ q36: cold= 0.964s warm_best=  0.930s  rows=10  OK
+ q37: cold= 0.174s warm_best=  0.180s  rows=10  OK
+ q38: cold= 0.123s warm_best=  0.083s  rows=10  OK
+ q39: cold= 0.074s warm_best=  0.070s  rows=10  OK
+ q40: cold= 0.234s warm_best=  0.227s  rows=10  OK
+ q41: cold= 0.065s warm_best=  0.036s  rows=10  OK
+ q42: cold= 0.033s warm_best=  0.030s  rows=10  OK
+ q43: cold= 0.172s warm_best=  0.171s  rows=0  OK
+
+Wrote /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/docs/work-stealing-ab-results/p8/bench_on.json

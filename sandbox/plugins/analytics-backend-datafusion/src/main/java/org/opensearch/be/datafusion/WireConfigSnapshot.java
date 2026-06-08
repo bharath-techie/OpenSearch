@@ -31,6 +31,7 @@ public final class WireConfigSnapshot {
     private final int batchSize;
     private final int targetPartitions;
     private final boolean parquetPushdownFilters;
+    private final boolean indexedPushdownFilters;
     private final boolean bloomFilterOnRead;
     private final int minSkipRunDefault;
     private final double minSkipRunSelectivityThreshold;
@@ -40,11 +41,13 @@ public final class WireConfigSnapshot {
     private final int queryStrategy;
     private final boolean indexedDynamicFilterPushdown;
     private final boolean indexedWorkStealing;
+    private final boolean routePureParquetThroughIndexed;
 
     private WireConfigSnapshot(Builder builder) {
         this.batchSize = builder.batchSize;
         this.targetPartitions = builder.targetPartitions;
         this.parquetPushdownFilters = builder.parquetPushdownFilters;
+        this.indexedPushdownFilters = builder.indexedPushdownFilters;
         this.bloomFilterOnRead = builder.bloomFilterOnRead;
         this.minSkipRunDefault = builder.minSkipRunDefault;
         this.minSkipRunSelectivityThreshold = builder.minSkipRunSelectivityThreshold;
@@ -54,6 +57,7 @@ public final class WireConfigSnapshot {
         this.queryStrategy = builder.queryStrategy;
         this.indexedDynamicFilterPushdown = builder.indexedDynamicFilterPushdown;
         this.indexedWorkStealing = builder.indexedWorkStealing;
+        this.routePureParquetThroughIndexed = builder.routePureParquetThroughIndexed;
     }
 
     public static Builder builder() {
@@ -68,6 +72,7 @@ public final class WireConfigSnapshot {
         return new Builder().batchSize(current.batchSize)
             .targetPartitions(current.targetPartitions)
             .parquetPushdownFilters(current.parquetPushdownFilters)
+            .indexedPushdownFilters(current.indexedPushdownFilters)
             .bloomFilterOnRead(current.bloomFilterOnRead)
             .minSkipRunDefault(current.minSkipRunDefault)
             .minSkipRunSelectivityThreshold(current.minSkipRunSelectivityThreshold)
@@ -77,6 +82,7 @@ public final class WireConfigSnapshot {
             .queryStrategy(current.queryStrategy)
             .indexedDynamicFilterPushdown(current.indexedDynamicFilterPushdown)
             .indexedWorkStealing(current.indexedWorkStealing);
+            .routePureParquetThroughIndexed(current.routePureParquetThroughIndexed);
     }
 
     public int batchSize() {
@@ -89,6 +95,10 @@ public final class WireConfigSnapshot {
 
     public boolean parquetPushdownFilters() {
         return parquetPushdownFilters;
+    }
+
+    public boolean indexedPushdownFilters() {
+        return indexedPushdownFilters;
     }
 
     public boolean bloomFilterOnRead() {
@@ -125,6 +135,8 @@ public final class WireConfigSnapshot {
 
     public boolean indexedWorkStealing() {
         return indexedWorkStealing;
+    public boolean routePureParquetThroughIndexed() {
+        return routePureParquetThroughIndexed;
     }
 
     /**
@@ -142,7 +154,7 @@ public final class WireConfigSnapshot {
      * 16      8     min_skip_run_default                 i64      from snapshot
      * 24      8     min_skip_run_selectivity_threshold   f64      from snapshot
      * 32      4     parquet_pushdown_filters             i32      from snapshot (0/1)
-     * 36      4     indexed_pushdown_filters             i32      hardcoded 1
+     * 36      4     indexed_pushdown_filters             i32      from snapshot (0/1)
      * 40      4     force_strategy                       i32      hardcoded -1
      * 44      4     force_pushdown                       i32      hardcoded -1
      * 48      4     cost_predicate                       i32      hardcoded 1
@@ -154,9 +166,9 @@ public final class WireConfigSnapshot {
      * 72      4     bloom_filter_on_read                 i32      from snapshot (0/1)
      * 76      4     indexed_dynamic_filter_pushdown      i32      from snapshot (0/1)
      * 80      4     indexed_work_stealing                i32      from snapshot (0/1)
-     * 84      4     (tail padding to 8-byte alignment)   —        zero
+     * 84      4     route_pure_parquet_through_indexed   i32      from snapshot (0/1)
      * ──────  ────
-     * Total: 88 bytes (84 bytes of fields + 4 bytes #[repr(C)] tail padding)
+     * Total: 88 bytes (all fields used; 8-byte aligned, repr(C))
      * </pre>
      *
      * @param segment the target memory segment (at least {@link #BYTE_SIZE} bytes)
@@ -172,8 +184,8 @@ public final class WireConfigSnapshot {
         segment.set(ValueLayout.JAVA_DOUBLE, 24, minSkipRunSelectivityThreshold);
         // Offset 32: parquet_pushdown_filters (i32) — 0 = false, 1 = true
         segment.set(ValueLayout.JAVA_INT, 32, parquetPushdownFilters ? 1 : 0);
-        // Offset 36: indexed_pushdown_filters (i32) — always 1 (hardcoded)
-        segment.set(ValueLayout.JAVA_INT, 36, 1);
+        // Offset 36: indexed_pushdown_filters (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 36, indexedPushdownFilters ? 1 : 0);
         // Offset 40: force_strategy (i32) — always -1 (None)
         segment.set(ValueLayout.JAVA_INT, 40, -1);
         // Offset 44: force_pushdown (i32) — always -1 (None)
@@ -196,6 +208,8 @@ public final class WireConfigSnapshot {
         segment.set(ValueLayout.JAVA_INT, 76, indexedDynamicFilterPushdown ? 1 : 0);
         // Offset 80: indexed_work_stealing (i32) — 0 = false, 1 = true
         segment.set(ValueLayout.JAVA_INT, 80, indexedWorkStealing ? 1 : 0);
+        // Offset 84: route_pure_parquet_through_indexed (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 84, routePureParquetThroughIndexed ? 1 : 0);
     }
 
     /**
@@ -206,6 +220,7 @@ public final class WireConfigSnapshot {
         private int batchSize = 8192;
         private int targetPartitions = 4;
         private boolean parquetPushdownFilters = false;
+        private boolean indexedPushdownFilters = true;
         private boolean bloomFilterOnRead = true;
         private int minSkipRunDefault = 1024;
         private double minSkipRunSelectivityThreshold = 0.03;
@@ -215,6 +230,7 @@ public final class WireConfigSnapshot {
         private int queryStrategy = 2;           // IndexedPredicateOnly (matches DatafusionSettings default "indexed")
         private boolean indexedDynamicFilterPushdown = true; // runtime TopK/join RG pruning on by default
         private boolean indexedWorkStealing = true; // cross-partition work-stealing on by default
+        private boolean routePureParquetThroughIndexed = false;
 
         private Builder() {}
 
@@ -230,6 +246,11 @@ public final class WireConfigSnapshot {
 
         public Builder parquetPushdownFilters(boolean parquetPushdownFilters) {
             this.parquetPushdownFilters = parquetPushdownFilters;
+            return this;
+        }
+
+        public Builder indexedPushdownFilters(boolean indexedPushdownFilters) {
+            this.indexedPushdownFilters = indexedPushdownFilters;
             return this;
         }
 
@@ -275,6 +296,8 @@ public final class WireConfigSnapshot {
 
         public Builder indexedWorkStealing(boolean indexedWorkStealing) {
             this.indexedWorkStealing = indexedWorkStealing;
+        public Builder routePureParquetThroughIndexed(boolean routePureParquetThroughIndexed) {
+            this.routePureParquetThroughIndexed = routePureParquetThroughIndexed;
             return this;
         }
 

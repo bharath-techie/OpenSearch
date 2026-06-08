@@ -21,7 +21,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 use roaring::RoaringBitmap;
 
-use super::eval_helpers::{compute_page_ranges, evaluate_residual, universe_bitmap_from_page_ranges};
+use super::eval_helpers::{compute_page_ranges, CachedResidual, universe_bitmap_from_page_ranges};
 use super::{PrefetchedRg, RowGroupBitsetSource};
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
 use crate::indexed_table::row_selection::{bitmap_to_packed_bits, PositionMap};
@@ -33,7 +33,10 @@ use crate::indexed_table::stream::RowGroupInfo;
 pub struct PredicateOnlyEvaluator {
     page_pruner: Arc<PagePruner>,
     pruning_predicate: Option<Arc<PruningPredicate>>,
-    residual_expr: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    /// Residual predicate, remapped to the batch schema once and reused across
+    /// batches. `None` when there is no residual (no page pruning either, so the
+    /// candidate universe is gap-free and no per-batch filtering is needed).
+    residual: Option<CachedResidual>,
     page_prune_metrics: Option<PagePruneMetrics>,
     stats_prune_tree: Option<StatsPruneTree>,
 }
@@ -49,7 +52,7 @@ impl PredicateOnlyEvaluator {
         Self {
             page_pruner,
             pruning_predicate,
-            residual_expr,
+            residual: residual_expr.map(CachedResidual::new),
             page_prune_metrics,
             stats_prune_tree,
         }
@@ -90,14 +93,35 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             None => return Ok(None),
         };
 
-        let mask_len = rg.num_rows as usize;
-        let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
-        let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
+        // Fast-path select runs straight from the page ranges (RG-relative
+        // `(start, len)`), so `IndexedStream` can build the parquet
+        // `RowSelection` without re-walking the full candidate bitmap bit-by-bit
+        // in `build_row_selection_with_min_skip_run` (the dominant cost on
+        // non-selective full scans). Mirrors `universe_bitmap_from_page_ranges`'
+        // RG-relative offset math. `None` page_ranges = whole RG = one run.
+        let selection_runs: Vec<(usize, usize)> = match &page_ranges {
+            Some(ranges) => ranges
+                .iter()
+                .map(|(r_min, r_max)| {
+                    let lo = (*r_min as i64 - rg.first_row) as usize;
+                    let len = (*r_max - *r_min) as usize;
+                    (lo, len)
+                })
+                .collect(),
+            None => vec![(0, rg.num_rows as usize)],
+        };
+
+        // No `mask_buffer`: with `needs_row_mask() == false` the stream never
+        // builds `current_mask`, so the packed-bits buffer this evaluator used
+        // to pre-materialize would be dead work. The residual in `on_batch_mask`
+        // (or parquet pushdown when row-granular) does the filtering. Skipping
+        // `bitmap_to_packed_bits` here removes a full per-RG bit-iteration.
         Ok(Some(PrefetchedRg {
             candidates,
             eval_nanos: t.elapsed().as_nanos() as u64,
             context: Box::new(()),
-            mask_buffer: Some(mask_buffer),
+            mask_buffer: None,
+            selection_runs: Some(selection_runs),
         }))
     }
 
@@ -110,10 +134,21 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
         batch_len: usize,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String> {
-        let Some(ref residual) = self.residual_expr else {
+        let Some(ref residual) = self.residual else {
             return Ok(None);
         };
-        Ok(Some(evaluate_residual(residual, batch, batch_len)?))
+        Ok(Some(residual.eval(batch, batch_len)?))
+    }
+
+    /// The candidate-stage `current_mask` is never consumed for this evaluator:
+    /// when `residual` is `Some`, `on_batch_mask` returns the exact residual
+    /// mask and `finalize_batch` applies it EXCLUSIVELY (ignoring `current_mask`);
+    /// when it's `None`, there is no page pruning, so the candidate universe has
+    /// no gaps and no mask is needed. Returning `false` skips the per-RG
+    /// `build_mask` over the full row group (block-granular regime) — pure waste
+    /// here, since the residual in `on_batch_mask` already does the filtering.
+    fn needs_row_mask(&self) -> bool {
+        false
     }
 }
 

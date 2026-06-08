@@ -1,0 +1,1 @@
+source = clickbench | where (UserID = 435090932899640449) and match(URL, 'yandex') | fields UserID

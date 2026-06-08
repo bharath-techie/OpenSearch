@@ -1,0 +1,1 @@
+source = clickbench | where (SearchPhrase != '') and match(URL, 'http') | stats count() as c by SearchPhrase | sort - c | head 10

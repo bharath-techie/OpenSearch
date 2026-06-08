@@ -1,0 +1,1 @@
+source = clickbench | where match(URL, 'http') | stats avg(UserID)

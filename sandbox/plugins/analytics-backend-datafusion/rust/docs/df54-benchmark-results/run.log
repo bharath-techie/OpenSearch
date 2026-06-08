@@ -1,0 +1,2 @@
+-Djava.library.path=/Users/gbh/Documents/dev/OpenSearch/sandbox/libs/dataformat-native/rust/target/release
+-rwxr-xr-x@ 1 gbh  staff  94069576 Jun  9 03:04 /Users/gbh/Documents/dev/OpenSearch/sandbox/libs/dataformat-native/rust/target/release/libopensearch_native.dylib

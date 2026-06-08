@@ -33,6 +33,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .queryStrategy(2)
             .indexedDynamicFilterPushdown(true)
             .indexedWorkStealing(true)
+            .routePureParquetThroughIndexed(true)
             .build();
 
         try (Arena arena = Arena.ofConfined()) {
@@ -50,6 +51,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             assertEquals(2, segment.get(ValueLayout.JAVA_INT, 68)); // query_strategy = IndexedPredicateOnly
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 76)); // indexed_dynamic_filter_pushdown = true
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 80)); // indexed_work_stealing = true
+            assertEquals(1, segment.get(ValueLayout.JAVA_INT, 84)); // route_pure_parquet_through_indexed = true
         }
     }
 
@@ -71,11 +73,22 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
             snapshot.writeTo(segment);
 
-            assertEquals(1, segment.get(ValueLayout.JAVA_INT, 36));  // indexed_pushdown_filters
+            assertEquals(1, segment.get(ValueLayout.JAVA_INT, 36));  // indexed_pushdown_filters (builder default true)
             assertEquals(-1, segment.get(ValueLayout.JAVA_INT, 40)); // force_strategy
             assertEquals(-1, segment.get(ValueLayout.JAVA_INT, 44)); // force_pushdown
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 48));  // cost_predicate (hardcoded)
             assertEquals(10, segment.get(ValueLayout.JAVA_INT, 52)); // cost_collector (hardcoded)
+        }
+    }
+
+    public void testIndexedPushdownFiltersIsSettable() {
+        // Offset 36 is no longer hardcoded — driven by the builder (default true).
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment seg = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
+            WireConfigSnapshot.builder().indexedPushdownFilters(false).build().writeTo(seg);
+            assertEquals(0, seg.get(ValueLayout.JAVA_INT, 36));
+            WireConfigSnapshot.builder().indexedPushdownFilters(true).build().writeTo(seg);
+            assertEquals(1, seg.get(ValueLayout.JAVA_INT, 36));
         }
     }
 
@@ -94,6 +107,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(2, snapshot.queryStrategy());            // IndexedPredicateOnly
         assertEquals(true, snapshot.indexedDynamicFilterPushdown()); // on by default
         assertEquals(true, snapshot.indexedWorkStealing());  // on by default
+        assertEquals(false, snapshot.routePureParquetThroughIndexed());
     }
 
     public void testBuilderCopyPreservesAllFields() {
@@ -110,6 +124,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .queryStrategy(1)
             .indexedDynamicFilterPushdown(false)
             .indexedWorkStealing(true)
+            .routePureParquetThroughIndexed(true)
             .build();
 
         WireConfigSnapshot copy = WireConfigSnapshot.builder(original).build();
@@ -126,5 +141,6 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(original.queryStrategy(), copy.queryStrategy());
         assertEquals(original.indexedDynamicFilterPushdown(), copy.indexedDynamicFilterPushdown());
         assertEquals(original.indexedWorkStealing(), copy.indexedWorkStealing());
+        assertEquals(original.routePureParquetThroughIndexed(), copy.routePureParquetThroughIndexed());
     }
 }

@@ -1,0 +1,44 @@
+  q1: warmup= 0.022s warm=  0.008s rows=1 OK
+  q2: warmup= 0.256s warm=  0.221s rows=1 OK
+  q3: warmup= 0.356s warm=  0.341s rows=1 OK
+  q4: warmup= 0.331s warm=  0.326s rows=1 OK
+  q5: warmup= 0.359s warm=  0.437s rows=1 OK
+  q6: warmup= 2.791s warm=  2.534s rows=1 OK
+  q7: warmup= 0.125s warm=  0.106s rows=1 OK
+  q8: warmup= 0.276s warm=  0.238s rows=18 OK
+  q9: warmup= 2.108s warm=  2.456s rows=10 OK
+ q10: warmup= 2.784s warm=  2.447s rows=10 OK
+ q11: warmup= 0.711s warm=  0.761s rows=10 OK
+ q12: warmup= 0.774s warm=  0.639s rows=10 OK
+ q13: warmup= 1.245s warm=  1.122s rows=10 OK
+ q14: warmup=90.004s warm=     n/a rows=None ERR
+ q15: warmup=90.005s warm= 42.214s rows=10 ERR
+ q16: warmup= 1.435s warm=  1.121s rows=10 OK
+ q17: warmup= 2.155s warm=  2.158s rows=10 OK
+ q18: warmup= 2.272s warm=  2.257s rows=10 OK
+ q19: warmup= 7.521s warm=  5.571s rows=10 OK
+ q20: warmup= 0.336s warm=  0.302s rows=4 OK
+ q21: warmup= 2.431s warm=  2.522s rows=1 OK
+ q22: warmup= 2.322s warm=  2.233s rows=10 OK
+ q23: warmup= 4.869s warm=  5.043s rows=10 OK
+ q24: warmup=16.143s warm= 15.634s rows=10 OK
+ q25: warmup= 0.362s warm=  0.320s rows=10 OK
+ q26: warmup= 0.648s warm=  0.630s rows=10 OK
+ q27: warmup= 0.378s warm=  0.706s rows=10 OK
+ q28: warmup= 2.935s warm=  2.455s rows=25 OK
+ q29: warmup=15.495s warm= 16.821s rows=25 OK
+ q30: warmup= 0.735s warm=  0.756s rows=1 OK
+ q31: warmup= 1.200s warm=  1.035s rows=10 OK
+ q32: warmup= 1.565s warm=  1.415s rows=10 OK
+ q33: warmup= 7.380s warm=  5.773s rows=10 OK
+ q34: warmup= 7.717s warm=  6.128s rows=10 OK
+ q35: warmup= 5.419s warm=  7.312s rows=10 OK
+ q36: warmup= 1.866s warm=  1.442s rows=10 OK
+ q37: warmup= 0.178s warm=  0.156s rows=10 OK
+ q38: warmup= 0.110s warm=  0.132s rows=10 OK
+ q39: warmup= 0.173s warm=  0.102s rows=10 OK
+ q40: warmup= 0.278s warm=  0.280s rows=10 OK
+ q41: warmup= 0.083s warm=  0.067s rows=10 OK
+ q42: warmup= 0.067s warm=  0.095s rows=10 OK
+ q43: warmup= 0.226s warm=  0.218s rows=0 OK
+wrote /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/docs/work-stealing-match-ab-results/p8/nonsel/bench_on.json

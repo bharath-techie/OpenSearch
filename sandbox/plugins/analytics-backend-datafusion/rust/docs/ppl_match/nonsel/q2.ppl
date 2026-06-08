@@ -1,0 +1,1 @@
+source = clickbench | where (AdvEngineID!=0) and match(URL, 'http') | stats count()

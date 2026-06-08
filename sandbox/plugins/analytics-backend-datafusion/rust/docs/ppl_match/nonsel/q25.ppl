@@ -1,0 +1,1 @@
+source = clickbench | where (SearchPhrase != '') and match(URL, 'http') | sort EventTime | fields SearchPhrase | head 10

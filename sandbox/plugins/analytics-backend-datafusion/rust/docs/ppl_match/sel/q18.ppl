@@ -1,0 +1,1 @@
+source = clickbench | where match(URL, 'yandex') | stats count() by UserID, SearchPhrase | head 10

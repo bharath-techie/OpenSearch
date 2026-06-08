@@ -1,0 +1,497 @@
+   Compiling foldhash v0.2.0
+   Compiling tokio v1.52.3
+   Compiling md-5 v0.10.6
+   Compiling datafusion-doc v54.0.0
+   Compiling sqlparser v0.62.0
+   Compiling sha2 v0.11.0
+   Compiling md-5 v0.11.0
+   Compiling substrait v0.63.0
+   Compiling hashbrown v0.17.1
+   Compiling hashbrown v0.16.1
+   Compiling datafusion-macros v54.0.0
+   Compiling indexmap v2.14.0
+   Compiling regress v0.10.5
+   Compiling serde_json v1.0.149
+   Compiling petgraph v0.8.3
+   Compiling arrow-schema v58.3.0
+   Compiling jsonpath-rust v0.7.5
+   Compiling arrow-data v58.3.0
+   Compiling arrow-array v58.3.0
+   Compiling tokio-util v0.7.18
+   Compiling tokio-rustls v0.26.4
+   Compiling tower v0.5.3
+   Compiling datafusion-common-runtime v54.0.0
+   Compiling async-compression v0.4.42
+   Compiling foyer-tokio v0.22.3
+   Compiling foyer-common v0.22.3
+   Compiling tower-http v0.6.11
+   Compiling h2 v0.4.14
+   Compiling tokio-stream v0.1.18
+   Compiling foyer-memory v0.22.3
+   Compiling tokio-metrics v0.5.0
+   Compiling foyer-storage v0.22.3
+   Compiling arrow-select v58.3.0
+   Compiling arrow-row v58.3.0
+   Compiling arrow-arith v58.3.0
+   Compiling hyper v1.10.1
+   Compiling hyper-util v0.1.20
+   Compiling arrow-ord v58.3.0
+   Compiling arrow-ipc v58.3.0
+   Compiling arrow-string v58.3.0
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling object_store v0.13.2
+   Compiling arrow-cast v58.3.0
+   Compiling foyer v0.22.3
+   Compiling opensearch-block-cache v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust)
+warning: unused label
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust/src/foyer/foyer_cache.rs:462:21
+    |
+462 |                     'inner: loop {
+    |                     ^^^^^^
+    |
+    = note: `#[warn(unused_labels)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable statement
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust/src/foyer/foyer_cache.rs:430:21
+    |
+389 | /                     'inner: loop {
+390 | |                         // Read interval on each tick — allows live update without restart.
+391 | |                         let current_secs = sweep_interval_atomic_clone.load(Ordering::Relaxed);
+392 | |                         let interval = if current_secs == 0 {
+...   |
+429 | |                     }
+    | |_____________________- any code following this expression is unreachable
+430 |                       restart_count += 1;
+    |                       ^^^^^^^^^^^^^^^^^^^ unreachable statement
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable statement
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust/src/foyer/foyer_cache.rs:498:21
+    |
+462 | /                     'inner: loop {
+463 | |                         tokio::select! {
+464 | |                             _ = tokio::time::sleep(persist_interval) => {
+465 | |                                 let current = persist_stats.used_bytes.load(Ordering::Relaxed);
+...   |
+497 | |                     }
+    | |_____________________- any code following this expression is unreachable
+498 |                       restart_count += 1;
+    |                       ^^^^^^^^^^^^^^^^^^^ unreachable statement
+
+warning: variable does not need to be mutable
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust/src/foyer/foyer_cache.rs:387:21
+    |
+387 |                 let mut restart_count = 0u32;
+    |                     ----^^^^^^^^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust/src/foyer/foyer_cache.rs:458:21
+    |
+458 |                 let mut restart_count = 0u32;
+    |                     ----^^^^^^^^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+
+warning: unused variable: `restart_count`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust/src/foyer/foyer_cache.rs:458:21
+    |
+458 |                 let mut restart_count = 0u32;
+    |                     ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_restart_count`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `restart_count`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/block-cache-foyer/src/main/rust/src/foyer/foyer_cache.rs:387:21
+    |
+387 |                 let mut restart_count = 0u32;
+    |                     ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_restart_count`
+
+   Compiling arrow-csv v58.3.0
+   Compiling arrow-json v58.3.0
+   Compiling arrow v58.3.0
+   Compiling parquet v58.3.0
+   Compiling opensearch-repository-azure v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/native-repository-azure/src/main/rust)
+   Compiling opensearch-repository-gcs v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/native-repository-gcs/src/main/rust)
+   Compiling opensearch-repository-s3 v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/native-repository-s3/src/main/rust)
+   Compiling opensearch-repository-fs v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/native-repository-fs/src/main/rust)
+   Compiling opensearch-tiered-storage v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/libs/tiered-storage/src/main/rust)
+warning: `opensearch-block-cache` (lib) generated 7 warnings (run `cargo fix --lib -p opensearch-block-cache` to apply 4 suggestions)
+   Compiling datafusion-common v54.0.0
+   Compiling opensearch-parquet-format v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/parquet-data-format/src/main/rust)
+warning: unused import: `log_debug`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/parquet-data-format/src/main/rust/src/ffm.rs:17:38
+   |
+17 | use native_bridge_common::{ffm_safe, log_debug};
+   |                                      ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling datafusion-expr-common v54.0.0
+   Compiling datafusion-physical-expr-common v54.0.0
+   Compiling datafusion-functions-window-common v54.0.0
+   Compiling datafusion-functions-aggregate-common v54.0.0
+   Compiling datafusion-expr v54.0.0
+   Compiling datafusion-physical-expr v54.0.0
+   Compiling datafusion-execution v54.0.0
+warning: `opensearch-parquet-format` (lib) generated 1 warning (run `cargo fix --lib -p opensearch-parquet-format` to apply 1 suggestion)
+   Compiling datafusion-functions v54.0.0
+   Compiling datafusion-functions-aggregate v54.0.0
+   Compiling datafusion-functions-window v54.0.0
+   Compiling datafusion-optimizer v54.0.0
+   Compiling datafusion-physical-plan v54.0.0
+   Compiling datafusion-physical-expr-adapter v54.0.0
+   Compiling datafusion-functions-nested v54.0.0
+   Compiling datafusion-session v54.0.0
+   Compiling datafusion-datasource v54.0.0
+   Compiling datafusion-pruning v54.0.0
+   Compiling datafusion-catalog v54.0.0
+   Compiling datafusion-physical-optimizer v54.0.0
+   Compiling datafusion-datasource-parquet v54.0.0
+   Compiling datafusion-sql v54.0.0
+   Compiling datafusion-datasource-csv v54.0.0
+   Compiling datafusion-datasource-arrow v54.0.0
+   Compiling datafusion-datasource-json v54.0.0
+   Compiling datafusion-catalog-listing v54.0.0
+   Compiling datafusion-functions-table v54.0.0
+   Compiling datafusion v54.0.0
+   Compiling datafusion-substrait v54.0.0
+   Compiling opensearch-datafusion v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust)
+warning: unused import: `Arc`
+ --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/cache.rs:9:17
+  |
+9 | use std::sync::{Arc, Mutex};
+  |                 ^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `error`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/custom_cache_manager.rs:19:18
+   |
+19 | use log::{debug, error};
+   |                  ^^^^^
+
+warning: unused import: `CollectorCallStrategy`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_executor.rs:58:34
+   |
+58 | use crate::indexed_table::eval::{CollectorCallStrategy, RowGroupBitsetSource, TreeBitsetSource};
+   |                                  ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `roaring::RoaringBitmap`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/eval/predicate_evaluator.rs:22:5
+   |
+22 | use roaring::RoaringBitmap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `row_selection_to_bitmap`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/eval/single_collector.rs:38:58
+   |
+38 |     bitmap_to_packed_bits, packed_bits_to_boolean_array, row_selection_to_bitmap, PositionMap,
+   |                                                          ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `datafusion::parquet::file::metadata::ParquetMetaData`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/segment_info.rs:20:5
+   |
+20 | use datafusion::parquet::file::metadata::ParquetMetaData;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `UInt64Array`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/stream.rs:36:53
+   |
+36 | use datafusion::arrow::array::{Array, BooleanArray, UInt64Array};
+   |                                                     ^^^^^^^^^^^
+
+warning: unused imports: `DataType`, `Field`, and `Schema`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/stream.rs:38:36
+   |
+38 | use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+   |                                    ^^^^^^^^  ^^^^^  ^^^^^^
+
+warning: unused import: `std::sync::Arc`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/substrait_to_tree.rs:32:5
+   |
+32 | use std::sync::Arc;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `FilterStrategy`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/table_provider.rs:50:21
+   |
+50 | use super::stream::{FilterStrategy, IndexedExec, RowGroupInfo};
+   |                     ^^^^^^^^^^^^^^
+
+warning: unused import: `datafusion::physical_plan::displayable`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/local_executor.rs:38:5
+   |
+38 | use datafusion::physical_plan::displayable;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `native_bridge_common::log_debug`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/local_executor.rs:41:5
+   |
+41 | use native_bridge_common::log_debug;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `physical_plan::displayable`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/query_executor.rs:18:5
+   |
+18 |     physical_plan::displayable,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/conv.rs:24:26
+   |
+24 | use super::{coerce_args, udf_identity, CoerceMode};
+   |                          ^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/date_format.rs:14:5
+   |
+14 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/extract.rs:15:5
+   |
+15 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/from_unixtime.rs:14:5
+   |
+14 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/makedate.rs:14:5
+   |
+14 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/maketime.rs:20:5
+   |
+20 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ListArray`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/mvappend.rs:41:5
+   |
+41 |     ListArray, ListBuilder, StringArray, StringBuilder, StringViewArray, StringViewBuilder,
+   |     ^^^^^^^^^
+
+warning: unused import: `StringArray`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/mvzip.rs:32:76
+   |
+32 |     Int16Array, Int32Array, Int64Array, Int8Array, ListArray, ListBuilder, StringArray,
+   |                                                                            ^^^^^^^^^^^
+
+warning: unused import: `GenericListArray`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/pattern_parser.rs:31:22
+   |
+31 |     Array, ArrayRef, GenericListArray, ListArray, ListBuilder, MapBuilder, MapFieldNames,
+   |                      ^^^^^^^^^^^^^^^^
+
+warning: unused imports: `NullBuffer` and `OffsetBuffer`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/pattern_parser.rs:34:33
+   |
+34 | use datafusion::arrow::buffer::{NullBuffer, OffsetBuffer};
+   |                                 ^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `ScalarValue`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/pattern_parser.rs:36:36
+   |
+36 | use datafusion::common::{plan_err, ScalarValue};
+   |                                    ^^^^^^^^^^^
+
+warning: unused import: `crate::udf::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/pattern_parser.rs:44:5
+   |
+44 | use crate::udf::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/str_to_date.rs:14:5
+   |
+14 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/strftime.rs:24:5
+   |
+24 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::udf_identity`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/time_format.rs:15:5
+   |
+15 | use super::udf_identity;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `AsArray`
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udwf/internal_pattern.rs:26:42
+   |
+26 | use datafusion::arrow::array::{ArrayRef, AsArray, StringArray, StringBuilder};
+   |                                          ^^^^^^^
+
+warning: use of deprecated method `datafusion_datasource::PartitionedFile::with_extensions`: use `with_extension`; the extension is keyed by its concrete type
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/parquet_bridge.rs:144:10
+    |
+144 |         .with_extensions(Arc::new(access_plan));
+    |          ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `datafusion_datasource::PartitionedFile::with_extensions`: use `with_extension`; the extension is keyed by its concrete type
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/shard_table_provider.rs:99:29
+   |
+99 |                     pf = pf.with_extensions(Arc::new(plan.clone()));
+   |                             ^^^^^^^^^^^^^^^
+
+warning: unused import: `datafusion::execution::cache::CacheAccessor`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/api.rs:930:9
+    |
+930 |     use datafusion::execution::cache::CacheAccessor;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `datafusion::execution::cache::CacheAccessor`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/session_context.rs:448:9
+    |
+448 |     use datafusion::execution::cache::CacheAccessor;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `num_partitions`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_executor.rs:502:9
+    |
+502 |     let num_partitions = query_config.target_partitions.max(1);
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_partitions`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/eval/mod.rs:440:17
+    |
+440 |             let mut flush = |bm: &mut RoaringBitmap, start: u32, end_inclusive: u32| {
+    |                 ----^^^^^
+    |                 |
+    |                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `used`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/memory.rs:156:21
+    |
+156 |                 let used = self.used.load(Ordering::Relaxed);
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_used`
+
+warning: unused variable: `used`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/memory.rs:171:21
+    |
+171 |                 let used = self.used.load(Ordering::Relaxed);
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_used`
+
+warning: variable does not need to be mutable
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/query_budget.rs:261:13
+    |
+261 |         let mut reservation = consumer.register(pool);
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: type `AggConfig` is more private than the item `InternalPatternAccumulator::new`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udaf/internal_pattern.rs:307:5
+    |
+307 |     pub fn new(arg0_is_list: bool, config: AggConfig) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ associated function `InternalPatternAccumulator::new` is reachable at visibility `pub`
+    |
+note: but type `AggConfig` is only usable at visibility `pub(self)`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udaf/internal_pattern.rs:200:1
+    |
+200 | struct AggConfig {
+    | ^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: type `PatternField` is more private than the item `PatternParserGetFieldUdf::new`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/pattern_parser.rs:234:5
+    |
+234 |     pub fn new(field: PatternField) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ associated function `PatternParserGetFieldUdf::new` is reachable at visibility `pub`
+    |
+note: but type `PatternField` is only usable at visibility `pub(self)`
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/udf/pattern_parser.rs:204:1
+    |
+204 | enum PatternField {
+    | ^^^^^^^^^^^^^^^^^
+
+warning: associated function `new_with_tx` is never used
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/cross_rt_stream.rs:40:8
+   |
+39 | impl CrossRtStream {
+   | ------------------ associated function in this implementation
+40 |     fn new_with_tx<F, Fut>(f: F, schema: SchemaRef) -> Self
+   |        ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `candidates` is never read
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/eval/single_collector.rs:109:5
+    |
+108 | struct SingleCollectorState {
+    |        -------------------- field in this struct
+109 |     candidates: RoaringBitmap,
+    |     ^^^^^^^^^^
+
+warning: field `emit_row_ids` is never read
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/indexed_table/stream.rs:452:5
+    |
+393 | struct IndexedStream {
+    |        ------------- field in this struct
+...
+452 |     emit_row_ids: bool,
+    |     ^^^^^^^^^^^^
+
+warning: field `estimated_batch_bytes` is never read
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/phantom_corrector.rs:46:5
+   |
+41 | pub struct PhantomCorrector {
+   |            ---------------- field in this struct
+...
+46 |     estimated_batch_bytes: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `PhantomCorrector` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: function `assert_send_sync` is never used
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/phantom_corrector.rs:149:8
+    |
+149 |     fn assert_send_sync<T: Send + Sync>() {}
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `check` is never used
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/phantom_corrector.rs:150:8
+    |
+150 |     fn check() {
+    |        ^^^^^
+
+warning: constant `DEFAULT_MIN_TARGET_PARTITIONS` is never used
+   --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/query_budget.rs:114:7
+    |
+114 | const DEFAULT_MIN_TARGET_PARTITIONS: usize = 1;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `phantom_reservation` is never read
+  --> /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/src/session_context.rs:60:16
+   |
+37 | pub struct SessionContextHandle {
+   |            -------------------- field in this struct
+...
+60 |     pub(crate) phantom_reservation: Option<datafusion::execution::memory_pool::MemoryReservation>,
+   |                ^^^^^^^^^^^^^^^^^^^
+
+warning: `opensearch-datafusion` (lib) generated 48 warnings (run `cargo fix --lib -p opensearch-datafusion` to apply 34 suggestions)
+   Compiling opensearch-native-lib v0.1.0 (/Users/gbh/Documents/dev/OpenSearch/sandbox/libs/dataformat-native/rust/lib)
+    Finished `release` profile [optimized + debuginfo] target(s) in 18m 52s

@@ -1,0 +1,1 @@
+source = clickbench | where (SearchPhrase != '') and match(URL, 'yandex') | sort EventTime, SearchPhrase | fields SearchPhrase | head 10

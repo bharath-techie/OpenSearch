@@ -1,0 +1,90 @@
+REPRODUCE WITH: ./gradlew ':sandbox:qa:analytics-engine-rest:integTest' --tests 'org.opensearch.analytics.qa.AggregationsPplIT.testAggregationsPplQueries' -Dtests.seed=22777C7EB2C5563 -Dtests.security.manager=false -Dtests.jvm.argline="-XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=64m" -Dtests.locale=es-PR -Dtests.timezone=Pacific/Kanton -Druntime.java=25
+
+AggregationsPplIT > testAggregationsPplQueries FAILED
+    java.lang.AssertionError: aggregations PPL query failures (1 of 6):
+    PPL Q1 row 2 col 0: Value mismatch - expected 10, got 11
+        at __randomizedtesting.SeedInfo.seed([22777C7EB2C5563:5A33C34B30802EF8]:0)
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.opensearch.analytics.qa.BasePplIT.runPplQueries(BasePplIT.java:69)
+        at org.opensearch.analytics.qa.AggregationsPplIT.testAggregationsPplQueries(AggregationsPplIT.java:23)
+
+
+Suite: Test class org.opensearch.analytics.qa.AggregationsPplIT
+  2> Jun 09, 2026 4:01:18 PM org.apache.lucene.internal.vectorization.VectorizationProvider lookup
+  2> WARNING: C2 compiler is disabled; Java vector incubator API can't be enabled
+  1> [2026-06-09T16:01:18,510][INFO ][o.o.a.q.AggregationsPplIT] [testAggregationsPplQueries] before test
+  1> [2026-06-09T16:01:18,602][INFO ][o.o.a.q.AggregationsPplIT] [testAggregationsPplQueries] initializing REST clients against [http://[::1]:49625, http://127.0.0.1:49626, http://[::1]:50062, http://127.0.0.1:50063]
+
+
+
+1> [2026-06-09T16:01:22,358][INFO ][o.o.a.q.DatasetProvisioner] [testAggregationsPplQueries] Dataset [aggregations] provisioned into index [aggregation_tests]
+  1> [2026-06-09T16:01:22,366][INFO ][o.o.a.q.AnalyticsRestTestCase] [testAggregationsPplQueries] Running 6 aggregations PPL queries: [1, 2, 3, 4, 5, 6]
+  1> [2026-06-09T16:01:22,374][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] === PPL Q1 ===
+  1> source=aggregation_tests | stats distinct_count(user) as unique_users by department | sort - unique_users
+
+  1> [2026-06-09T16:01:24,791][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] PPL Q1 response: {schema=[{name=unique_users, type=bigint}, {name=department, type=string}], total=3, datarows=[[11, Sales], [10, Engineering], [10, Marketing]], size=3}
+  1> [2026-06-09T16:01:24,805][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] === PPL Q2 ===
+  1> source=aggregation_tests | stats distinct_count(status_code) as unique_codes, count() as total by region | sort - total
+
+  1> [2026-06-09T16:01:24,854][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] PPL Q2 response: {schema=[{name=unique_codes, type=bigint}, {name=total, type=bigint}, {name=region, type=string}], total=4, datarows=[[3, 50, West], [3, 50, South], [3, 50, North], [3, 50, East]], size=4}
+  1> [2026-06-09T16:01:24,858][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] === PPL Q3 ===
+  1> source=aggregation_tests | stats max(response_time) as max_time, max(score) as max_score by user | sort - max_time
+
+  1> [2026-06-09T16:01:27,235][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] PPL Q3 response: {schema=[{name=max_time, type=int}, {name=max_score, type=float}, {name=user, type=string}], total=10, datarows=[[1500, 86.0, user9], [1497, 98.0, user7], [1492, 97.0, user3], [1491, 97.0, user1], [1483, 100.0, user4], [1482, 92.0, user8], [1447, 84.0, user5], [1395, 95.0, user2], [1360, 91.0, user6], [1244, 100.0, user0]], size=10}
+  1> [2026-06-09T16:01:27,243][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] === PPL Q4 ===
+  1> source=aggregation_tests | stats max(response_time) as max_rt, max(score) as max_score, count() as total by department | sort - max_rt
+
+  1> [2026-06-09T16:01:27,296][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] PPL Q4 response: {schema=[{name=max_rt, type=int}, {name=max_score, type=float}, {name=total, type=bigint}, {name=department, type=string}], total=3, datarows=[[1500, 100.0, 72, Sales], [1497, 100.0, 62, Engineering], [1492, 97.0, 66, Marketing]], size=3}
+  1> [2026-06-09T16:01:27,301][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] === PPL Q5 ===
+  1> source=aggregation_tests | stats min(response_time) as min_time, min(score) as min_score by user | sort min_time
+
+  1> [2026-06-09T16:01:27,365][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] PPL Q5 response: {schema=[{name=min_time, type=int}, {name=min_score, type=float}, {name=user, type=string}], total=10, datarows=[[53, 1.0, user2], [59, 1.0, user5], [76, 8.0, user4], [83, 4.0, user0], [87, 3.0, user8], [159, 2.0, user7], [192, 0.0, user1], [228, 0.0, user9], [238, 9.0, user3], [243, 0.0, user6]], size=10}
+  1> [2026-06-09T16:01:27,368][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] === PPL Q6 ===
+  1> source=aggregation_tests | stats min(response_time) as min_rt, min(score) as min_score, count() as total by region | sort min_rt
+
+  1> [2026-06-09T16:01:27,402][INFO ][o.o.a.q.DatasetQueryRunner] [testAggregationsPplQueries] PPL Q6 response: {schema=[{name=min_rt, type=int}, {name=min_score, type=float}, {name=total, type=bigint}, {name=region, type=string}], total=4, datarows=[[53, 0.0, 50, North], [59, 1.0, 50, South], [83, 3.0, 50, East], [159, 0.0, 50, West]], size=4}
+  1> [2026-06-09T16:01:27,436][INFO ][o.o.a.q.AggregationsPplIT] [testAggregationsPplQueries] after test
+  2> REPRODUCE WITH: ./gradlew ':sandbox:qa:analytics-engine-rest:integTest' --tests 'org.opensearch.analytics.qa.AggregationsPplIT.testAggregationsPplQueries' -Dtests.seed=22777C7EB2C5563 -Dtests.security.manager=false -Dtests.jvm.argline="-XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=64m" -Dtests.locale=es-PR -Dtests.timezone=Pacific/Kanton -Druntime.java=25
+  2> java.lang.AssertionError: aggregations PPL query failures (1 of 6):
+    PPL Q1 row 2 col 0: Value mismatch - expected 10, got 11
+        at __randomizedtesting.SeedInfo.seed([22777C7EB2C5563:5A33C34B30802EF8]:0)
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.opensearch.analytics.qa.BasePplIT.runPplQueries(BasePplIT.java:69)
+        at org.opensearch.analytics.qa.AggregationsPplIT.testAggregationsPplQueries(AggregationsPplIT.java:23)
+  2> NOTE: leaving temporary files on disk at: /Users/gbh/Documents/dev/OpenSearch/sandbox/qa/analytics-engine-rest/build/testrun/integTest/temp/org.opensearch.analytics.qa.AggregationsPplIT_22777C7EB2C5563-001
+  2> NOTE: test params are: codec=Asserting(Lucene104): {}, docValues:{}, maxPointsInLeafNode=1244, maxMBSortInHeap=7.4080387710749465, sim=Asserting(RandomSimilarity(queryNorm=true): {}), locale=es-PR, timezone=Pacific/Kanton
+  2> NOTE: Mac OS X 26.5 aarch64/Eclipse Adoptium 25.0.3 (64-bit)/cpus=10,threads=2,free=475102224,total=536870912
+  2> NOTE: All tests run in this JVM: [AggregationsPplIT]
+
+REPRODUCE WITH: ./gradlew ':sandbox:qa:analytics-engine-rest:integTest' --tests 'org.opensearch.analytics.qa.RangeBucketCommandIT.testBinStartEndBucketsValuesIntoExpandedRange' -Dtests.seed=22777C7EB2C5563 -Dtests.security.manager=false -Dtests.jvm.argline="-XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=64m" -Dtests.locale=en-SK -Dtests.timezone=Asia/Kashgar -Druntime.java=25
+
+RangeBucketCommandIT > testBinStartEndBucketsValuesIntoExpandedRange FAILED
+    org.junit.ComparisonFailure: Cell mismatch at row 4, col 0 for query: source=calcs | bin num1 start=0 end=100 | fields num1 | head 5 expected:<[0-1]0> but was:<[10-2]0>
+        at __randomizedtesting.SeedInfo.seed([22777C7EB2C5563:89F54632B44F7192]:0)
+        at app//org.junit.Assert.assertEquals(Assert.java:117)
+        at app//org.opensearch.analytics.qa.RangeBucketCommandIT.assertCellEquals(RangeBucketCommandIT.java:171)
+        at app//org.opensearch.analytics.qa.RangeBucketCommandIT.assertRows(RangeBucketCommandIT.java:148)
+        at app//org.opensearch.analytics.qa.RangeBucketCommandIT.testBinStartEndBucketsValuesIntoExpandedRange(RangeBucketCommandIT.java:59)
+
+
+Suite: Test class org.opensearch.analytics.qa.RangeBucketCommandIT
+  1> [2026-06-09T16:10:36,163][INFO ][o.o.a.q.RangeBucketCommandIT] [testBinStartEndBucketsValuesIntoExpandedRange] before test
+  1> [2026-06-09T16:10:36,163][INFO ][o.o.a.q.RangeBucketCommandIT] [testBinStartEndBucketsValuesIntoExpandedRange] initializing REST clients against [http://[::1]:49625, http://127.0.0.1:49626, http://[::1]:50062, http://127.0.0.1:50063]
+  1> [2026-06-09T16:10:39,883][INFO ][o.o.a.q.DatasetProvisioner] [testBinStartEndBucketsValuesIntoExpandedRange] Bulk response for index [calcs]: {"took":1218,"errors":false,"items":[{"index":{"_index":"calcs","_id":"qvH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":0,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"q_H4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":1,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"rPH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":2,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"rfH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":3,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"rvH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":4,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"r_H4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":5,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"sPH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":6,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"sfH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":7,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"svH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":8,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"s_H4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":9,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"tPH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":10,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"tfH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":11,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"tvH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":12,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"t_H4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":13,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"uPH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":14,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"ufH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":15,"_primary_term":1,"status":201}},{"index":{"_index":"calcs","_id":"uvH4q54BiQmtxK1pUx8G","_version":1,"result":"created","forced_refresh":true,"_shards":{"total":1,"successful":1,"failed":0},"_seq_no":16,"_primary_term":1,"status":201}}]}
+  1> [2026-06-09T16:10:40,478][INFO ][o.o.a.q.DatasetProvisioner] [testBinStartEndBucketsValuesIntoExpandedRange] Dataset [calcs] provisioned into index [calcs]
+  1> [2026-06-09T16:10:40,520][INFO ][o.o.a.q.RangeBucketCommandIT] [testBinStartEndBucketsValuesIntoExpandedRange] after test
+  2> REPRODUCE WITH: ./gradlew ':sandbox:qa:analytics-engine-rest:integTest' --tests 'org.opensearch.analytics.qa.RangeBucketCommandIT.testBinStartEndBucketsValuesIntoExpandedRange' -Dtests.seed=22777C7EB2C5563 -Dtests.security.manager=false -Dtests.jvm.argline="-XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=64m" -Dtests.locale=en-SK -Dtests.timezone=Asia/Kashgar -Druntime.java=25
+  2> org.junit.ComparisonFailure: Cell mismatch at row 4, col 0 for query: source=calcs | bin num1 start=0 end=100 | fields num1 | head 5 expected:<[0-1]0> but was:<[10-2]0>
+        at __randomizedtesting.SeedInfo.seed([22777C7EB2C5563:89F54632B44F7192]:0)
+        at app//org.junit.Assert.assertEquals(Assert.java:117)
+        at app//org.opensearch.analytics.qa.RangeBucketCommandIT.assertCellEquals(RangeBucketCommandIT.java:171)
+        at app//org.opensearch.analytics.qa.RangeBucketCommandIT.assertRows(RangeBucketCommandIT.java:148)
+        at app//org.opensearch.analytics.qa.RangeBucketCommandIT.testBinStartEndBucketsValuesIntoExpandedRange(RangeBucketCommandIT.java:59)
+  1> [2026-06-09T16:10:40,530][INFO ][o.o.a.q.RangeBucketCommandIT] [testBinStartEndPreservesNullsInNullableField] before test
+  1> [2026-06-09T16:10:40,548][INFO ][o.o.a.q.RangeBucketCommandIT] [testBinStartEndPreservesNullsInNullableField] after test
+  1> [2026-06-09T16:10:40,550][INFO ][o.o.a.q.RangeBucketCommandIT] [testBinStartEndDistributesRowsCorrectly] before test
+  1> [2026-06-09T16:10:40,590][INFO ][o.o.a.q.RangeBucketCommandIT] [testBinStartEndDistributesRowsCorrectly] after test
+  2> NOTE: leaving temporary files on disk at: /Users/gbh/Documents/dev/OpenSearch/sandbox/qa/analytics-engine-rest/build/testrun/integTest/temp/org.opensearch.analytics.qa.RangeBucketCommandIT_22777C7EB2C5563-001
+  2> NOTE: test params are: codec=Asserting(Lucene104), sim=Asserting(RandomSimilarity(queryNorm=false): {}), locale=en-SK, timezone=Asia/Kashgar
+  2> NOTE: Mac OS X 26.5 aarch64/Eclipse Adoptium 25.0.3 (64-bit)/cpus=10,threads=1,free=500529088,total=536870912
+  2> NOTE: All tests run in this JVM: [AggregationsPplIT, AliasIT, AnalyticsStatsApiIT, ApiMetricsPplIT, AppLogsPplIT, AppendCommandIT, AppendPipeCommandIT, ArrayFunctionIT, ComplexJoinsPplIT, ComplexRegexPplIT, ConditionalFunctionsIT, ConversionFunctionsIT, ConvertTzFunctionIT, CoordinatorReduceIT, CountFastPathIT, CryptoFunctionsIT, DataFusionStatsRestIT, DataStreamIT, DateNanosUDTPrecisionIT, DateTimeScalarFunctionsIT, DatetimeCoverageIT, DatetimeFunctionIT, DslClickBenchIT, DynamicMappingSearchIT, EvalCommandIT, EventstatsCommandIT, ExceptionLogsPplIT, ExplainApiIT, ExtensiveCoveragePplIT, FieldFormatCommandIT, FieldTypeCoverageIT, FieldsCommandIT, FillNullCommandIT, FilterDelegationGoldenIT, FilterDelegationIT, FulltextWindowPplIT, FunctionsPplIT, GrokCommandIT, HeadCommandIT, IndexPatternUnionIT, IpFieldMultiShardIT, JoinCommandIT, KubernetesLogsPplIT, ListAggregateMultiTypeIT, LocalRecoveryIT, LookupJoinQueriesPplIT, LookupTableQueriesPplIT, MVAppendFunctionIT, MatchLikeParityIT, MathFunctionIT, MathScalarFunctionsIT, MinspanBucketCommandIT, MultiIndexQueriesPplIT, MultiIndexQueryShapesIT, MultiSourceJoinsPplIT, MultisearchCommandIT, ObjectFieldIT, OperatorCommandIT, OtelLogsPplIT, ParquetDataFusionIT, ParseCommandIT, PatternsCommandIT, PerformanceMetricsPplIT, PplBig5IT, PplClickBenchIT, RangeBucketCommandIT]

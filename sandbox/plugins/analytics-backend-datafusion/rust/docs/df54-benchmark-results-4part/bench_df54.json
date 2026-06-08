@@ -1,0 +1,797 @@
+{
+  "label": "df54",
+  "results": {
+    "q1": {
+      "ppl": "source = clickbench | stats count()",
+      "cold_s": 0.2111,
+      "warm1_s": 0.0177,
+      "warm2_s": 0.0181,
+      "best_warm_s": 0.0177,
+      "row_count": 1,
+      "rows": [
+        [
+          99997497
+        ]
+      ],
+      "error": null
+    },
+    "q2": {
+      "ppl": "source = clickbench | where AdvEngineID!=0 | stats count()",
+      "cold_s": 0.131,
+      "warm1_s": 0.0555,
+      "warm2_s": 0.0514,
+      "best_warm_s": 0.0514,
+      "row_count": 1,
+      "rows": [
+        [
+          630500
+        ]
+      ],
+      "error": null
+    },
+    "q3": {
+      "ppl": "source = clickbench | stats sum(AdvEngineID), count(), avg(ResolutionWidth)",
+      "cold_s": 0.1755,
+      "warm1_s": 0.1397,
+      "warm2_s": 0.1353,
+      "best_warm_s": 0.1353,
+      "row_count": 1,
+      "rows": [
+        [
+          7280088,
+          99997497,
+          1513.4879349030107
+        ]
+      ],
+      "error": null
+    },
+    "q4": {
+      "ppl": "source = clickbench | stats avg(UserID)",
+      "cold_s": 0.1277,
+      "warm1_s": 0.1412,
+      "warm2_s": 0.1694,
+      "best_warm_s": 0.1412,
+      "row_count": 1,
+      "rows": [
+        [
+          -55945124888.916016
+        ]
+      ],
+      "error": null
+    },
+    "q5": {
+      "ppl": "source = clickbench | stats dc(UserID)",
+      "cold_s": 0.2154,
+      "warm1_s": 0.2346,
+      "warm2_s": 0.2349,
+      "best_warm_s": 0.2346,
+      "row_count": 1,
+      "rows": [
+        [
+          17729855
+        ]
+      ],
+      "error": null
+    },
+    "q6": {
+      "ppl": "source = clickbench | stats dc(SearchPhrase)",
+      "cold_s": 0.4993,
+      "warm1_s": 0.4299,
+      "warm2_s": 0.4422,
+      "best_warm_s": 0.4299,
+      "row_count": 1,
+      "rows": [
+        [
+          6039691
+        ]
+      ],
+      "error": null
+    },
+    "q7": {
+      "ppl": "source = clickbench | stats min(EventDate), max(EventDate)",
+      "cold_s": 0.0234,
+      "warm1_s": 0.0172,
+      "warm2_s": 0.015,
+      "best_warm_s": 0.015,
+      "row_count": 1,
+      "rows": [
+        [
+          "2013-07-02 00:00:00",
+          "2013-07-31 00:00:00"
+        ]
+      ],
+      "error": null
+    },
+    "q8": {
+      "ppl": "source = clickbench | where AdvEngineID!=0 | stats count() by AdvEngineID | sort - `count()`",
+      "cold_s": 0.082,
+      "warm1_s": 0.0539,
+      "warm2_s": 0.0636,
+      "best_warm_s": 0.0539,
+      "row_count": 18,
+      "rows": [
+        [
+          404602,
+          2
+        ],
+        [
+          113167,
+          27
+        ],
+        [
+          45631,
+          13
+        ],
+        [
+          38960,
+          45
+        ],
+        [
+          9730,
+          44
+        ],
+        [
+          6896,
+          3
+        ],
+        [
+          5266,
+          62
+        ],
+        [
+          3554,
+          52
+        ],
+        [
+          938,
+          50
+        ],
+        [
+          836,
+          28
+        ],
+        [
+          350,
+          53
+        ],
+        [
+          343,
+          25
+        ],
+        [
+          158,
+          61
+        ],
+        [
+          38,
+          21
+        ],
+        [
+          20,
+          42
+        ],
+        [
+          7,
+          16
+        ],
+        [
+          3,
+          7
+        ],
+        [
+          1,
+          22
+        ]
+      ],
+      "error": null
+    },
+    "q9": {
+      "ppl": "source = clickbench | stats dc(UserID) as u by RegionID | sort -u | head 10",
+      "cold_s": 1.1027,
+      "warm1_s": 0.978,
+      "warm2_s": 1.0252,
+      "best_warm_s": 0.978,
+      "row_count": 10,
+      "rows": [
+        [
+          2848453,
+          229
+        ],
+        [
+          1096644,
+          2
+        ],
+        [
+          834778,
+          208
+        ],
+        [
+          603970,
+          169
+        ],
+        [
+          326127,
+          184
+        ],
+        [
+          306211,
+          158
+        ],
+        [
+          300033,
+          34
+        ],
+        [
+          288513,
+          55
+        ],
+        [
+          271135,
+          107
+        ],
+        [
+          244880,
+          42
+        ]
+      ],
+      "error": null
+    },
+    "q10": {
+      "ppl": "source = clickbench | stats sum(AdvEngineID), count() as c, avg(ResolutionWidth), dc(UserID) by RegionID | sort - c | head 10",
+      "cold_s": 1.2851,
+      "warm1_s": 1.2354,
+      "warm2_s": 1.3114,
+      "best_warm_s": 1.2354,
+      "row_count": 10,
+      "rows": [
+        [
+          2077656,
+          18295832,
+          1506.085243130785,
+          2848453,
+          229
+        ],
+        [
+          441662,
+          6687587,
+          1479.8386542111527,
+          1096644,
+          2
+        ],
+        [
+          285925,
+          4261812,
+          1285.2593246722286,
+          834778,
+          208
+        ],
+        [
+          100887,
+          3320229,
+          1465.9073732564832,
+          603970,
+          169
+        ],
+        [
+          81498,
+          1843518,
+          1538.0376568061718,
+          215584,
+          32
+        ],
+        [
+          161779,
+          1792369,
+          1548.360152401654,
+          300033,
+          34
+        ],
+        [
+          55526,
+          1755192,
+          1506.8082967561384,
+          326127,
+          184
+        ],
+        [
+          108820,
+          1542717,
+          1587.1085208758313,
+          244880,
+          42
+        ],
+        [
+          120470,
+          1516690,
+          1548.6028970982863,
+          271135,
+          107
+        ],
+        [
+          98212,
+          1435578,
+          1579.8860354505293,
+          210807,
+          51
+        ]
+      ],
+      "error": null
+    },
+    "q11": {
+      "ppl": "source = clickbench | where MobilePhoneModel != '' | stats dc(UserID) as u by MobilePhoneModel | sort - u | head 10",
+      "cold_s": 0.3084,
+      "warm1_s": 0.2617,
+      "warm2_s": 0.2636,
+      "best_warm_s": 0.2617,
+      "row_count": 10,
+      "rows": [
+        [
+          1092410,
+          "iPad"
+        ],
+        [
+          45938,
+          "iPhone"
+        ],
+        [
+          15931,
+          "A500"
+        ],
+        [
+          5547,
+          "N8-00"
+        ],
+        [
+          3329,
+          "iPho"
+        ],
+        [
+          2765,
+          "ONE TOUCH 6030A"
+        ],
+        [
+          1906,
+          "GT-P7300B"
+        ],
+        [
+          1871,
+          "3110000"
+        ],
+        [
+          1596,
+          "GT-I9500"
+        ],
+        [
+          1493,
+          "eagle75"
+        ]
+      ],
+      "error": null
+    },
+    "q12": {
+      "ppl": "source = clickbench | where MobilePhoneModel != '' | stats dc(UserID) as u by MobilePhone, MobilePhoneModel | sort - u | head 10",
+      "cold_s": 0.4081,
+      "warm1_s": 0.2798,
+      "warm2_s": 0.2842,
+      "best_warm_s": 0.2798,
+      "row_count": 10,
+      "rows": [
+        [
+          932793,
+          1,
+          "iPad"
+        ],
+        [
+          48289,
+          5,
+          "iPad"
+        ],
+        [
+          29234,
+          6,
+          "iPad"
+        ],
+        [
+          28268,
+          7,
+          "iPad"
+        ],
+        [
+          15887,
+          118,
+          "A500"
+        ],
+        [
+          14235,
+          6,
+          "iPhone"
+        ],
+        [
+          13449,
+          26,
+          "iPhone"
+        ],
+        [
+          11487,
+          10,
+          "iPad"
+        ],
+        [
+          9488,
+          32,
+          "iPad"
+        ],
+        [
+          9318,
+          13,
+          "iPad"
+        ]
+      ],
+      "error": null
+    },
+    "q13": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | stats count() as c by SearchPhrase | sort - c | head 10",
+      "cold_s": 1.1545,
+      "warm1_s": 1.0119,
+      "warm2_s": 1.0885,
+      "best_warm_s": 1.0119,
+      "row_count": 10,
+      "rows": [
+        [
+          70263,
+          "\u043a\u0430\u0440\u0435\u043b\u043a\u0438"
+        ],
+        [
+          34675,
+          "\u0430\u043b\u0431\u0430\u0442\u0440\u0443\u0442\u0434\u0438\u043d"
+        ],
+        [
+          24580,
+          "\u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c \u043e\u043d\u043b\u0430\u0439\u043d"
+        ],
+        [
+          21647,
+          "\u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c \u043e\u043d\u043b\u0430\u0439\u043d \u0431\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u043e"
+        ],
+        [
+          19707,
+          "\u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c"
+        ],
+        [
+          19195,
+          "\u043c\u0430\u043d\u0433\u0443 \u0432 \u0437\u0430\u0440\u0430\u0431\u0435\u0439 \u0433\u0440\u0430\u043c\u0430"
+        ],
+        [
+          17284,
+          "\u0434\u0440\u0443\u0436\u043a\u0435 \u043f\u043e\u043c\u0435\u0449\u0435\u043d\u0438\u0435"
+        ],
+        [
+          16746,
+          "galaxy table"
+        ],
+        [
+          16620,
+          "\u044d\u043a\u0437\u043e\u0438\u0434\u043d\u044b\u0435"
+        ],
+        [
+          12317,
+          "\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043c\u044b\u0442\u0438\u0449\u0438"
+        ]
+      ],
+      "error": null
+    },
+    "q14": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | stats dc(UserID) as u by SearchPhrase | sort - u | head 10",
+      "cold_s": 23.3407,
+      "warm1_s": 1.8253,
+      "warm2_s": 2.5889,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 500: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: java.lang.RuntimeException: Execution error: Join Error\\ncaused by\\nExternal error: task 4289 panicked with message \\\"byte array offset overflow\\\"\",\n    \"details\": \"StreamException[errorCode=INTERNAL, message=java.lang.RuntimeExcepti"
+    },
+    "q15": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | stats count() as c by SearchEngineID, SearchPhrase | sort - c | head 10",
+      "cold_s": 0.2991,
+      "warm1_s": 0.2128,
+      "warm2_s": 0.1134,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[2] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q16": {
+      "ppl": "source = clickbench | stats count() by UserID | sort - `count()` | head 10",
+      "cold_s": 0.1144,
+      "warm1_s": 0.1352,
+      "warm2_s": 0.1051,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[3] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q17": {
+      "ppl": "source = clickbench | stats count() by UserID, SearchPhrase | sort - `count()` | head 10",
+      "cold_s": 0.0838,
+      "warm1_s": 0.0531,
+      "warm2_s": 0.0609,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q18": {
+      "ppl": "source = clickbench | stats count() by UserID, SearchPhrase | head 10",
+      "cold_s": 0.0539,
+      "warm1_s": 0.0744,
+      "warm2_s": 0.0535,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  Reparti"
+    },
+    "q19": {
+      "ppl": "source = clickbench | eval m = extract(minute from EventTime) | stats count() by UserID, m, SearchPhrase | sort - `count()` | head 10",
+      "cold_s": 0.0837,
+      "warm1_s": 0.0694,
+      "warm2_s": 0.0489,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[1] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q20": {
+      "ppl": "source = clickbench | where UserID = 435090932899640449 | fields UserID",
+      "cold_s": 0.2431,
+      "warm1_s": 0.0857,
+      "warm2_s": 0.0838,
+      "best_warm_s": 0.0838,
+      "row_count": 4,
+      "rows": [
+        [
+          435090932899640449
+        ],
+        [
+          435090932899640449
+        ],
+        [
+          435090932899640449
+        ],
+        [
+          435090932899640449
+        ]
+      ],
+      "error": null
+    },
+    "q21": {
+      "ppl": "source = clickbench | where like(URL, '%google%') | stats count()",
+      "cold_s": 1.7776,
+      "warm1_s": 1.6969,
+      "warm2_s": 1.9046,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for AggregateStream[0] with top memory consumers (across reservations) as:\\n  AggregateStream[1]#854(can sp"
+    },
+    "q22": {
+      "ppl": "source = clickbench | where like(URL, '%google%') and SearchPhrase != '' | stats count() as c by SearchPhrase | sort - c | head 10",
+      "cold_s": 2.7838,
+      "warm1_s": 2.4933,
+      "warm2_s": 2.3956,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[2] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q23": {
+      "ppl": "source = clickbench | where like(Title, '%Google%') and not like(URL, '%.google.%') and SearchPhrase != '' | stats count() as c, dc(UserID) by SearchPhrase | sort - c | head 10",
+      "cold_s": 4.02,
+      "warm1_s": 3.8448,
+      "warm2_s": 3.7283,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[1] (count(1), approx_distinct(clickbench.UserID)) with top memory consumers "
+    },
+    "q24": {
+      "ppl": "source = clickbench | where like(URL, '%google%') | sort EventTime | head 10",
+      "cold_s": 6.7106,
+      "warm1_s": 6.7264,
+      "warm2_s": 6.8875,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for TopK[0] with top memory consumers (across reservations) as:\\n  TopK[2]#1027(can spill: false) consumed "
+    },
+    "q25": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | sort EventTime | fields SearchPhrase | head 10",
+      "cold_s": 0.0537,
+      "warm1_s": 0.0261,
+      "warm2_s": 0.0301,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for TopK[0] with top memory consumers (across reservations) as:\\n  TopK[0]#1058(can spill: false) consumed "
+    },
+    "q26": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | fields SearchPhrase | sort SearchPhrase | head 10",
+      "cold_s": 0.0267,
+      "warm1_s": 0.0254,
+      "warm2_s": 0.0266,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for TopK[3] with top memory consumers (across reservations) as:\\n  TopK[2]#1093(can spill: false) consumed "
+    },
+    "q27": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | sort EventTime, SearchPhrase | fields SearchPhrase | head 10",
+      "cold_s": 0.0248,
+      "warm1_s": 0.0256,
+      "warm2_s": 0.024,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for TopK[0] with top memory consumers (across reservations) as:\\n  TopK[2]#1126(can spill: false) consumed "
+    },
+    "q28": {
+      "ppl": "source = clickbench | where URL != '' | stats avg(length(URL)) as l, count() as c by CounterID | where c > 100000 | sort - l | head 25",
+      "cold_s": 0.0497,
+      "warm1_s": 0.0283,
+      "warm2_s": 0.0307,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (sum(character_length(clickbench.URL)), count(character_length(clickbench"
+    },
+    "q29": {
+      "ppl": "source = clickbench | where Referer != '' | eval k = regexp_replace(Referer, '^https?://(?:www\\\\.)?([^/]+)/.*$', '\\\\1') | stats avg(length(Referer)) as l, count() as c, min(Referer) by k | where c > 100000 | sort - l | head 25",
+      "cold_s": 0.1762,
+      "warm1_s": 0.1542,
+      "warm2_s": 0.1466,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[2] (sum(character_length(clickbench.Referer)), count(character_length(clickb"
+    },
+    "q30": {
+      "ppl": "source = clickbench | stats sum(ResolutionWidth), sum(ResolutionWidth+1), sum(ResolutionWidth+2), sum(ResolutionWidth+3), sum(ResolutionWidth+4), sum(ResolutionWidth+5), sum(ResolutionWidth+6), sum(ResolutionWidth+7), sum(ResolutionWidth+8), sum(ResolutionWidth+9)",
+      "cold_s": 0.0283,
+      "warm1_s": 0.0226,
+      "warm2_s": 0.0212,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for AggregateStream[1] with top memory consumers (across reservations) as:\\n  AggregateStream[2]#1297(can s"
+    },
+    "q31": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | stats count() as c, sum(IsRefresh), avg(ResolutionWidth) by SearchEngineID, ClientIP | sort - c | head 10",
+      "cold_s": 0.0464,
+      "warm1_s": 0.0349,
+      "warm2_s": 0.0432,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[2] (count(1), sum(clickbench.IsRefresh), sum(clickbench.ResolutionWidth), co"
+    },
+    "q32": {
+      "ppl": "source = clickbench | where SearchPhrase != '' | stats count() as c, sum(IsRefresh), avg(ResolutionWidth) by WatchID, ClientIP | sort - c | head 10",
+      "cold_s": 0.0408,
+      "warm1_s": 0.0354,
+      "warm2_s": 0.0384,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[1] (count(1), sum(clickbench.IsRefresh), sum(clickbench.ResolutionWidth), co"
+    },
+    "q33": {
+      "ppl": "source = clickbench | stats count() as c, sum(IsRefresh), avg(ResolutionWidth) by WatchID, ClientIP | sort - c | head 10",
+      "cold_s": 0.0429,
+      "warm1_s": 0.038,
+      "warm2_s": 0.0356,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[1] (count(1), sum(clickbench.IsRefresh), sum(clickbench.ResolutionWidth), co"
+    },
+    "q34": {
+      "ppl": "source = clickbench | stats count() as c by URL | sort - c | head 10",
+      "cold_s": 0.0488,
+      "warm1_s": 0.0416,
+      "warm2_s": 0.0425,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q35": {
+      "ppl": "source = clickbench | eval const = 1 | stats count() as c by const, URL | sort - c | head 10",
+      "cold_s": 0.0314,
+      "warm1_s": 0.0256,
+      "warm2_s": 0.0271,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q36": {
+      "ppl": "source = clickbench | eval `ClientIP - 1` = ClientIP - 1, `ClientIP - 2` = ClientIP - 2, `ClientIP - 3` = ClientIP - 3 | stats count() as c by ClientIP, `ClientIP - 1`, `ClientIP - 2`, `ClientIP - 3` | sort - c | head 10",
+      "cold_s": 0.0368,
+      "warm1_s": 0.0337,
+      "warm2_s": 0.0362,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[1] (count(1)) with top memory consumers (across reservations) as:\\n  SortPre"
+    },
+    "q37": {
+      "ppl": "source = clickbench | where CounterID = 62 and EventDate >= '2013-07-01 00:00:00' and EventDate <= '2013-07-31 00:00:00' and DontCountHits = 0 and IsRefresh = 0 and URL != '' | stats count() as PageViews by URL | sort - PageViews | head 10",
+      "cold_s": 0.0902,
+      "warm1_s": 0.0414,
+      "warm2_s": 0.0472,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  Grouped"
+    },
+    "q38": {
+      "ppl": "source = clickbench | where CounterID = 62 and EventDate >= '2013-07-01 00:00:00' and EventDate <= '2013-07-31 00:00:00' and DontCountHits = 0 and IsRefresh = 0 and Title != '' | stats count() as PageViews by Title | sort - PageViews | head 10",
+      "cold_s": 0.0645,
+      "warm1_s": 0.0641,
+      "warm2_s": 0.0644,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  TopK[1]"
+    },
+    "q39": {
+      "ppl": "source = clickbench | where CounterID = 62 and EventDate >= '2013-07-01 00:00:00' and EventDate <= '2013-07-31 00:00:00' and IsRefresh = 0 and IsLink != 0 and IsDownload = 0 | stats count() as PageViews by URL | sort - PageViews | head 10 from 1000",
+      "cold_s": 0.0712,
+      "warm1_s": 0.0663,
+      "warm2_s": 0.065,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[3] (count(1)) with top memory consumers (across reservations) as:\\n  TopK[0]"
+    },
+    "q40": {
+      "ppl": "source = clickbench | where CounterID = 62 and EventDate >= '2013-07-01 00:00:00' and EventDate <= '2013-07-31 00:00:00' and IsRefresh = 0 | eval Src=case(SearchEngineID = 0 and AdvEngineID = 0, Referer else ''), Dst=URL | stats count() as PageViews by TraficSourceID, SearchEngineID, AdvEngineID, Src, Dst | sort - PageViews | head 10 from 1000",
+      "cold_s": 0.055,
+      "warm1_s": 0.046,
+      "warm2_s": 0.0515,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[1] (count(1)) with top memory consumers (across reservations) as:\\n  TopK[0]"
+    },
+    "q41": {
+      "ppl": "source = clickbench | where CounterID = 62 and EventDate >= '2013-07-01 00:00:00' and EventDate <= '2013-07-31 00:00:00' and IsRefresh = 0 and TraficSourceID in (-1, 6) and RefererHash = 3594120000172545465 | stats count() as PageViews by URLHash, EventDate | sort - PageViews | head 10 from 100",
+      "cold_s": 0.0701,
+      "warm1_s": 0.0504,
+      "warm2_s": 0.0415,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  TopK[2]"
+    },
+    "q42": {
+      "ppl": "source = clickbench | where CounterID = 62 and EventDate >= '2013-07-01 00:00:00' and EventDate <= '2013-07-31 00:00:00' and IsRefresh = 0 and DontCountHits = 0 and URLHash = 2868770270353813622 | stats count() as PageViews by WindowClientWidth, WindowClientHeight | sort - PageViews | head 10 from 10000",
+      "cold_s": 0.0462,
+      "warm1_s": 0.0461,
+      "warm2_s": 0.0454,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[0] (count(1)) with top memory consumers (across reservations) as:\\n  Reparti"
+    },
+    "q43": {
+      "ppl": "source = clickbench | where CounterID = 62 and EventDate >= '2013-07-01 00:00:00' and EventDate <= '2013-07-15 00:00:00' and IsRefresh = 0 and DontCountHits = 0 | eval M = date_format(EventTime, '%Y-%m-%d %H:00:00') | stats count() as PageViews by M | sort M | head 10 from 1000",
+      "cold_s": 0.2058,
+      "warm1_s": 0.2006,
+      "warm2_s": 0.1972,
+      "best_warm_s": null,
+      "row_count": null,
+      "rows": null,
+      "error": "HTTP 429: {\n  \"error\": {\n    \"reason\": \"Error occurred in OpenSearch engine: [analytics_backend_datafusion] java.lang.RuntimeException: Execution error: Resources exhausted: Additional allocation failed for GroupedHashAggregateStream[2] (count(1)) with top memory consumers (across reservations) as:\\n  TopK[2]"
+    }
+  }
+}

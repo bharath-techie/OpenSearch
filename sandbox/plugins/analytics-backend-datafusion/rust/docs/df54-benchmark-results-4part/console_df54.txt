@@ -1,0 +1,103 @@
+  q1: cold= 0.211s warm_best=  0.018s  rows=1  OK
+  q2: cold= 0.131s warm_best=  0.051s  rows=1  OK
+  q3: cold= 0.175s warm_best=  0.135s  rows=1  OK
+  q4: cold= 0.128s warm_best=  0.141s  rows=1  OK
+  q5: cold= 0.215s warm_best=  0.235s  rows=1  OK
+  q6: cold= 0.499s warm_best=  0.430s  rows=1  OK
+  q7: cold= 0.023s warm_best=  0.015s  rows=1  OK
+  q8: cold= 0.082s warm_best=  0.054s  rows=18  OK
+  q9: cold= 1.103s warm_best=  0.978s  rows=10  OK
+ q10: cold= 1.285s warm_best=  1.235s  rows=10  OK
+ q11: cold= 0.308s warm_best=  0.262s  rows=10  OK
+ q12: cold= 0.408s warm_best=  0.280s  rows=10  OK
+ q13: cold= 1.155s warm_best=  1.012s  rows=10  OK
+ q14: cold=23.341s warm_best=     n/a  rows=None  ERR:HTTP 500: {
+  "error": {
+    "reason": "Error occurred in Op
+ q15: cold= 0.299s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q16: cold= 0.114s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q17: cold= 0.084s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q18: cold= 0.054s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q19: cold= 0.084s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q20: cold= 0.243s warm_best=  0.084s  rows=4  OK
+ q21: cold= 1.778s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q22: cold= 2.784s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q23: cold= 4.020s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q24: cold= 6.711s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q25: cold= 0.054s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q26: cold= 0.027s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q27: cold= 0.025s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q28: cold= 0.050s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q29: cold= 0.176s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q30: cold= 0.028s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q31: cold= 0.046s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q32: cold= 0.041s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q33: cold= 0.043s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q34: cold= 0.049s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q35: cold= 0.031s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q36: cold= 0.037s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q37: cold= 0.090s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q38: cold= 0.065s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q39: cold= 0.071s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q40: cold= 0.055s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q41: cold= 0.070s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q42: cold= 0.046s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+ q43: cold= 0.206s warm_best=     n/a  rows=None  ERR:HTTP 429: {
+  "error": {
+    "reason": "Error occurred in Op
+
+Wrote /Users/gbh/Documents/dev/OpenSearch/sandbox/plugins/analytics-backend-datafusion/rust/docs/df54-benchmark-results-4part/bench_df54.json
