@@ -37,6 +37,10 @@ pub struct DatafusionQueryConfig {
     pub target_partitions: usize,
     /// DataFusion's own decode-time predicate pushdown on the vanilla path.
     pub parquet_pushdown_filters: bool,
+    /// Route pure-parquet queries (no Lucene-delegated filters, no row-ids)
+    /// through the indexed executor instead of the vanilla `ListingTable` path.
+    /// Flag-gated diff aid — default false keeps the vanilla path the default.
+    pub route_pure_parquet_through_indexed: bool,
 
     // Indexed-only
     pub min_skip_run_default: usize,
@@ -114,6 +118,8 @@ pub struct WireDatafusionQueryConfig {
     pub bloom_filter_on_read: i32,
     /// 0 = false, 1 = true
     pub indexed_dynamic_filter_pushdown: i32,
+    /// 0 = false, 1 = true
+    pub route_pure_parquet_through_indexed: i32,
 }
 
 impl DatafusionQueryConfig {
@@ -126,6 +132,7 @@ impl DatafusionQueryConfig {
             batch_size: 8192,
             target_partitions: 4,
             parquet_pushdown_filters: false,
+            route_pure_parquet_through_indexed: false,
             min_skip_run_default: 1024,
             min_skip_run_selectivity_threshold: 0.03,
             indexed_pushdown_filters: true,
@@ -188,6 +195,7 @@ impl DatafusionQueryConfig {
             batch_size: w.batch_size as usize,
             target_partitions: w.target_partitions as usize,
             parquet_pushdown_filters: w.parquet_pushdown_filters != 0,
+            route_pure_parquet_through_indexed: w.route_pure_parquet_through_indexed != 0,
             min_skip_run_default: w.min_skip_run_default as usize,
             min_skip_run_selectivity_threshold: w.min_skip_run_selectivity_threshold,
             indexed_pushdown_filters: w.indexed_pushdown_filters != 0,
@@ -235,6 +243,10 @@ impl DatafusionQueryConfigBuilder {
     }
     pub fn parquet_pushdown_filters(mut self, v: bool) -> Self {
         self.0.parquet_pushdown_filters = v;
+        self
+    }
+    pub fn route_pure_parquet_through_indexed(mut self, v: bool) -> Self {
+        self.0.route_pure_parquet_through_indexed = v;
         self
     }
     pub fn min_skip_run_default(mut self, v: usize) -> Self {
@@ -335,6 +347,7 @@ mod tests {
             query_strategy: 1,
             bloom_filter_on_read: 1,
             indexed_dynamic_filter_pushdown: 1,
+            route_pure_parquet_through_indexed: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
@@ -350,6 +363,7 @@ mod tests {
         assert_eq!(c.cost_predicate, 3);
         assert_eq!(c.cost_collector, 17);
         assert_eq!(c.query_strategy, QueryStrategy::ListingTable);
+        assert!(c.route_pure_parquet_through_indexed);
     }
 
     #[test]
@@ -371,6 +385,7 @@ mod tests {
             query_strategy: 0,
             bloom_filter_on_read: 0,
             indexed_dynamic_filter_pushdown: 0,
+            route_pure_parquet_through_indexed: 0,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
@@ -378,5 +393,6 @@ mod tests {
         assert!(!c.indexed_dynamic_filter_pushdown);
         assert_eq!(c.force_pushdown, None);
         assert_eq!(c.query_strategy, QueryStrategy::None);
+        assert!(!c.route_pure_parquet_through_indexed);
     }
 }

@@ -1126,7 +1126,17 @@ fn view_needs_gc(buffers: &[arrow::buffer::Buffer], bytes_used: usize) -> bool {
 /// `stream_ptr` must be 0 or a valid pointer returned by `execute_query`.
 pub unsafe fn stream_close(stream_ptr: i64) {
     if stream_ptr != 0 {
-        let _ = Box::from_raw(stream_ptr as *mut QueryStreamHandle);
+        let handle = Box::from_raw(stream_ptr as *mut QueryStreamHandle);
+        // TEMP INSTRUMENTATION: dump EXPLAIN-ANALYZE plan (per-operator metrics) at
+        // stream end. Metrics are finalized once the stream is fully drained.
+        if let Some(plan) = handle.physical_plan.as_ref() {
+            let rendered = datafusion::physical_plan::display::DisplayableExecutionPlan::with_metrics(
+                plan.as_ref(),
+            )
+            .indent(true);
+            native_bridge_common::log_info!("QUERY_PROFILE plan+metrics:\n{}", rendered);
+        }
+        drop(handle);
     }
 }
 

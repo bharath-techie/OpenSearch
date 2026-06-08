@@ -109,6 +109,16 @@ pub struct StreamMetrics {
     /// RGs that became prunable only after the filter tightened further between
     /// prefetch (which runs ~1 RG ahead) and processing.
     pub dynamic_filter_rg_pruned_at_poll: Option<Count>,
+    /// TEMP (perf attribution, remove before landing): wall time of the
+    /// FIRST poll of each per-RG stream. The per-RG `DataSourceExec` is lazy —
+    /// `ArrowReaderMetadata::load_async` + array-reader construction (the per-RG
+    /// "open" cost) happen on the first poll, folded into `parquet_poll_time`.
+    /// Timing the first poll separately isolates open+first-decode from the
+    /// steady-state decode of subsequent polls. Subtract a steady-state
+    /// per-poll average to approximate the per-RG open cost on the critical path.
+    pub parquet_first_poll_time: Option<Time>,
+    /// TEMP: count of first-polls (== number of per-RG streams opened).
+    pub parquet_first_poll_count: Option<Count>,
     /// Accumulated inner `DataSourceExec` parquet metrics (shared across partitions).
     pub inner_parquet_metrics: Option<Arc<std::sync::Mutex<Vec<MetricsSet>>>>,
 }
@@ -150,6 +160,8 @@ impl StreamMetrics {
             parquet_poll_time: None,
             dynamic_filter_rg_pruned_at_prefetch: None,
             dynamic_filter_rg_pruned_at_poll: None,
+            parquet_first_poll_time: None,
+            parquet_first_poll_count: None,
             inner_parquet_metrics: None,
         }
     }
@@ -190,6 +202,9 @@ pub struct PartitionMetrics {
     pub parquet_poll_time: Time,
     pub dynamic_filter_rg_pruned_at_prefetch: Count,
     pub dynamic_filter_rg_pruned_at_poll: Count,
+    /// TEMP (perf attribution): see `StreamMetrics::parquet_first_poll_time`.
+    pub parquet_first_poll_time: Time,
+    pub parquet_first_poll_count: Count,
 }
 
 impl PartitionMetrics {
@@ -234,6 +249,9 @@ impl PartitionMetrics {
                 .subset_time("parquet_poll_time", partition),
             dynamic_filter_rg_pruned_at_prefetch: counter("dynamic_filter_rg_pruned_at_prefetch"),
             dynamic_filter_rg_pruned_at_poll: counter("dynamic_filter_rg_pruned_at_poll"),
+            parquet_first_poll_time: MetricBuilder::new(metrics)
+                .subset_time("parquet_first_poll_time", partition),
+            parquet_first_poll_count: counter("parquet_first_poll_count"),
         }
     }
 
@@ -276,6 +294,8 @@ impl PartitionMetrics {
             parquet_poll_time: Some(self.parquet_poll_time),
             dynamic_filter_rg_pruned_at_prefetch: Some(self.dynamic_filter_rg_pruned_at_prefetch),
             dynamic_filter_rg_pruned_at_poll: Some(self.dynamic_filter_rg_pruned_at_poll),
+            parquet_first_poll_time: Some(self.parquet_first_poll_time),
+            parquet_first_poll_count: Some(self.parquet_first_poll_count),
             inner_parquet_metrics,
         }
     }

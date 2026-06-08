@@ -1088,7 +1088,14 @@ pub unsafe extern "C" fn df_execute_with_context(
         .any(|w| w == crate::ROW_ID_COLUMN_NAME.as_bytes());
     let query_strategy = session_handle.query_config.query_strategy;
     let use_indexed = session_handle.indexed_config.is_some()
-        || (has_row_id && query_strategy != crate::datafusion_query_config::QueryStrategy::ListingTable);
+        || (has_row_id && query_strategy != crate::datafusion_query_config::QueryStrategy::ListingTable)
+        // Flag-gated: route PURE-parquet queries through the indexed executor too.
+        // The indexed entry handles `indexed_config = None` as FilterClass::None
+        // (PredicateOnlyEvaluator), so a vanilla-built handle runs unchanged there.
+        // Restricted to non-row-id plans: a row-id plan carries indexed_config = None
+        // here (no Lucene delegation), so the indexed path would NOT emit shard-global
+        // row-ids (requests_row_ids = false). Row-id queries keep their existing routing.
+        || (session_handle.query_config.route_pure_parquet_through_indexed && !has_row_id);
     if use_indexed {
         // Extract target_partitions BEFORE boxing into raw pointer (session_handle is consumed).
         let partition_weight = session_handle.query_config.target_partitions.max(1) as u32;
