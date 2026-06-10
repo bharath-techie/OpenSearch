@@ -23,9 +23,13 @@ public class MultiSourceJoinsPplIT extends BasePplIT {
         runPplQueries();
     }
 
-    /** Queries that fail at 1 shard: multi-source join unsupported. Skipped so the rest run and are visible. */
+    /**
+     * Remaining 1-shard failure is a value mismatch, not a delegation crash: Q2 has a tie on
+     * the sort key (dedup ordering of part_mid affects the unique_users count). The dedup +
+     * delegated-WHERE crash (Q4) is fixed by the scan-adjacent filter picker.
+     */
     @Override
     protected java.util.Set<Integer> getSkipQueries() {
-        return java.util.Set.of(2, 4);
+        return java.util.Set.of(2);
     }
 }

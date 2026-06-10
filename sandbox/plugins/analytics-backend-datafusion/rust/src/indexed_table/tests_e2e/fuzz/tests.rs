@@ -25,6 +25,7 @@ use rand::SeedableRng;
 use super::delegation::{
     generate_delegation_tree, run_delegation_iteration, DelegatedBackendBehavior,
 };
+use super::self_join::{generate_self_join, run_self_join_iteration, Combinator};
 use super::{
     build_corpus, derive_seed, generate_tree, load_segment, master_seed, run_iteration,
     run_iteration_twice, FixtureConfig,
@@ -285,6 +286,70 @@ async fn fuzz_delegation_sloppy() {
         2,
     )
     .await;
+}
+
+/// Driver for the per-scan-filter tests: generates two independent random branch
+/// predicates, runs a single-provider self-join/self-union through the production
+/// `per_scan_builder`, and asserts the result equals the oracle (intersection for
+/// Join, union for Union). Guards against the regression where both scans of one
+/// fragment shared a single filter (ComplexJoins Q1's
+/// `failed_attempts == suspicious_count`).
+async fn run_self_join_fuzz(
+    test_name: &str,
+    iters: u64,
+    cfg_builder: fn(u64) -> FixtureConfig,
+    combinator: Combinator,
+) {
+    let master = master_seed();
+    let corpus_seed = derive_seed(master, &format!("{}_corpus", test_name), 0);
+    let corpus = build_corpus(cfg_builder(corpus_seed));
+    let loaded = load_segment(&corpus);
+
+    for iter in 0..iters {
+        let iter_seed = derive_seed(master, test_name, iter);
+        let mut rng = StdRng::seed_from_u64(iter_seed);
+        let shape = generate_self_join(&mut rng, &corpus);
+        if let Err(e) = run_self_join_iteration(&corpus, &loaded, &shape, combinator).await {
+            panic!(
+                "per-scan fuzz {} iter={} seed={:016x} master={:016x}: {}\n\
+                 reproduce: INDEXED_E2E_SEED={:016x} cargo test {}",
+                test_name, iter, iter_seed, master, e, master, test_name,
+            );
+        }
+    }
+}
+
+/// Self-JOIN per-scan filter routing: each branch of a single-fragment self-join
+/// must apply its OWN pushed-down WHERE. 10k rows, 100 iterations.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_self_join_per_scan_filter() {
+    run_self_join_fuzz("fuzz_self_join_per_scan_filter", 100, FixtureConfig::small, Combinator::Join)
+        .await;
+}
+
+/// Same, null-heavy (50% nulls): 3VL must not let a NULL row leak into either
+/// branch's match set. 50 iterations.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_self_join_null_heavy() {
+    run_self_join_fuzz("fuzz_self_join_null_heavy", 50, FixtureConfig::null_heavy, Combinator::Join)
+        .await;
+}
+
+/// Self-UNION per-scan filter routing: same single-fragment-two-scans shape as the
+/// self-join, but the arms are combined with UNION ALL. Each arm must still apply
+/// its OWN pushed-down WHERE; the result must equal the oracle union. 10k rows,
+/// 100 iterations.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_self_union_per_scan_filter() {
+    run_self_join_fuzz("fuzz_self_union_per_scan_filter", 100, FixtureConfig::small, Combinator::Union)
+        .await;
+}
+
+/// Self-union, null-heavy (50% nulls). 50 iterations.
+#[tokio::test(flavor = "multi_thread")]
+async fn fuzz_self_union_null_heavy() {
+    run_self_join_fuzz("fuzz_self_union_null_heavy", 50, FixtureConfig::null_heavy, Combinator::Union)
+        .await;
 }
 
 /// Shuffled column order: parquet file columns are in reversed order

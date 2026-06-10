@@ -110,6 +110,7 @@ async fn run_constant_residual(residual: Arc<dyn PhysicalExpr>) -> usize {
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
         emit_row_ids: false,
+        per_scan_builder: None,
     }));
 
     let ctx = SessionContext::new();

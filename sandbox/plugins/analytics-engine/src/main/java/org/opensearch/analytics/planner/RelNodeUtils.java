@@ -163,6 +163,74 @@ public class RelNodeUtils {
     }
 
     /**
+     * Finds the scan-adjacent {@link OpenSearchFilter} — the WHERE filter that sits directly on
+     * the table scan, skipping any HAVING/qualify filters layered above an Aggregate, windowed
+     * Project, Join, or Union.
+     *
+     * <p><b>Why this exists.</b> For a query like
+     * {@code source=t | where verb='GET' | stats count() as c by x | where c > 5}, Calcite produces
+     * {@code Filter(c>5) → Aggregate → Filter(verb='GET') → Scan}. The lower filter (WHERE) is the
+     * one whose predicates can be delegated to a scan-aware backend; the upper filter (HAVING)
+     * references the derived {@code count} column, which has no physical storage. The deriver in
+     * {@link org.opensearch.analytics.planner.dag.FragmentConversionDriver} must derive the
+     * {@link org.opensearch.analytics.spi.FilterTreeShape} from the WHERE so it stays consistent
+     * with the delegated predicates the converter actually serializes. Picking the HAVING instead
+     * derives {@code NO_DELEGATION} while delegation bytes are still emitted — at single shard
+     * (where the whole pipeline is one fragment) that mismatch crashes the data node, which decodes
+     * a {@code delegated_predicate} marker it was told not to expect.
+     *
+     * <p>Mirrors the Rust {@code extract_filter_expr} / {@code has_aggregate_or_window_below} in
+     * {@code substrait_to_tree.rs}; the two must classify identically or the derived shape won't
+     * match the tree the data node builds.
+     *
+     * @param node the fragment root (a single-input chain or multi-input tree)
+     * @return the scan-adjacent filter, or {@code null} if the fragment has no such filter
+     */
+    public static OpenSearchFilter findScanAdjacentFilter(RelNode node) {
+        RelNode current = unwrapHep(node);
+        if (current instanceof OpenSearchFilter filter) {
+            // A filter above an Aggregate/Window/Join/Union is a HAVING/qualify on derived
+            // columns — skip it and keep descending for the underlying WHERE.
+            if (hasAggregateBelow(filter.getInput())) {
+                return findScanAdjacentFilter(filter.getInput());
+            }
+            return filter;
+        }
+        for (RelNode input : current.getInputs()) {
+            OpenSearchFilter found = findScanAdjacentFilter(input);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * True when an Aggregate, windowed Project, Join, or Union sits below {@code node}, reachable
+     * only through row-preserving operators (plain Project, Sort) that don't change the schema in
+     * a way that would invalidate a scan-level filter classification.
+     *
+     * <p>Deliberately does <b>not</b> recurse through {@link OpenSearchFilter}, matching the Rust
+     * traversal: adjacent filters are collapsed by Calcite's FILTER_MERGE before this runs, so a
+     * filter encountered here is the scan-adjacent WHERE, not another HAVING layer.
+     */
+    private static boolean hasAggregateBelow(RelNode node) {
+        RelNode current = unwrapHep(node);
+        if (current instanceof OpenSearchAggregate || current instanceof OpenSearchJoin || current instanceof OpenSearchUnion) {
+            return true;
+        }
+        if (current instanceof OpenSearchProject project) {
+            // A Project carrying a window function (RexOver) is the Calcite equivalent of Rust's
+            // LogicalPlan::Window — its output columns (e.g. streamstats' rn) are derived.
+            return project.containsOver() || hasAggregateBelow(project.getInput());
+        }
+        if (current instanceof OpenSearchSort sort) {
+            return hasAggregateBelow(sort.getInput());
+        }
+        return false;
+    }
+
+    /**
      * Qualified name of the first {@link OpenSearchTableScan} reachable from {@code node},
      * searching all inputs. Returns {@code null} if none is present.
      */

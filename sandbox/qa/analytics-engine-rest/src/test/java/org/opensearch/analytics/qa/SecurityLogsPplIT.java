@@ -23,9 +23,14 @@ public class SecurityLogsPplIT extends BasePplIT {
         runPplQueries();
     }
 
-    /** Queries that fail at 1 shard: unsupported operations / value mismatch. Skipped so the rest run and are visible. */
+    /**
+     * Remaining 1-shard failures are value/ordering mismatches, not delegation crashes:
+     * Q2 has a tie on the sort key (values(action) order), Q8 a timestamp sub-millisecond
+     * precision difference (earliest/latest). The HAVING-over-aggregate delegation crashes
+     * (Q1, Q3, Q4, Q5, Q7) are fixed by the scan-adjacent filter picker.
+     */
     @Override
     protected java.util.Set<Integer> getSkipQueries() {
-        return java.util.Set.of(1, 2, 3, 4, 5, 7, 8);
+        return java.util.Set.of(2, 8);
     }
 }

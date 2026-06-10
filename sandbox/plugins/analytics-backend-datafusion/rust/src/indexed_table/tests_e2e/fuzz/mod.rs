@@ -31,6 +31,7 @@ mod delegation;
 mod harness;
 mod oracle;
 mod seed;
+mod self_join;
 mod tests;
 mod tree_gen;
 

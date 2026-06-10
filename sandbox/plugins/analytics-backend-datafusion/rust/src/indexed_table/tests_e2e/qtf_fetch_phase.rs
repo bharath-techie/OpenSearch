@@ -123,6 +123,7 @@ async fn query_phase(tree: BoolNode) -> Vec<i64> {
         }),
         predicate_columns: vec![0, 1, 2, 3],
         emit_row_ids: true,
+    per_scan_builder: None,
     }));
 
     let ctx = SessionContext::new();

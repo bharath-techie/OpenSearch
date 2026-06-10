@@ -34,7 +34,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::{DFSchema, ScalarValue};
-use datafusion::execution::SessionState;
+use datafusion::catalog::Session;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, LogicalPlan, Operator, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl,
     Signature, TypeSignature, Volatility,
@@ -64,6 +64,16 @@ pub fn plan_requests_row_ids(plan: &LogicalPlan) -> bool {
         }),
         _ => plan.inputs().iter().any(|child| plan_requests_row_ids(child)),
     }
+}
+
+/// Count the `TableScan` nodes in a logical plan. A count > 1 means the fragment
+/// scans some index more than once (self-join / self-union at single shard), so
+/// each scan must resolve its own pushed-down filter rather than share one
+/// whole-fragment filter. Used to decide whether to install the per-scan filter
+/// builder on the table provider.
+pub fn count_table_scans(plan: &LogicalPlan) -> usize {
+    let here = matches!(plan, LogicalPlan::TableScan(_)) as usize;
+    here + plan.inputs().iter().map(|c| count_table_scans(c)).sum::<usize>()
 }
 
 /// Classification of a query's filter expression — drives the evaluator choice.
@@ -139,7 +149,7 @@ fn has_aggregate_or_window_below(plan: &LogicalPlan) -> bool {
 pub fn expr_to_bool_tree(
     expr: &Expr,
     schema: &SchemaRef,
-    state: &SessionState,
+    state: &dyn Session,
 ) -> Result<ExtractionResult, String> {
     let df_schema =
         DFSchema::try_from(schema.as_ref().clone()).map_err(|e| format!("DFSchema: {}", e))?;
@@ -156,7 +166,7 @@ fn convert_expr(
     expr: &Expr,
     schema: &Schema,
     df_schema: &DFSchema,
-    state: &SessionState,
+    state: &dyn Session,
 ) -> Result<BoolNode, String> {
     match expr {
         Expr::BinaryExpr(bin) if bin.op == Operator::And => {
@@ -226,7 +236,7 @@ fn convert_delegation_possible_function(
     args: &[Expr],
     schema: &Schema,
     df_schema: &DFSchema,
-    state: &SessionState,
+    state: &dyn Session,
 ) -> Result<BoolNode, String> {
     if args.len() != 2 {
         return Err(format!(

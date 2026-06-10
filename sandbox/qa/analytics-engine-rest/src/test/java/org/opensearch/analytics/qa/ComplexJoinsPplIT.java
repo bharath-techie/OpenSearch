@@ -11,36 +11,23 @@ package org.opensearch.analytics.qa;
 
 /**
  * Complex Joins PPL integration test (multi-index). Tests join operations across multiple indexes.
- * Uses existing indexes from other datasets: security_logs, app_monitor, kubernetes_logs,
- * monitor_tracking, performance_metrics, voice_verification.
+ *
+ * <p>All indices are provisioned from the {@code complex_joins} dataset (see
+ * {@link ComplexJoinsTestHelper}), which ships self-consistent fixtures whose join keys line up
+ * across indices. We deliberately do NOT re-provision these indices from the shared single-index
+ * datasets: that {@code DELETE}+recreate would replace the consistent join-key values with the
+ * shared datasets' unrelated values, breaking the cross-index joins (Q4/Q8/Q9 → zero/incorrect
+ * matches). This was the actual cause of the prior cross-table failures — a test-data provisioning
+ * clobber, not an engine bug.
  */
 public class ComplexJoinsPplIT extends BasePplIT {
-
-    private boolean additionalDataProvisioned = false;
 
     @Override
     protected Dataset getDataset() {
         return ComplexJoinsTestHelper.DATASET;
     }
 
-    private void ensureAdditionalDataProvisioned() throws Exception {
-        if (!additionalDataProvisioned) {
-            DatasetProvisioner.provision(client(), SecurityLogsTestHelper.DATASET);
-            DatasetProvisioner.provision(client(), MultiSourceJoinsTestHelper.DATASET);
-            DatasetProvisioner.provision(client(), KubernetesLogsTestHelper.DATASET);
-            DatasetProvisioner.provision(client(), PerformanceMetricsTestHelper.DATASET);
-            additionalDataProvisioned = true;
-        }
-    }
-
     public void testComplexJoinsPplQueries() throws Exception {
-        ensureAdditionalDataProvisioned();
         runPplQueries();
-    }
-
-    /** Queries that fail at 1 shard: join row-count / unsupported shapes. Skipped so the rest run and are visible. */
-    @Override
-    protected java.util.Set<Integer> getSkipQueries() {
-        return java.util.Set.of(1, 2, 3, 4, 7, 8, 9, 10);
     }
 }

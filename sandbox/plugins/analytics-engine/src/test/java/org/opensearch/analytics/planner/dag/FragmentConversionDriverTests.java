@@ -875,6 +875,64 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         assertTrue("Combined should contain FUZZY", combinedStr.contains("FUZZY"));
     }
 
+    // ---- Scan-adjacent filter (HAVING/qualify over the delegated WHERE) ----
+
+    /**
+     * {@code WHERE match_phrase(message) | stats count() by message | where cnt > 5} on a SINGLE
+     * shard. The whole pipeline is one data-node fragment:
+     * {@code Filter(cnt>5) → Aggregate → Filter(match_phrase) → Scan}.
+     *
+     * <p>Regression for the single-shard HAVING delegation crash: the deriver must read the
+     * scan-adjacent WHERE (which delegates MATCH_PHRASE to Lucene → CONJUNCTIVE), not the topmost
+     * HAVING on the derived {@code cnt} column (which would derive NO_DELEGATION). The serialized
+     * delegated count and the instruction's tree shape must agree, or the data node decodes a
+     * {@code delegated_predicate} marker it was told not to expect and crashes.
+     */
+    public void testHavingOverAggregateDoesNotMaskWhereDelegation() {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        var backends = delegationBackends(dfConvertor, serializer);
+        Map<String, Map<String, Object>> fields = Map.of("message", Map.of("type", "keyword", "index", true));
+        var context = buildContext("parquet", 1, fields, backends);
+
+        RelNode scan = stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR }));
+        LogicalFilter where = LogicalFilter.create(scan, makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "timeout"));
+        LogicalAggregate agg = makeAggregate(where, ImmutableBitSet.of(0), countStarCall(where));
+        // HAVING cnt > 5 — cnt is output column 1 (group key message is 0).
+        LogicalFilter having = LogicalFilter.create(
+            agg,
+            rexBuilder.makeCall(
+                SqlStdOperatorTable.GREATER_THAN,
+                rexBuilder.makeInputRef(typeFactory.createSqlType(SqlTypeName.BIGINT), 1),
+                rexBuilder.makeLiteral(5, typeFactory.createSqlType(SqlTypeName.BIGINT), true)
+            )
+        );
+
+        RelNode cboOutput = runPlanner(having, context);
+        LOGGER.info("Marked+CBO:\n{}", RelOptUtil.toString(cboOutput));
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService(), TEST_RESOLVER);
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+
+        StagePlan plan = dataNodeStage(dag).getPlanAlternatives().getFirst();
+        assertEquals("WHERE match_phrase must delegate to Lucene", 1, plan.delegatedExpressions().size());
+        ShardScanWithDelegationInstructionNode delegationInstruction = (ShardScanWithDelegationInstructionNode) plan.instructions()
+            .stream()
+            .filter(node -> node.type() == InstructionType.SETUP_SHARD_SCAN_WITH_DELEGATION)
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("delegation plan must have SHARD_SCAN_WITH_DELEGATION"));
+        assertEquals(
+            "tree shape must reflect the WHERE delegation, not the HAVING",
+            FilterTreeShape.CONJUNCTIVE,
+            delegationInstruction.getTreeShape()
+        );
+        assertEquals(
+            "delegatedPredicateCount must match the serialized delegated expressions",
+            plan.delegatedExpressions().size(),
+            delegationInstruction.getDelegatedPredicateCount()
+        );
+    }
+
     // ---- Complex combining cases ----
 
     /** OR(AND(delegated, delegated), delegated) — pure Lucene nested structure → 1 combined. */

@@ -113,8 +113,14 @@ public class FragmentConversionDriver {
 
             // Derive filter tree shape BEFORE stripping (annotations must be intact). The deriver
             // mirrors the combiner's post-combine shape so the data node's classification matches
-            // the tree it actually receives.
-            OpenSearchFilter filter = RelNodeUtils.findNode(plan.resolvedFragment(), OpenSearchFilter.class);
+            // the tree it actually receives. Use the scan-adjacent WHERE filter, not the topmost
+            // filter: a HAVING/qualify sitting above an Aggregate/Window/Join/Union references
+            // derived columns that never delegate, so deriving the shape from it would yield
+            // NO_DELEGATION even when the underlying WHERE does delegate. At single shard the whole
+            // pipeline is one fragment, so that mismatch makes the data node decode a
+            // delegated_predicate marker it was told not to expect and crash. See
+            // RelNodeUtils#findScanAdjacentFilter and the Rust extract_filter_expr it mirrors.
+            OpenSearchFilter filter = RelNodeUtils.findScanAdjacentFilter(plan.resolvedFragment());
             FilterTreeShape treeShape = filter != null
                 ? FilterTreeShapeDeriver.derive(filter, plan.backendId())
                 : FilterTreeShape.NO_DELEGATION;

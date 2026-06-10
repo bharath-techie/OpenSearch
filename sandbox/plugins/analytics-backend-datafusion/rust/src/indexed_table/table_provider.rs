@@ -133,6 +133,28 @@ pub struct IndexedTableConfig {
     /// from position (global_base + rg.first_row + position_in_rg) instead of
     /// being read from parquet. Other projected columns are read normally.
     pub emit_row_ids: bool,
+    /// Per-scan filter builder. When set and `scan()` receives a non-empty
+    /// `filters` argument, the evaluator/pushdown/predicate-columns are rebuilt
+    /// from THAT scan's pushed-down filter instead of the whole-fragment
+    /// `evaluator_factory`/`pushdown_predicate`/`predicate_columns` above.
+    ///
+    /// Required for fragments that scan the same index more than once (self-join
+    /// / self-union at single shard): DataFusion pushes each scan's own WHERE
+    /// (carrying that branch's `delegated_predicate` marker) into `scan()`, so
+    /// each scan must build its own evaluator. `None` (or empty filters) keeps
+    /// the whole-fragment artifacts — identical to the pre-existing single-scan
+    /// behavior. See `build_filter_artifacts`.
+    #[allow(clippy::type_complexity)]
+    pub per_scan_builder: Option<
+        Arc<
+            dyn Fn(
+                    &[datafusion::logical_expr::Expr],
+                    &dyn datafusion::catalog::Session,
+                ) -> Result<crate::indexed_executor::IndexedFilterArtifacts>
+                + Send
+                + Sync,
+        >,
+    >,
 }
 
 /// Table provider. Returns a `QueryShardExec` that fans out across chunks.
@@ -188,6 +210,28 @@ impl TableProvider for IndexedTableProvider {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let full_schema = self.config.schema.clone();
 
+        // Per-scan filter resolution. When a `per_scan_builder` is configured and
+        // DataFusion pushed a filter into THIS scan, rebuild the evaluator / pushdown
+        // / predicate-columns from that scan's own filter. This is what lets a
+        // self-join (two scans of the same index, each with its own delegated WHERE)
+        // apply the correct filter to each branch. With no builder or no pushed
+        // filter, fall back to the whole-fragment artifacts — identical to the
+        // pre-existing single-scan path.
+        let per_scan_artifacts: Option<crate::indexed_executor::IndexedFilterArtifacts> =
+            match (&self.config.per_scan_builder, !_filters.is_empty()) {
+                (Some(builder), true) => Some(builder(_filters, _state)?),
+                _ => None,
+            };
+        let pushdown_predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>> =
+            match &per_scan_artifacts {
+                Some(a) => a.pushdown_predicate.clone(),
+                None => self.config.pushdown_predicate.clone(),
+            };
+        let predicate_columns: &[usize] = per_scan_artifacts
+            .as_ref()
+            .map(|a| a.predicate_columns.as_slice())
+            .unwrap_or(self.config.predicate_columns.as_slice());
+
         // Detect __row_id__ in the output projection when emit_row_ids=true.
         // If present, we strip it from the parquet read and compute it from position.
         let row_id_col_in_full_schema = full_schema.index_of(crate::ROW_ID_COLUMN_NAME).ok();
@@ -228,19 +272,19 @@ impl TableProvider for IndexedTableProvider {
                     .collect(),
             };
             let mut cols = output_cols;
-            for &idx in &self.config.predicate_columns {
+            for &idx in predicate_columns {
                 if !cols.contains(&idx) {
                     cols.push(idx);
                 }
             }
             cols.sort();
             Some(cols)
-        } else if self.config.predicate_columns.is_empty() {
+        } else if predicate_columns.is_empty() {
             projection.cloned()
         } else {
             projection.map(|proj| {
                 let mut cols = proj.clone();
-                for &idx in &self.config.predicate_columns {
+                for &idx in predicate_columns {
                     if !cols.contains(&idx) {
                         cols.push(idx);
                     }
@@ -258,10 +302,10 @@ impl TableProvider for IndexedTableProvider {
         // the full WHERE semantics.
         //
         // The pushdown predicate — the parquet-native residual to hand
-        // to `ParquetSource::with_predicate` — is derived from the
-        // BoolNode in `execute_indexed_query` and stashed on the
-        // config by that caller.
-        let predicate = self.config.pushdown_predicate.clone();
+        // to `ParquetSource::with_predicate` — is the per-scan one when this
+        // scan rebuilt its own artifacts, else the whole-fragment one stashed
+        // on the config by `execute_indexed_query`.
+        let predicate = pushdown_predicate;
 
         // Row-group-aligned partition assignments
         let layouts: Vec<SegmentLayout> = self
@@ -282,8 +326,15 @@ impl TableProvider for IndexedTableProvider {
             Boundedness::Bounded,
         ));
 
+        // Per-scan evaluator factory when this scan rebuilt its own artifacts,
+        // else the whole-fragment factory from the config.
+        let evaluator_factory: EvaluatorFactory = per_scan_artifacts
+            .map(|a| a.evaluator_factory)
+            .unwrap_or_else(|| Arc::clone(&self.config.evaluator_factory));
+
         Ok(Arc::new(QueryShardExec {
             config: Arc::clone(&self.config),
+            evaluator_factory,
             full_schema,
             projected_schema,
             projection: read_projection,
@@ -308,6 +359,10 @@ impl TableProvider for IndexedTableProvider {
 /// each backed by one or more `IndexedExec`s (chained per-chunk).
 pub struct QueryShardExec {
     config: Arc<IndexedTableConfig>,
+    /// The evaluator factory THIS scan uses. Equals `config.evaluator_factory`
+    /// for single-scan fragments; for a multi-scan fragment (self-join / self-union)
+    /// it is the per-scan factory built from this scan's own pushed-down filter.
+    evaluator_factory: EvaluatorFactory,
     full_schema: SchemaRef,
     projected_schema: SchemaRef,
     projection: Option<Vec<usize>>,
@@ -494,7 +549,7 @@ impl ExecutionPlan for QueryShardExec {
             }
 
             // Build evaluator for this chunk.
-            let evaluator = (self.config.evaluator_factory)(segment, chunk, &stream_metrics)
+            let evaluator = (self.evaluator_factory)(segment, chunk, &stream_metrics)
                 .map_err(|e| DataFusionError::External(e.into()))?;
 
             let props = Arc::new(PlanProperties::new(
@@ -588,6 +643,7 @@ impl QueryShardExec {
     ) -> Self {
         QueryShardExec {
             config: Arc::clone(&self.config),
+            evaluator_factory: Arc::clone(&self.evaluator_factory),
             full_schema: self.full_schema.clone(),
             projected_schema: self.projected_schema.clone(),
             projection: self.projection.clone(),
@@ -638,6 +694,7 @@ mod tests {
             ),
             predicate_columns: vec![],
             emit_row_ids: false,
+            per_scan_builder: None,
         }
     }
 
@@ -663,5 +720,162 @@ mod tests {
         let provider = IndexedTableProvider::new(empty_config());
         let pred = scan_predicate(&provider, &[]).await;
         assert!(pred.is_none(), "no filters → no predicate");
+    }
+
+    /// DIAGNOSTIC: verify DataFusion delivers DISTINCT per-scan filters to each
+    /// `scan()` call in a self-join. This is the load-bearing assumption for the
+    /// per-scan delegated-filter fix: if a self-join's two branches each push their
+    /// own WHERE predicate into `scan()`, we can build a per-scan evaluator instead
+    /// of one shared filter. Uses a plain recording provider (not IndexedTableProvider)
+    /// to isolate DataFusion's pushdown behavior.
+    #[tokio::test]
+    async fn self_join_delivers_distinct_filters_per_scan() {
+        use std::sync::Mutex;
+        use datafusion::catalog::{Session, TableProvider};
+        use datafusion::datasource::TableType;
+        use datafusion::physical_plan::{empty::EmptyExec, ExecutionPlan};
+        use datafusion::logical_expr::TableProviderFilterPushDown;
+
+        #[derive(Debug)]
+        struct RecordingProvider {
+            schema: SchemaRef,
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl TableProvider for RecordingProvider {
+            fn schema(&self) -> SchemaRef {
+                self.schema.clone()
+            }
+            fn table_type(&self) -> TableType {
+                TableType::Base
+            }
+            fn supports_filters_pushdown(
+                &self,
+                filters: &[&Expr],
+            ) -> Result<Vec<TableProviderFilterPushDown>> {
+                Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+            }
+            async fn scan(
+                &self,
+                _state: &dyn Session,
+                _projection: Option<&Vec<usize>>,
+                filters: &[Expr],
+                _limit: Option<usize>,
+            ) -> Result<Arc<dyn ExecutionPlan>> {
+                let rendered = filters.iter().map(|f| format!("{f}")).collect::<Vec<_>>().join(" AND ");
+                self.seen.lock().unwrap().push(rendered);
+                Ok(Arc::new(EmptyExec::new(self.schema.clone())))
+            }
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Utf8, false),
+        ]));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(RecordingProvider {
+            schema: schema.clone(),
+            seen: Arc::clone(&seen),
+        });
+
+        let ctx = SessionContext::new();
+        ctx.register_table("t", provider).unwrap();
+        // Self-join: left filters b='A', right filters b='B'.
+        let df = ctx
+            .sql(
+                "SELECT l.a FROM (SELECT a, b FROM t WHERE b = 'A') l \
+                 JOIN (SELECT a, b FROM t WHERE b = 'B') r ON l.a = r.a",
+            )
+            .await
+            .unwrap();
+        let _ = df.create_physical_plan().await.unwrap();
+
+        let filters = seen.lock().unwrap().clone();
+        eprintln!("DIAG per-scan filters: {filters:?}");
+        assert_eq!(filters.len(), 2, "two scans of t → two scan() calls");
+        let joined = filters.join(" | ");
+        assert!(joined.contains("A"), "one scan must carry b='A': {joined}");
+        assert!(joined.contains("B"), "one scan must carry b='B': {joined}");
+        assert_ne!(filters[0], filters[1], "the two scans must get DISTINCT filters");
+    }
+
+    /// Same load-bearing check as `self_join_delivers_distinct_filters_per_scan`,
+    /// but for a self-UNION: two arms scan the same index, each with its own WHERE.
+    /// DataFusion must push each arm's filter into its own `scan()` call so the
+    /// per-scan builder can build a distinct evaluator per arm — the union analog
+    /// of the self-join fix.
+    #[tokio::test]
+    async fn self_union_delivers_distinct_filters_per_scan() {
+        use std::sync::Mutex;
+        use datafusion::catalog::{Session, TableProvider};
+        use datafusion::datasource::TableType;
+        use datafusion::physical_plan::{empty::EmptyExec, ExecutionPlan};
+        use datafusion::logical_expr::TableProviderFilterPushDown;
+
+        #[derive(Debug)]
+        struct RecordingProvider {
+            schema: SchemaRef,
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl TableProvider for RecordingProvider {
+            fn schema(&self) -> SchemaRef {
+                self.schema.clone()
+            }
+            fn table_type(&self) -> TableType {
+                TableType::Base
+            }
+            fn supports_filters_pushdown(
+                &self,
+                filters: &[&Expr],
+            ) -> Result<Vec<TableProviderFilterPushDown>> {
+                Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+            }
+            async fn scan(
+                &self,
+                _state: &dyn Session,
+                _projection: Option<&Vec<usize>>,
+                filters: &[Expr],
+                _limit: Option<usize>,
+            ) -> Result<Arc<dyn ExecutionPlan>> {
+                let rendered = filters.iter().map(|f| format!("{f}")).collect::<Vec<_>>().join(" AND ");
+                self.seen.lock().unwrap().push(rendered);
+                Ok(Arc::new(EmptyExec::new(self.schema.clone())))
+            }
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Utf8, false),
+        ]));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(RecordingProvider {
+            schema: schema.clone(),
+            seen: Arc::clone(&seen),
+        });
+
+        let ctx = SessionContext::new();
+        ctx.register_table("t", provider).unwrap();
+        // Self-union: arm 1 filters b='A', arm 2 filters b='B'. UNION ALL keeps both
+        // arms (UNION-distinct would add a dedup but still scans twice).
+        let df = ctx
+            .sql(
+                "SELECT a, b FROM t WHERE b = 'A' \
+                 UNION ALL \
+                 SELECT a, b FROM t WHERE b = 'B'",
+            )
+            .await
+            .unwrap();
+        let _ = df.create_physical_plan().await.unwrap();
+
+        let filters = seen.lock().unwrap().clone();
+        eprintln!("DIAG per-scan union filters: {filters:?}");
+        assert_eq!(filters.len(), 2, "two arms of t → two scan() calls");
+        let joined = filters.join(" | ");
+        assert!(joined.contains("A"), "one arm must carry b='A': {joined}");
+        assert!(joined.contains("B"), "one arm must carry b='B': {joined}");
+        assert_ne!(filters[0], filters[1], "the two arms must get DISTINCT filters");
     }
 }

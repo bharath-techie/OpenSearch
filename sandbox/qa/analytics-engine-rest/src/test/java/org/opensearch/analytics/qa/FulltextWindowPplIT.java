@@ -23,9 +23,15 @@ public class FulltextWindowPplIT extends BasePplIT {
         runPplQueries();
     }
 
-    /** Queries that fail at 1 shard: fulltext + window combinations unsupported. Skipped so the rest run and are visible. */
+    /**
+     * Remaining 1-shard failures are value/ordering mismatches, not delegation crashes: these
+     * queries have ties on their sort/window keys (Q1, Q6, Q8, Q12, Q13, Q14, Q17) where the
+     * streamstats row numbering or top-row pick differs from the expected fixture. The
+     * window-qualify delegation crashes (Q15, Q19 — eventstats with a delegated WHERE below)
+     * are fixed by the scan-adjacent filter picker.
+     */
     @Override
     protected java.util.Set<Integer> getSkipQueries() {
-        return java.util.Set.of(1, 6, 8, 12, 13, 14, 15, 17, 19);
+        return java.util.Set.of(1, 6, 8, 12, 13, 14, 17);
     }
 }
