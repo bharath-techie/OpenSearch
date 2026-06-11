@@ -48,6 +48,7 @@ use datafusion::physical_plan::{
 };
 use datafusion_common::DataFusionError;
 use futures::{Future, Stream};
+use roaring::RoaringBitmap;
 use tokio::task::JoinHandle;
 
 use super::eval::{PrefetchedRg, RowGroupBitsetSource};
@@ -84,6 +85,142 @@ pub enum FilterStrategy {
 struct PrefetchedRowGroup {
     rg: RowGroupInfo,
     prefetched: PrefetchedRg,
+}
+
+/// Turn one RG's prefetched candidate bitmap into the `(min_skip_run,
+/// RowSelection, PositionMap, Option<row_mask>)` tuple the decode path needs.
+/// Shared by the per-RG `IndexedStream` and the consolidated `decoder_stream`
+/// so the two can never drift. Records the same per-RG regime / position-map /
+/// build-mask metrics either way. Free function (not a method) so both stream
+/// types call it with explicit config rather than duplicating ~120 lines.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_rg_plan(
+    force_strategy: Option<FilterStrategy>,
+    min_skip_run_default: usize,
+    min_skip_run_selectivity_threshold: f64,
+    evaluator: &Arc<dyn RowGroupBitsetSource>,
+    metrics: &StreamMetrics,
+    rg: &RowGroupInfo,
+    candidates: RoaringBitmap,
+    prefetch_mask_buffer: Option<datafusion::arrow::buffer::Buffer>,
+    prefetch_selection_runs: Option<Vec<(usize, usize)>>,
+) -> (usize, RowSelection, PositionMap, Option<BooleanArray>) {
+    // Decide min_skip_run for this RG.
+    //
+    // - `force_strategy = RowSelection`: row-granular (min_skip_run = 1).
+    // - `force_strategy = BooleanMask`: disable skipping (full scan).
+    // - otherwise: pick based on selectivity. At low selectivity every gap
+    //   is worth skipping (1); at higher selectivity noisy short gaps would
+    //   explode the selector Vec, so absorb anything smaller than the
+    //   default block size.
+    let selectivity = candidates.len() as f64 / rg.num_rows as f64;
+    let min_skip_run = match force_strategy {
+        Some(FilterStrategy::RowSelection) => 1,
+        Some(FilterStrategy::BooleanMask) => rg.num_rows as usize + 1,
+        None => {
+            if selectivity < min_skip_run_selectivity_threshold {
+                1
+            } else {
+                min_skip_run_default
+            }
+        }
+    };
+
+    if min_skip_run == 1 {
+        if let Some(ref counter) = metrics.min_skip_run_row_granular {
+            counter.add(1);
+        }
+    } else if let Some(ref counter) = metrics.min_skip_run_block_granular {
+        counter.add(1);
+    }
+
+    // Fast path: the evaluator handed us pre-built select runs (contiguous
+    // page ranges) and does not consult PositionMap in `on_batch_mask`
+    // (PredicateOnlyEvaluator). Build the RowSelection straight from the
+    // runs — O(#runs) — instead of walking the full candidate bitmap
+    // bit-by-bit. PositionMap is unused on this path, so use a cheap
+    // Identity placeholder and skip its construction too.
+    let candidates = Arc::new(candidates);
+    let (selection, position_map) = if let Some(runs) = prefetch_selection_runs {
+        let mut selectors: Vec<RowSelector> = Vec::with_capacity(runs.len() * 2);
+        let mut pos = 0usize;
+        for (start, len) in runs {
+            if start > pos {
+                selectors.push(RowSelector::skip(start - pos));
+            }
+            selectors.push(RowSelector::select(len));
+            pos = start + len;
+        }
+        if pos < rg.num_rows as usize {
+            selectors.push(RowSelector::skip(rg.num_rows as usize - pos));
+        }
+        let selection = RowSelection::from(selectors);
+        let position_map = PositionMap::from_selection(&selection);
+        (selection, position_map)
+    } else {
+        let selection = build_row_selection_with_min_skip_run(
+            &candidates,
+            rg.num_rows as usize,
+            min_skip_run,
+        );
+        let position_map = PositionMap::from_candidates_with_selection(
+            Arc::clone(&candidates),
+            &selection,
+            min_skip_run,
+        );
+        (selection, position_map)
+    };
+
+    match &position_map {
+        PositionMap::Identity { .. } => {
+            if let Some(ref c) = metrics.position_map_identity {
+                c.add(1);
+            }
+        }
+        PositionMap::Bitmap { .. } => {
+            if let Some(ref c) = metrics.position_map_bitmap {
+                c.add(1);
+            }
+        }
+        PositionMap::Runs { .. } => {
+            if let Some(ref c) = metrics.position_map_runs {
+                c.add(1);
+            }
+        }
+    }
+
+    // Under row-granular (min_skip_run == 1) every delivered row is by
+    // construction a candidate, so the mask would be all-true — skip it.
+    // Under block/full regimes, build it only if the evaluator consumes it.
+    let mask = if min_skip_run == 1 {
+        None
+    } else if evaluator.needs_row_mask() {
+        let t_build = Instant::now();
+        let m = if let Some(buf) = prefetch_mask_buffer.as_ref() {
+            if matches!(position_map, PositionMap::Identity { .. }) {
+                // Full-scan regime (no skips): delivered row i == RG
+                // position i. Wrap the pre-built packed bits zero-copy.
+                let bb = datafusion::arrow::buffer::BooleanBuffer::new(
+                    buf.clone(),
+                    0,
+                    rg.num_rows as usize,
+                );
+                BooleanArray::new(bb, None)
+            } else {
+                build_mask(&candidates, &position_map)
+            }
+        } else {
+            build_mask(&candidates, &position_map)
+        };
+        if let Some(ref t) = metrics.build_mask_time {
+            t.add_duration(t_build.elapsed());
+        }
+        Some(m)
+    } else {
+        None
+    };
+
+    (min_skip_run, selection, position_map, mask)
 }
 
 /// Outcome of one prefetch task.
@@ -420,6 +557,38 @@ impl ExecutionPlan for IndexedExec {
                 .take()
                 .ok_or_else(|| DataFusionError::Internal("evaluator already consumed".into()))?
         };
+
+        // Consolidated one-decoder RG-by-RG path: enabled by config AND only when
+        // there is no runtime dynamic filter (TopK/join keep the per-RG path so
+        // their mid-scan RG pruning, which the single long-lived scan can't do,
+        // is preserved). Derives ArrowReaderMetadata once and drives a
+        // `ParquetPushDecoder` per RG (cheap schema reuse), with Lucene eval
+        // overlapped with decode via per-RG prefetch. No up-front staging.
+        if self.query_config.indexed_multi_rg_decode && self.dynamic_filter.is_none() {
+            return Ok(super::decoder_stream::build_decoder_stream(
+                super::decoder_stream::DecoderStreamArgs {
+                    schema: self.schema.clone(),
+                    full_schema: self.full_schema.clone(),
+                    object_path: self.object_path.clone(),
+                    store: Arc::clone(&self.store),
+                    metadata: Arc::clone(&self.metadata),
+                    projection: self.projection.clone(),
+                    evaluator,
+                    row_groups: self.row_groups.clone(),
+                    doc_range: self.doc_range,
+                    stream_metrics: self.stream_metrics.clone(),
+                    force_strategy: self.query_config.force_strategy,
+                    min_skip_run_default: self.query_config.min_skip_run_default,
+                    min_skip_run_selectivity_threshold: self
+                        .query_config
+                        .min_skip_run_selectivity_threshold,
+                    target_batch_size: self.query_config.batch_size,
+                    global_base: self.global_base,
+                    row_id_output_index: self.row_id_output_index,
+                },
+            ));
+        }
+
         let index_reader = IndexReader::new(
             evaluator,
             self.row_groups.clone(),
@@ -430,6 +599,7 @@ impl ExecutionPlan for IndexedExec {
             Some(Arc::clone(&self.metadata)),
             self.stream_metrics.dynamic_filter_rg_pruned_at_prefetch.clone(),
         );
+
         Ok(Box::pin(IndexedStream::new(
             self.schema.clone(),
             self.full_schema.clone(),
@@ -1018,106 +1188,17 @@ impl IndexedStream {
                     self.current_rg_context = Some(prefetched.prefetched.context);
                     self.batch_offset = 0;
 
-                    // Decide min_skip_run for this RG.
-                    //
-                    // - `force_strategy = RowSelection`: row-granular
-                    //   (min_skip_run = 1) — "sparse" path.
-                    // - `force_strategy = BooleanMask`: disable skipping
-                    //   (min_skip_run > rg.num_rows) — full scan.
-                    // - otherwise: pick based on selectivity. At low
-                    //   selectivity every gap is worth skipping (1); at
-                    //   higher selectivity noisy short gaps would explode
-                    //   the selector Vec, so absorb anything smaller than
-                    //   the default block size.
-                    let selectivity = candidates.len() as f64 / rg.num_rows as f64;
-                    let min_skip_run = match self.force_strategy {
-                        Some(FilterStrategy::RowSelection) => 1,
-                        Some(FilterStrategy::BooleanMask) => rg.num_rows as usize + 1,
-                        None => {
-                            if selectivity < self.min_skip_run_selectivity_threshold {
-                                1
-                            } else {
-                                self.min_skip_run_default
-                            }
-                        }
-                    };
-
-                    // Metrics: track which regime we landed in, using the
-                    // same counters as before so `EXPLAIN ANALYZE` output
-                    // stays comparable.
-                    if min_skip_run == 1 {
-                        if let Some(ref counter) = self.metrics.min_skip_run_row_granular {
-                            counter.add(1);
-                        }
-                    } else if let Some(ref counter) = self.metrics.min_skip_run_block_granular {
-                        counter.add(1);
-                    }
-
-                    // Fast path: the evaluator handed us pre-built select runs
-                    // (contiguous page ranges) and does not consult PositionMap
-                    // in `on_batch_mask` (PredicateOnlyEvaluator). Build the
-                    // RowSelection straight from the runs — O(#runs) — instead of
-                    // walking the full candidate bitmap bit-by-bit in
-                    // `build_row_selection_with_min_skip_run` (O(#set bits), the
-                    // dominant cost on non-selective full scans). PositionMap is
-                    // unused on this path (residual applied via pushdown /
-                    // on_batch_mask; no row-id position lookups), so use a cheap
-                    // Identity placeholder and skip its construction too.
-                    let candidates = Arc::new(candidates);
-                    let (selection, position_map) = if let Some(runs) = prefetch_selection_runs {
-                        let mut selectors: Vec<RowSelector> = Vec::with_capacity(runs.len() * 2);
-                        let mut pos = 0usize;
-                        for (start, len) in runs {
-                            if start > pos {
-                                selectors.push(RowSelector::skip(start - pos));
-                            }
-                            selectors.push(RowSelector::select(len));
-                            pos = start + len;
-                        }
-                        if pos < rg.num_rows as usize {
-                            selectors.push(RowSelector::skip(rg.num_rows as usize - pos));
-                        }
-                        let selection = RowSelection::from(selectors);
-                        // O(#runs) — does NOT walk the candidate bitmap. Correct
-                        // variant (Identity for whole-RG, Runs otherwise).
-                        let position_map = PositionMap::from_selection(&selection);
-                        (selection, position_map)
-                    } else {
-                        let selection = build_row_selection_with_min_skip_run(
-                            &candidates,
-                            rg.num_rows as usize,
-                            min_skip_run,
-                        );
-                        // Share the bitmap between PositionMap (under
-                        // row-granular regime) and build_mask without cloning
-                        // the underlying data.
-                        let position_map = PositionMap::from_candidates_with_selection(
-                            Arc::clone(&candidates),
-                            &selection,
-                            min_skip_run,
-                        );
-                        (selection, position_map)
-                    };
-                    // Metric: record which PositionMap variant this RG
-                    // landed in. Useful for tuning min_skip_run and
-                    // understanding per-query memory profiles.
-                    match &position_map {
-                        PositionMap::Identity { .. } => {
-                            if let Some(ref c) = self.metrics.position_map_identity {
-                                c.add(1);
-                            }
-                        }
-                        PositionMap::Bitmap { .. } => {
-                            if let Some(ref c) = self.metrics.position_map_bitmap {
-                                c.add(1);
-                            }
-                        }
-                        PositionMap::Runs { .. } => {
-                            if let Some(ref c) = self.metrics.position_map_runs {
-                                c.add(1);
-                            }
-                        }
-                    }
+                    let (min_skip_run, selection, position_map, mask) = build_rg_plan(
+                        self.force_strategy,
+                        self.min_skip_run_default,
+                        self.min_skip_run_selectivity_threshold,
+                        &self.evaluator,
+                        &self.metrics,
+                        &rg,
+                        candidates,
+                        prefetch_mask_buffer,
+                        prefetch_selection_runs,
+                    );
 
                     let t_plan = Instant::now();
                     // Pushdown decision:
@@ -1158,44 +1239,7 @@ impl IndexedStream {
                             self.current_stream = Some(stream);
                             self.current_inner_plan = Some(plan);
                             self.current_stream_first_poll = true;
-                            // Under row-granular (min_skip_run == 1) every
-                            // delivered row is by construction a candidate,
-                            // so the mask would be all-true — skip building
-                            // it. Under block/full regimes, build the mask
-                            // only if the evaluator consumes it.
-                            self.current_mask = if min_skip_run == 1 {
-                                None
-                            } else if self.evaluator.needs_row_mask() {
-                                let t_build = Instant::now();
-                                let m = if let Some(buf) = prefetch_mask_buffer.as_ref() {
-                                    if matches!(position_map, PositionMap::Identity { .. }) {
-                                        // Fast path: full-scan regime (no skips),
-                                        // delivered row i == RG position i. Wrap
-                                        // the pre-built packed bits as BooleanArray
-                                        // with zero per-RG allocation.
-                                        let bb = datafusion::arrow::buffer::BooleanBuffer::new(
-                                            buf.clone(),
-                                            0,
-                                            rg.num_rows as usize,
-                                        );
-                                        BooleanArray::new(bb, None)
-                                    } else {
-                                        // Block-granular: RowSelection has skip
-                                        // runs, so delivered rows don't map 1:1
-                                        // to RG positions. Must build the mask
-                                        // through PositionMap.
-                                        build_mask(&candidates, &position_map)
-                                    }
-                                } else {
-                                    build_mask(&candidates, &position_map)
-                                };
-                                if let Some(ref t) = self.metrics.build_mask_time {
-                                    t.add_duration(t_build.elapsed());
-                                }
-                                Some(m)
-                            } else {
-                                None
-                            };
+                            self.current_mask = mask;
                             self.mask_offset = 0;
                             self.current_position_map = Some(position_map);
                         }

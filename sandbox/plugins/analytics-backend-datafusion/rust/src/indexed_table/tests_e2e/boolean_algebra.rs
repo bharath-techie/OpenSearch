@@ -1308,3 +1308,61 @@ reference_test!(
         l(LeafId::PriceIn(&[30, 50])),
     ]))
 );
+
+// ══════════════════════════════════════════════════════════════════
+// Consolidated multi-RG decode path — differential against per-RG path.
+//
+// The 16-row fixture is written with max_row_group_size=8 (see mod.rs), so it
+// spans multiple row groups. `run_tree_multi_rg` forces the consolidated
+// single-DataSourceExec path; `run_tree` uses the per-RG path. For every shape
+// below the two MUST produce byte-identical rows (order-independent), proving
+// RG-boundary state attribution is correct.
+// ══════════════════════════════════════════════════════════════════
+
+/// Sort the (brand, price, status, color) tuples so comparison is
+/// order-independent (the two paths may interleave RGs differently).
+fn sorted(mut v: Vec<(String, i32, String, String)>) -> Vec<(String, i32, String, String)> {
+    v.sort();
+    v
+}
+
+macro_rules! differential_test {
+    ($name:ident, $tree:expr) => {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn $name() {
+            let tree: BoolNode = $tree;
+            let per_rg = sorted(run_tree(tree.clone()).await);
+            let multi = sorted(run_tree_multi_rg(tree).await);
+            assert_eq!(
+                per_rg, multi,
+                "consolidated multi-RG output differs from per-RG output"
+            );
+        }
+    };
+}
+
+// A collector that selects rows scattered across both row groups.
+differential_test!(diff_single_collector, index_leaf(1));
+// Predicate-only (no collector) — exercises PredicateOnly evaluator across RGs.
+differential_test!(diff_predicate_only, pred_int("price", Operator::Gt, 50));
+// Collector AND predicate.
+differential_test!(
+    diff_and_collector_pred,
+    BoolNode::And(vec![index_leaf(1), pred_int("price", Operator::Gt, 80)])
+);
+// OR with nested AND — superset candidate + refinement across RG boundaries.
+differential_test!(
+    diff_or_nested_and,
+    BoolNode::Or(vec![
+        index_leaf(0),
+        BoolNode::And(vec![index_leaf(1), pred_int("price", Operator::Lt, 100)]),
+    ])
+);
+// NOT over a mixed tree — the hardest refinement shape.
+differential_test!(
+    diff_not_mixed,
+    BoolNode::Not(Box::new(BoolNode::Or(vec![
+        BoolNode::And(vec![index_leaf(1), pred_int("price", Operator::Gt, 150)]),
+        pred_int("price", Operator::Lt, 40),
+    ])))
+);

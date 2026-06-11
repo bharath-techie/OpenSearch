@@ -435,7 +435,7 @@ async fn run_large(
                 pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
                 page_prune_metrics: None,
                     collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
-                    stats_prune_tree: None,
+                stats_prune_tree: None,
             });
             Ok(eval)
         })
@@ -453,6 +453,7 @@ async fn run_large(
             as Arc<dyn object_store::ObjectStore>,
         store_url: datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
         evaluator_factory: factory,
+        prune_tree_config: None,
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
@@ -893,7 +894,7 @@ async fn run_large_partitioned(
                 pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
                 page_prune_metrics: None,
                     collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
-                    stats_prune_tree: None,
+                stats_prune_tree: None,
             });
             Ok(eval)
         })
@@ -910,6 +911,7 @@ async fn run_large_partitioned(
             as Arc<dyn object_store::ObjectStore>,
         store_url: datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
         evaluator_factory: factory,
+        prune_tree_config: None,
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
@@ -1043,3 +1045,181 @@ reference_test_large!(
         LT::Leaf(LLeaf::LQtyEq(0)),
     ])
 );
+
+// ══════════════════════════════════════════════════════════════════════
+// Regression: the consolidated multi-RG decode path MUST NOT invoke a
+// collector's `collect_packed_u64_bitset` concurrently. The real FFM/Lucene
+// collector handle (`collectDocs` on a per-query Java handle) is NOT reentrant
+// — two overlapping calls corrupt each other's output buffer (observed on a
+// live node as `ArrayIndexOutOfBoundsException` / negative byte counts from
+// the Java side, surfacing as `collectDocs(...) failed: -1`). The plain
+// `MockCollector` is stateless/thread-safe so it can't catch this; here we wrap
+// each collector in a guard that returns `Err` if a second call enters while
+// one is in flight (with a short sleep to widen the overlap window). The
+// per-RG path satisfies this invariant; the multi-RG path must too.
+// ══════════════════════════════════════════════════════════════════════
+
+/// Wraps a collector and fails loudly if two `collect_packed_u64_bitset` calls
+/// are ever in flight at once. Mirrors the non-reentrancy of the FFM handle.
+#[derive(Debug)]
+struct SerialGuardCollector {
+    inner: Arc<dyn RowGroupDocsCollector>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    overlap_seen: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RowGroupDocsCollector for SerialGuardCollector {
+    fn collect_packed_u64_bitset(&self, min_doc: i32, max_doc: i32) -> Result<Vec<u64>, String> {
+        use std::sync::atomic::Ordering;
+        let prev = self.in_flight.fetch_add(1, Ordering::SeqCst);
+        if prev != 0 {
+            // Another call is already inside — the exact reentrancy that
+            // corrupts the real Lucene handle.
+            self.overlap_seen.store(true, Ordering::SeqCst);
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            return Err(format!(
+                "SerialGuardCollector: concurrent collect detected ({} already in flight)",
+                prev
+            ));
+        }
+        // Hold the "in flight" state briefly so any genuinely-concurrent call
+        // (e.g. two prefetch tasks armed at once) overlaps observably.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let r = self.inner.collect_packed_u64_bitset(min_doc, max_doc);
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        r
+    }
+}
+
+/// Run a tree on the large (5-RG) fixture through the CONSOLIDATED multi-RG
+/// decode path, with every collector wrapped in a [`SerialGuardCollector`].
+/// Returns `Err` if the query failed (e.g. a concurrent-collect guard tripped).
+async fn run_large_multi_rg_serial_guarded(
+    tree: BoolNode,
+    collectors: Vec<Arc<dyn RowGroupDocsCollector>>,
+) -> std::result::Result<usize, String> {
+    let overlap_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let guarded: Vec<Arc<dyn RowGroupDocsCollector>> = collectors
+        .into_iter()
+        .map(|c| {
+            Arc::new(SerialGuardCollector {
+                inner: c,
+                in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                overlap_seen: Arc::clone(&overlap_seen),
+            }) as Arc<dyn RowGroupDocsCollector>
+        })
+        .collect();
+
+    let f = large_fixture();
+    let size = std::fs::metadata(&f.path).unwrap().len();
+    let file = std::fs::File::open(&f.path).unwrap();
+    let meta =
+        ArrowReaderMetadata::load(&file, ArrowReaderOptions::new().with_page_index(true)).unwrap();
+    let schema = meta.schema().clone();
+    let parquet_meta = meta.metadata().clone();
+    let mut rgs = Vec::new();
+    let mut offset = 0i64;
+    for i in 0..parquet_meta.num_row_groups() {
+        let n = parquet_meta.row_group(i).num_rows();
+        rgs.push(RowGroupInfo {
+            index: i,
+            first_row: offset,
+            num_rows: n,
+        });
+        offset += n;
+    }
+    // Sanity: the fixture must span >1 RG, else there's no n/n+1 overlap to test.
+    assert!(rgs.len() > 1, "fixture must be multi-RG for this test");
+    let segment = SegmentFileInfo {
+        writer_generation: 0,
+        max_doc: LARGE_N as i64,
+        object_path: object_store::path::Path::from(f.path.to_string_lossy().as_ref()),
+        parquet_size: size,
+        row_groups: rgs,
+        metadata: Arc::clone(&parquet_meta),
+        global_base: 0,
+    };
+
+    let tree = Arc::new(tree);
+    let per_leaf: Vec<(i32, Arc<dyn RowGroupDocsCollector>)> = guarded
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| (i as i32, c))
+        .collect();
+    let factory: super::super::table_provider::EvaluatorFactory = {
+        let per_leaf = per_leaf.clone();
+        let tree = Arc::clone(&tree);
+        let schema = schema.clone();
+        Arc::new(move |segment, _chunk, _stream_metrics, _stats_prune_tree| {
+            let resolved = tree.resolve(&per_leaf)?;
+            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata)));
+            let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(TreeBitsetSource {
+                tree: Arc::new(resolved),
+                evaluator: Arc::new(BitmapTreeEvaluator),
+                leaves: Arc::new(CollectorLeafBitmaps::without_metrics()),
+                page_pruner: pruner,
+                cost_predicate: 1,
+                cost_collector: 10,
+                max_collector_parallelism: 1,
+                pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
+                page_prune_metrics: None,
+                collector_strategy:
+                    crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
+                stats_prune_tree: None,
+            });
+            Ok(eval)
+        })
+    };
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_strategy(Some(FilterStrategy::BooleanMask))
+        .force_pushdown(Some(false))
+        .indexed_multi_rg_decode(true) // ← the path under test
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: schema.clone(),
+        segments: vec![segment],
+        store: Arc::new(object_store::local::LocalFileSystem::new())
+            as Arc<dyn object_store::ObjectStore>,
+        store_url: datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
+        evaluator_factory: factory,
+        prune_tree_config: None,
+        pushdown_predicate: None,
+        query_config: std::sync::Arc::new(qc),
+        predicate_columns: vec![],
+        emit_row_ids: false,
+    }));
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    let df = ctx
+        .sql("SELECT brand, price, status, category, qty FROM t")
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut stream = df.execute_stream().await.map_err(|e| e.to_string())?;
+    let mut count = 0usize;
+    while let Some(batch) = stream.next().await {
+        let b = batch.map_err(|e| e.to_string())?;
+        count += b.num_rows();
+    }
+    if overlap_seen.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("concurrent collect was observed".into());
+    }
+    Ok(count)
+}
+
+// A wide collector touching every RG, so n+1 prefetch is armed during n's
+// decode — the exact window where the old code ran two collects at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multi_rg_never_collects_concurrently() {
+    // brand=amazon spans all 5 RGs (random distribution), so every RG has
+    // candidates and the prefetch pipeline stays full for the whole scan.
+    let bt = to_engine_tree_large(&LT::Leaf(LLeaf::LBrand("amazon")));
+    let collectors = wire_large(&bt);
+    let res = run_large_multi_rg_serial_guarded(bt, collectors).await;
+    assert!(
+        res.is_ok(),
+        "multi-RG path invoked the collector concurrently (non-reentrant FFM \
+         handle would corrupt): {:?}",
+        res.err()
+    );
+}

@@ -151,6 +151,28 @@ pub fn create_full_scan_stream(
     create_stream_with_access_plan(config, access_plan, false)
 }
 
+/// Create ONE stream that full-scans several row groups via a single
+/// `DataSourceExec`. This is the multi-RG consolidation building block: instead
+/// of one `DataSourceExec` per RG (110 separate opens, no IO overlap), a single
+/// access plan marks every requested RG as `Scan` so parquet's async reader
+/// pipelines RG n+1's byte fetch behind RG n's decode within one decoder.
+///
+/// Pushdown is OFF (same contract as `create_full_scan_stream`): the caller
+/// applies its post-decode mask, so RG boundaries in the delivered batch stream
+/// must be tracked by the caller. Used by the A1 measurement spike to isolate
+/// the per-RG setup tax from decode cost.
+pub fn create_multi_rg_full_scan_stream(
+    config: &RowGroupStreamConfig,
+    rg_indexes: &[usize],
+) -> Result<(SendableRecordBatchStream, Arc<dyn ExecutionPlan>)> {
+    let num_rgs = config.metadata.num_row_groups();
+    let mut access_plan = ParquetAccessPlan::new_none(num_rgs);
+    for &rg in rg_indexes {
+        access_plan.set(rg, RowGroupAccess::Scan);
+    }
+    create_stream_with_access_plan(config, access_plan, false)
+}
+
 fn create_stream_with_access_plan(
     config: &RowGroupStreamConfig,
     access_plan: ParquetAccessPlan,

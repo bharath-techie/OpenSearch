@@ -56,6 +56,7 @@
 
 pub mod bloom_pruner;
 pub mod bool_tree;
+pub mod decoder_stream;
 pub mod dynamic_filter;
 pub mod eval;
 pub mod row_id_injection;
