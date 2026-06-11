@@ -191,10 +191,27 @@ async fn run_tree(tree: BoolNode) -> Vec<(String, i32, String, String)> {
     run_tree_and_plan(tree).await.0
 }
 
+/// Like [`run_tree`] but forces the consolidated multi-RG decode path.
+async fn run_tree_multi_rg(tree: BoolNode) -> Vec<(String, i32, String, String)> {
+    run_tree_and_plan_cfg(tree, true).await.0
+}
+
 /// Like [`run_tree`] but also returns the physical plan so tests can
 /// read metrics off it after execution.
 async fn run_tree_and_plan(
     tree: BoolNode,
+) -> (
+    Vec<(String, i32, String, String)>,
+    std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+) {
+    run_tree_and_plan_cfg(tree, false).await
+}
+
+/// Core runner. `multi_rg` toggles the consolidated multi-RG decode path so a
+/// differential test can assert byte-identical output against the per-RG path.
+async fn run_tree_and_plan_cfg(
+    tree: BoolNode,
+    multi_rg: bool,
 ) -> (
     Vec<(String, i32, String, String)>,
     std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
@@ -286,6 +303,7 @@ async fn run_tree_and_plan(
         .target_partitions(1)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .force_pushdown(Some(false))
+        .indexed_multi_rg_decode(multi_rg)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),

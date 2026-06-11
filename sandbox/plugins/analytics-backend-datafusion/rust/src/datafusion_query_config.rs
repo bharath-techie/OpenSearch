@@ -83,6 +83,26 @@ pub struct DatafusionQueryConfig {
     /// `FilterExec`), so behaviour is identical to before this feature. Exposed
     /// as a toggle to A/B the performance impact.
     pub indexed_dynamic_filter_pushdown: bool,
+    /// EXPERIMENTAL (env-var gated, default OFF): consolidate a chunk's row
+    /// groups into a SINGLE multi-RG `DataSourceExec` instead of one parquet
+    /// stream per RG. Recovers the per-RG setup tax (~33% cold on real
+    /// segments, see `docs/multi-rg-consolidation-design.md`). Only takes
+    /// effect when there is no runtime dynamic filter (TopK/join keep the
+    /// per-RG path so their mid-scan RG pruning is preserved). Read from
+    /// `OPENSEARCH_INDEXED_MULTI_RG_DECODE` (1/true) so we can A/B without a
+    /// Java wire-format change while the feature is experimental.
+    pub indexed_multi_rg_decode: bool,
+}
+
+/// Read the experimental multi-RG-decode toggle from the environment.
+/// `1`/`true` (case-insensitive) enables it; anything else (incl. unset) = off.
+fn multi_rg_decode_from_env() -> bool {
+    std::env::var("OPENSEARCH_INDEXED_MULTI_RG_DECODE")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true"
+        })
+        .unwrap_or(false)
 }
 
 /// FFM wire format. Must stay in lockstep with the Java `MemoryLayout`.
@@ -148,6 +168,7 @@ impl DatafusionQueryConfig {
             // On by default — matches the Java cluster-setting default
             // (`datafusion.indexed.dynamic_filter_pushdown`). Toggle to A/B perf.
             indexed_dynamic_filter_pushdown: true,
+            indexed_multi_rg_decode: multi_rg_decode_from_env(),
         }
     }
 
@@ -221,6 +242,8 @@ impl DatafusionQueryConfig {
             },
             bloom_filter_on_read: w.bloom_filter_on_read != 0,
             indexed_dynamic_filter_pushdown: w.indexed_dynamic_filter_pushdown != 0,
+            // Not in the Java wire format yet (experimental); driven by env.
+            indexed_multi_rg_decode: multi_rg_decode_from_env(),
         }
     }
 }
@@ -295,6 +318,10 @@ impl DatafusionQueryConfigBuilder {
     }
     pub fn indexed_dynamic_filter_pushdown(mut self, v: bool) -> Self {
         self.0.indexed_dynamic_filter_pushdown = v;
+        self
+    }
+    pub fn indexed_multi_rg_decode(mut self, v: bool) -> Self {
+        self.0.indexed_multi_rg_decode = v;
         self
     }
     pub fn build(self) -> DatafusionQueryConfig {

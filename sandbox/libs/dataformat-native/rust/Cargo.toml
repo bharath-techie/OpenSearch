@@ -95,3 +95,28 @@ codegen-units = 16
 incremental = true
 debug = "full"
 strip = false
+
+# Backport of arrow-rs PR #9968 (ParquetPushDecoder::into_builder) + its
+# prerequisite #9804, cherry-picked onto the 58.3.0 release tag in the local
+# arrow-rs checkout (branch `58.3.0-into-builder`). The patched parquet crate is
+# still version 58.3.0 with a PURELY ADDITIVE public API change (new into_builder
+# / is_at_row_group_boundary / row_groups_remaining methods), so DataFusion 54.0.0
+# consumes it unchanged. The indexed path's one-decoder-RG-by-RG scan drives the
+# new into_builder API directly. All arrow workspace crates are pinned to the same
+# local tree so the patched parquet's arrow deps resolve to one consistent 58.3.0.
+[patch.crates-io]
+arrow = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow" }
+arrow-arith = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-arith" }
+arrow-array = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-array" }
+arrow-buffer = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-buffer" }
+arrow-cast = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-cast" }
+arrow-csv = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-csv" }
+arrow-data = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-data" }
+arrow-ipc = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-ipc" }
+arrow-json = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-json" }
+arrow-ord = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-ord" }
+arrow-row = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-row" }
+arrow-schema = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-schema" }
+arrow-select = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-select" }
+arrow-string = { path = "/Users/gbh/Documents/dev/arrow-rs/arrow-string" }
+parquet = { path = "/Users/gbh/Documents/dev/arrow-rs/parquet" }

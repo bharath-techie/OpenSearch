@@ -527,3 +527,324 @@ async fn utf8view_schema_with_utf8_file_does_not_panic() {
             .await;
     assert_eq!(count, 4);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// Multi-RG decode must coerce decoded arrow types to the TABLE schema, exactly
+// as the per-RG path does (via ParquetSource::new(full_schema)). The consolidated
+// path drives a raw ParquetPushDecoder; if it lets the decoder infer parquet's
+// DEFAULT arrow types (Utf8View for strings) while the output schema declares
+// Utf8, a downstream string kernel — e.g. `GROUP BY <string col>` — panics with
+// "byte view array". This reproduces the live-node failure (group by SearchPhrase
+// through the multi-RG path) that the byte-identical diff_* tests missed because
+// they never GROUP BY a decoded string column.
+// ══════════════════════════════════════════════════════════════════════
+
+/// Run `SELECT name FROM t GROUP BY name`-shaped query (forces a string column
+/// through a hash-group kernel) on the chosen decode path. The table schema
+/// declares the string column as `Utf8`; the parquet file is written as `Utf8`
+/// too, but recent arrow infers `Utf8View` by default unless a schema is
+/// supplied — so the multi-RG path must coerce, or this panics. Returns the
+/// distinct group count, or an error string if the query failed.
+async fn run_group_by_string(multi_rg: bool) -> std::result::Result<usize, String> {
+    let file_schema = Arc::new(Schema::new(vec![
+        Field::new("tag", DataType::Utf8, false),
+        Field::new("score", DataType::Int32, false),
+    ]));
+    // 8 rows, 4 distinct tags, multiple RGs (max_row_group_size=4 below).
+    let batch = RecordBatch::try_new(
+        file_schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec![
+                "a", "b", "a", "c", "b", "d", "a", "c",
+            ])),
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+        ],
+    )
+    .unwrap();
+
+    let tmp = NamedTempFile::new().unwrap();
+    let (file, path) = tmp.keep().unwrap();
+    let props = datafusion::parquet::file::properties::WriterProperties::builder()
+        .set_max_row_group_size(4)
+        .build();
+    let mut w = ArrowWriter::try_new(file, file_schema.clone(), Some(props)).unwrap();
+    w.write(&batch).unwrap();
+    w.close().unwrap();
+
+    let size = std::fs::metadata(&path).unwrap().len();
+    let rfile = std::fs::File::open(&path).unwrap();
+    let meta =
+        ArrowReaderMetadata::load(&rfile, ArrowReaderOptions::new().with_page_index(true)).unwrap();
+    let parquet_meta = meta.metadata().clone();
+    let mut rgs = Vec::new();
+    let mut offset = 0i64;
+    for i in 0..parquet_meta.num_row_groups() {
+        let n = parquet_meta.row_group(i).num_rows();
+        rgs.push(RowGroupInfo { index: i, first_row: offset, num_rows: n });
+        offset += n;
+    }
+    assert!(rgs.len() > 1, "fixture must be multi-RG");
+    let segment = SegmentFileInfo {
+        writer_generation: 0,
+        max_doc: 8,
+        object_path: object_store::path::Path::from(path.to_string_lossy().as_ref()),
+        parquet_size: size,
+        row_groups: rgs,
+        metadata: Arc::clone(&parquet_meta),
+        global_base: 0,
+    };
+    // Table schema declares the string column as plain Utf8 (the coerced table
+    // type), distinct from whatever arrow infers from the file by default.
+    let table_schema = Arc::new(Schema::new(vec![
+        Field::new("tag", DataType::Utf8, false),
+        Field::new("score", DataType::Int32, false),
+    ]));
+    let tree = Arc::new(tautology_int("score", 1));
+    let factory: super::super::table_provider::EvaluatorFactory = {
+        let tree = Arc::clone(&tree);
+        let schema = table_schema.clone();
+        Arc::new(move |segment, _chunk, _stream_metrics| {
+            let resolved = tree.resolve(&[])?;
+            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata)));
+            let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(TreeBitsetSource {
+                tree: Arc::new(resolved),
+                evaluator: Arc::new(BitmapTreeEvaluator),
+                leaves: Arc::new(CollectorLeafBitmaps::without_metrics()),
+                page_pruner: pruner,
+                cost_predicate: 1,
+                cost_collector: 10,
+                max_collector_parallelism: 1,
+                pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
+                page_prune_metrics: None,
+                collector_strategy:
+                    crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
+            });
+            Ok(eval)
+        })
+    };
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_strategy(Some(FilterStrategy::BooleanMask))
+        .force_pushdown(Some(false))
+        .indexed_multi_rg_decode(multi_rg)
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: table_schema,
+        segments: vec![segment],
+        store: Arc::new(object_store::local::LocalFileSystem::new())
+            as Arc<dyn object_store::ObjectStore>,
+        store_url: datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
+        evaluator_factory: factory,
+        pushdown_predicate: None,
+        query_config: std::sync::Arc::new(qc),
+        predicate_columns: vec![1],
+        emit_row_ids: false,
+    }));
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    // GROUP BY the decoded string column — the kernel that panics on a
+    // Utf8View/Utf8 mismatch.
+    let df = ctx
+        .sql("SELECT tag, count(*) FROM t GROUP BY tag")
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut stream = df.execute_stream().await.map_err(|e| e.to_string())?;
+    let mut groups = 0usize;
+    while let Some(b) = stream.next().await {
+        let b = b.map_err(|e| e.to_string())?;
+        groups += b.num_rows();
+    }
+    Ok(groups)
+}
+
+// The multi-RG path must produce the same result as per-RG and must NOT panic
+// on the string group-by. (Reproduces the live `Panic: byte view array`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_rg_group_by_string_column_does_not_panic() {
+    let per_rg = run_group_by_string(false).await;
+    let multi = run_group_by_string(true).await;
+    assert!(per_rg.is_ok(), "per-RG group-by-string failed: {:?}", per_rg.err());
+    assert!(
+        multi.is_ok(),
+        "multi-RG group-by-string panicked/failed (byte view array coercion missing): {:?}",
+        multi.err()
+    );
+    assert_eq!(per_rg.unwrap(), 4, "expected 4 distinct tags");
+    assert_eq!(multi.unwrap(), 4, "multi-RG must match per-RG group count");
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Consolidated multi-RG decode vs per-RG, when the parquet PHYSICAL column
+// order differs from the table schema order AND the query projects a strict
+// subset of columns. This is the case the boolean_algebra `diff_*` tests can't
+// reach (their fixture writes parquet in table-schema order, so table index ==
+// physical index). `decoder_stream` builds its `ProjectionMask` from PHYSICAL
+// root indices, so it must translate table indices → physical indices by name;
+// a plain `ProjectionMask::roots(table_indices)` would decode the wrong columns
+// here. Both paths must produce byte-identical rows.
+// ══════════════════════════════════════════════════════════════════════
+
+/// Run `SELECT <projected cols> FROM t` against a file whose physical column
+/// order differs from the table schema, on the chosen decode path. Returns the
+/// projected rows as stringified tuples (order-independent comparison upstream).
+async fn run_reordered_projection(select_sql: &str, multi_rg: bool) -> Vec<String> {
+    // File physical order: score, name, brand. Table schema order: brand, name,
+    // score — so table indices and physical indices genuinely disagree.
+    let file_schema = Arc::new(Schema::new(vec![
+        Field::new("score", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("brand", DataType::Utf8, false),
+    ]));
+    let table_schema = Arc::new(Schema::new(vec![
+        Field::new("brand", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("score", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        file_schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50, 60, 70, 80])),
+            Arc::new(StringArray::from(vec![
+                "a", "b", "c", "d", "e", "f", "g", "h",
+            ])),
+            Arc::new(StringArray::from(vec![
+                "acme", "globex", "acme", "globex", "acme", "globex", "acme", "globex",
+            ])),
+        ],
+    )
+    .unwrap();
+
+    let tmp = NamedTempFile::new().unwrap();
+    let (file, path) = tmp.keep().unwrap();
+    // max_row_group_size < row count → multiple RGs so the multi-RG path cycles.
+    let props = datafusion::parquet::file::properties::WriterProperties::builder()
+        .set_max_row_group_size(4)
+        .build();
+    let mut w = ArrowWriter::try_new(file, file_schema, Some(props)).unwrap();
+    w.write(&batch).unwrap();
+    w.close().unwrap();
+
+    let size = std::fs::metadata(&path).unwrap().len();
+    let rfile = std::fs::File::open(&path).unwrap();
+    let meta =
+        ArrowReaderMetadata::load(&rfile, ArrowReaderOptions::new().with_page_index(true)).unwrap();
+    let parquet_meta = meta.metadata().clone();
+    let mut rgs = Vec::new();
+    let mut offset = 0i64;
+    for i in 0..parquet_meta.num_row_groups() {
+        let n = parquet_meta.row_group(i).num_rows();
+        rgs.push(RowGroupInfo {
+            index: i,
+            first_row: offset,
+            num_rows: n,
+        });
+        offset += n;
+    }
+    let segment = SegmentFileInfo {
+        writer_generation: 0,
+        max_doc: batch.num_rows() as i64,
+        object_path: object_store::path::Path::from(path.to_string_lossy().as_ref()),
+        parquet_size: size,
+        row_groups: rgs,
+        metadata: Arc::clone(&parquet_meta),
+        global_base: 0,
+    };
+    // Predicate-only tree (`score >= 0`, always true) so every row survives and
+    // the test isolates projection-column correctness, not filtering.
+    let tree = Arc::new(tautology_int("score", 2));
+    let factory: super::super::table_provider::EvaluatorFactory = {
+        let tree = Arc::clone(&tree);
+        let schema = table_schema.clone();
+        Arc::new(move |segment, _chunk, _stream_metrics| {
+            let resolved = tree.resolve(&[])?;
+            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata)));
+            let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(TreeBitsetSource {
+                tree: Arc::new(resolved),
+                evaluator: Arc::new(BitmapTreeEvaluator),
+                leaves: Arc::new(CollectorLeafBitmaps::without_metrics()),
+                page_pruner: pruner,
+                cost_predicate: 1,
+                cost_collector: 10,
+                max_collector_parallelism: 1,
+                pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
+                page_prune_metrics: None,
+                collector_strategy:
+                    crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
+            });
+            Ok(eval)
+        })
+    };
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_strategy(Some(FilterStrategy::BooleanMask))
+        .force_pushdown(Some(false))
+        .indexed_multi_rg_decode(multi_rg)
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: table_schema,
+        segments: vec![segment],
+        store: Arc::new(object_store::local::LocalFileSystem::new())
+            as Arc<dyn object_store::ObjectStore>,
+        store_url: datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
+        evaluator_factory: factory,
+        pushdown_predicate: None,
+        query_config: std::sync::Arc::new(qc),
+        // The tautology tree references `score` (table index 2). Declaring it
+        // here adds `score` to the read projection so the residual can evaluate
+        // it even when the SELECT projects it away — exactly what the executor
+        // does in production. `refine_batch` then strips it back to the output.
+        predicate_columns: vec![2],
+        emit_row_ids: false,
+    }));
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    let df = ctx.sql(select_sql).await.unwrap();
+    let mut stream = df.execute_stream().await.unwrap();
+    let mut rows = Vec::new();
+    while let Some(b) = stream.next().await {
+        let b = b.unwrap();
+        // Stringify each row across all projected columns so a column mix-up
+        // (wrong physical column decoded) shows up as a value mismatch.
+        for i in 0..b.num_rows() {
+            let mut cells = Vec::with_capacity(b.num_columns());
+            for c in 0..b.num_columns() {
+                let col = b.column(c);
+                let cell = if let Some(a) = col.as_any().downcast_ref::<Int32Array>() {
+                    a.value(i).to_string()
+                } else if let Some(a) = col.as_any().downcast_ref::<StringArray>() {
+                    a.value(i).to_string()
+                } else {
+                    "?".to_string()
+                };
+                cells.push(cell);
+            }
+            rows.push(cells.join("|"));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+// Project a single middle column from a reordered file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_reordered_subset_projection_single_col() {
+    let per_rg = run_reordered_projection("SELECT name FROM t", false).await;
+    let multi = run_reordered_projection("SELECT name FROM t", true).await;
+    assert_eq!(
+        per_rg, multi,
+        "multi-RG projection of a reordered file decoded different columns than per-RG"
+    );
+    // Sanity: the projected column must actually be `name` (a,b,..h), not score.
+    assert_eq!(per_rg, vec!["a", "b", "c", "d", "e", "f", "g", "h"]);
+}
+
+// Project two columns whose table order is the reverse of their physical order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diff_reordered_subset_projection_two_cols() {
+    let per_rg = run_reordered_projection("SELECT brand, score FROM t", false).await;
+    let multi = run_reordered_projection("SELECT brand, score FROM t", true).await;
+    assert_eq!(
+        per_rg, multi,
+        "multi-RG projection of a reordered file decoded different columns than per-RG"
+    );
+}
