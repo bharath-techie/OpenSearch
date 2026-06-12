@@ -92,6 +92,21 @@ public final class DatafusionSettings {
     );
 
     /**
+     * Enables cross-partition work-stealing on the indexed scan.
+     * When on, sibling partition streams of one execution share a
+     * single queue of row-group chunks and steal from it at runtime, instead of each
+     * draining a fixed set assigned at planning time — rebalancing scans whose
+     * per-partition cost turns out uneven after execution-time pruning. On by default; when off, each partition drains
+     * only its statically-assigned chunks, byte-identical to the pre-feature behaviour.
+     */
+    public static final Setting<Boolean> INDEXED_WORK_STEALING = Setting.boolSetting(
+        "datafusion.indexed.work_stealing",
+        true,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
      * Default minimum run length (in rows) below which the indexed stream skips
      * row-selection optimizations and falls back to sequential decode. Shorter runs
      * have higher per-row overhead from selection vector maintenance.
@@ -323,7 +338,8 @@ public final class DatafusionSettings {
         INDEXED_TREE_COLLECTOR_STRATEGY,
         INDEXED_MAX_COLLECTOR_PARALLELISM,
         INDEXED_QUERY_STRATEGY,
-        INDEXED_DYNAMIC_FILTER_PUSHDOWN
+        INDEXED_DYNAMIC_FILTER_PUSHDOWN,
+        INDEXED_WORK_STEALING
     );
 
     // ── Snapshot management ──
@@ -367,6 +383,7 @@ public final class DatafusionSettings {
             .maxCollectorParallelism(INDEXED_MAX_COLLECTOR_PARALLELISM.get(settings))
             .queryStrategy(queryStrategyToWireValue(INDEXED_QUERY_STRATEGY.get(settings)))
             .indexedDynamicFilterPushdown(INDEXED_DYNAMIC_FILTER_PUSHDOWN.get(settings))
+            .indexedWorkStealing(INDEXED_WORK_STEALING.get(settings))
             .build();
 
         registerListeners(clusterSettings);
@@ -392,6 +409,7 @@ public final class DatafusionSettings {
             .maxCollectorParallelism(INDEXED_MAX_COLLECTOR_PARALLELISM.get(settings))
             .queryStrategy(queryStrategyToWireValue(INDEXED_QUERY_STRATEGY.get(settings)))
             .indexedDynamicFilterPushdown(INDEXED_DYNAMIC_FILTER_PUSHDOWN.get(settings))
+            .indexedWorkStealing(INDEXED_WORK_STEALING.get(settings))
             .build();
     }
 
@@ -434,6 +452,10 @@ public final class DatafusionSettings {
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_DYNAMIC_FILTER_PUSHDOWN, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).indexedDynamicFilterPushdown(newValue).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_WORK_STEALING, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).indexedWorkStealing(newValue).build();
         });
 
         clusterSettings.addSettingsUpdateConsumer(SearchService.CONCURRENT_SEGMENT_SEARCH_TARGET_MAX_SLICE_COUNT_SETTING, newValue -> {

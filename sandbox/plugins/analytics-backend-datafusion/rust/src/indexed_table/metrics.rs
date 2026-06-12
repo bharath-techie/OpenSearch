@@ -122,10 +122,12 @@ pub struct StreamMetrics {
     /// Object-store read wall-time accumulator, shared across all RG readers
     /// within this partition.
     pub io_stats: Option<Arc<ReadIoStats>>,
-    /// Count of chunks this partition processed beyond its own static assignment
-    /// — i.e. stolen from the shared work queue (work-stealing). Zero unless
-    /// `indexed_work_stealing` is on. Summed across partitions, a non-zero total
-    /// proves the rebalancing path fired.
+    /// Count of chunks this partition processed that were NOT in its own static
+    /// assignment — i.e. genuinely stolen from a sibling partition via the shared
+    /// work queue. A chunk popped off the queue that happens to be this
+    /// partition's own is NOT counted (it's rebalancing-neutral). Zero unless
+    /// `indexed_work_stealing` is on; summed across partitions it is the exact
+    /// number of chunks that crossed a partition boundary at runtime.
     pub work_stolen_chunks: Option<Count>,
     /// Inner `DataSourceExec` parquet metrics for this partition: one
     /// `MetricsSet` per chunk (row-group set) the partition scans.
