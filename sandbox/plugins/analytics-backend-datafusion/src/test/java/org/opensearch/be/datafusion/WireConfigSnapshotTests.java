@@ -17,7 +17,7 @@ import java.lang.foreign.ValueLayout;
 public class WireConfigSnapshotTests extends OpenSearchTestCase {
 
     public void testByteSize() {
-        assertEquals(80L, WireConfigSnapshot.BYTE_SIZE);
+        assertEquals(88L, WireConfigSnapshot.BYTE_SIZE);
     }
 
     public void testWriteToWritesCorrectValuesAtCorrectOffsets() {
@@ -32,6 +32,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .treeCollectorStrategy(1)
             .queryStrategy(2)
             .indexedDynamicFilterPushdown(true)
+            .indexedWorkStealing(true)
             .build();
 
         try (Arena arena = Arena.ofConfined()) {
@@ -48,6 +49,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 64)); // tree_collector_strategy
             assertEquals(2, segment.get(ValueLayout.JAVA_INT, 68)); // query_strategy = IndexedPredicateOnly
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 76)); // indexed_dynamic_filter_pushdown = true
+            assertEquals(1, segment.get(ValueLayout.JAVA_INT, 80)); // indexed_work_stealing = true
         }
     }
 
@@ -91,6 +93,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(1, snapshot.treeCollectorStrategy());    // tighten_outer_bounds
         assertEquals(2, snapshot.queryStrategy());            // IndexedPredicateOnly
         assertEquals(true, snapshot.indexedDynamicFilterPushdown()); // on by default
+        assertEquals(true, snapshot.indexedWorkStealing());  // on by default
     }
 
     public void testBuilderCopyPreservesAllFields() {
@@ -106,6 +109,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .treeCollectorStrategy(2)
             .queryStrategy(1)
             .indexedDynamicFilterPushdown(false)
+            .indexedWorkStealing(true)
             .build();
 
         WireConfigSnapshot copy = WireConfigSnapshot.builder(original).build();
@@ -121,5 +125,6 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(original.treeCollectorStrategy(), copy.treeCollectorStrategy());
         assertEquals(original.queryStrategy(), copy.queryStrategy());
         assertEquals(original.indexedDynamicFilterPushdown(), copy.indexedDynamicFilterPushdown());
+        assertEquals(original.indexedWorkStealing(), copy.indexedWorkStealing());
     }
 }

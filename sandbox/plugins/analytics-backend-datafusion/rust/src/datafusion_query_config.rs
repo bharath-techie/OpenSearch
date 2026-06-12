@@ -151,8 +151,9 @@ impl DatafusionQueryConfig {
             // On by default — matches the Java cluster-setting default
             // (`datafusion.indexed.dynamic_filter_pushdown`). Toggle to A/B perf.
             indexed_dynamic_filter_pushdown: true,
-            // Off by default — opt-in while the work-stealing path beds in.
-            indexed_work_stealing: false,
+            // On by default — matches the Java cluster-setting default
+            // (`datafusion.indexed.work_stealing`). Toggle to A/B perf.
+            indexed_work_stealing: true,
         }
     }
 
@@ -325,7 +326,7 @@ mod tests {
         assert_eq!(c.cost_predicate, 1);
         assert_eq!(c.cost_collector, 10);
         assert!(c.indexed_dynamic_filter_pushdown);
-        assert!(!c.indexed_work_stealing);
+        assert!(c.indexed_work_stealing);
     }
 
     #[test]

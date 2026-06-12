@@ -173,11 +173,14 @@ async fn run(
                     ),
                     0,
                     None,
+                    _stats_prune_tree.cloned(),
                 ),
             );
             Ok(eval)
         })
     };
+    // (factory passes through the framework-provided stats_prune_tree; these
+    // tests don't construct one, so it's None in practice.)
 
     let store: Arc<dyn object_store::ObjectStore> =
         Arc::new(object_store::local::LocalFileSystem::new());
@@ -198,6 +201,7 @@ async fn run(
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
         emit_row_ids: false,
+        prune_tree_config: None,
     }));
 
     let ctx = SessionContext::new();
@@ -255,7 +259,19 @@ fn five_segments() -> Vec<Seg> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn work_stealing_matches_static_path_and_fires() {
-    let segs = five_segments();
+    // One slow segment at the FRONT of the queue forces a deterministic steal:
+    // whichever partition pops it parks while its sibling drains the remaining
+    // fast chunks. `work_stolen_chunks` now counts only chunks a partition
+    // processed that were NOT in its own static assignment (a true steal), so a
+    // balanced all-fast workload would have no guaranteed floor — the induced
+    // imbalance is what makes the assertion deterministic.
+    let segs = vec![
+        Seg { brand: "amazon", base_price: 0, rows: 4, max_rg_rows: 4, slow_ms: 80 },
+        Seg { brand: "apple", base_price: 100, rows: 4, max_rg_rows: 4, slow_ms: 0 },
+        Seg { brand: "google", base_price: 200, rows: 4, max_rg_rows: 4, slow_ms: 0 },
+        Seg { brand: "meta", base_price: 300, rows: 4, max_rg_rows: 4, slow_ms: 0 },
+        Seg { brand: "netflix", base_price: 400, rows: 4, max_rg_rows: 4, slow_ms: 0 },
+    ];
     let sql = "SELECT brand, price FROM t";
 
     // Baseline: feature off → static per-partition assignment, nothing stolen.
@@ -267,13 +283,12 @@ async fn work_stealing_matches_static_path_and_fires() {
     let (rows, plan) = run(&segs, sql, /*work_stealing*/ true, 2).await;
     assert_eq!(rows, base_rows, "work-stealing must not change the result set");
 
-    // 5 chunks, 2 partitions: at most 2 partitions each "keep" their first chunk,
-    // so by pigeonhole >= 5 - 2 = 3 chunks are counted as stolen. Deterministic.
+    // 5 chunks, 2 partitions (P0 owns {seg0,seg1,seg2}, P1 owns {seg3,seg4}). The
+    // partition that pops the slow seg0 does only that; the other drains the 4
+    // remaining fast chunks. Either way the draining partition processes >= 2
+    // chunks it doesn't own, so >= 2 true steals. Deterministic.
     let s = stolen(&plan);
-    assert!(
-        s >= 3,
-        "expected >= 3 stolen chunks (5 chunks - 2 partitions), got {s}"
-    );
+    assert!(s >= 2, "expected >= 2 true steals under induced imbalance, got {s}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -305,8 +320,11 @@ async fn idle_partition_steals_from_slow_sibling() {
     let (base, _) = run(&segs, sql, false, 2).await;
     let (rows, plan) = run(&segs, sql, true, 2).await;
     assert_eq!(rows, base, "result must match the static path");
-    // 6 chunks, 2 partitions → >= 4 stolen by pigeonhole.
-    assert!(stolen(&plan) >= 4, "expected heavy stealing, got {}", stolen(&plan));
+    // 6 chunks, 2 partitions: P0 owns {slow,f1,f2}, P1 owns {f3,f4,f5}. Whichever
+    // partition pops the slow front chunk parks; the other drains the 5 remaining
+    // fast chunks, of which it owns at most 3 — so it steals >= 2 chunks it
+    // doesn't own. (`work_stolen_chunks` counts only true cross-boundary steals.)
+    assert!(stolen(&plan) >= 2, "expected stealing under imbalance, got {}", stolen(&plan));
 }
 
 /// Wall-clock A/B benchmark of the lopsided workload. Ignored by default (it

@@ -689,11 +689,23 @@ impl ExecutionPlan for QueryShardExec {
         //
         // We must NOT hold the queue mutex across an `.await`: `pop()` returns
         // owned data and releases the lock immediately, then we build + execute.
+        //
+        // For an accurate `work_stolen_chunks` metric we need to know which chunks
+        // were *this* partition's own (under the static assignment) vs. stolen from
+        // a sibling. Build a set of this partition's own chunk identities up front;
+        // a popped chunk not in it was genuinely stolen. Identity = (segment_idx,
+        // doc_min, doc_max), the same tuple a production collector is keyed on, so
+        // it's unique per chunk within one execution.
+        let own_chunks: std::collections::HashSet<(usize, i32, i32)> = assignment
+            .chunks
+            .iter()
+            .map(|c| (c.segment_idx, c.doc_min, c.doc_max))
+            .collect();
         let exec_self = Arc::new(self.shallow_for_driver());
         let driver_metrics = stream_metrics.clone();
         let driver = futures::stream::unfold(
-            (work, 0usize, false),
-            move |(mut work, popped, mut done_reorder)| {
+            (work, own_chunks, false),
+            move |(mut work, own_chunks, mut done_reorder)| {
                 let exec_self = Arc::clone(&exec_self);
                 let context = Arc::clone(&context);
                 let stream_metrics = driver_metrics.clone();
@@ -721,12 +733,18 @@ impl ExecutionPlan for QueryShardExec {
                         }
 
                         let item = work.pop()?;
-                        // Count every chunk beyond this partition's own first as
-                        // "stolen" work. (The very first chunk a partition takes
-                        // is morally its own; subsequent ones evidence stealing /
-                        // rebalancing. Summed across partitions this stays a
-                        // faithful indicator that the path engaged.)
-                        if popped > 0 {
+                        // A chunk this partition processed that was NOT in its own
+                        // static assignment was genuinely stolen from a sibling.
+                        // (A chunk popped off the shared queue that happens to be
+                        // this partition's own is rebalancing-neutral and not
+                        // counted.) Summed across partitions, this is the true
+                        // number of chunks that crossed a partition boundary.
+                        let stolen = !own_chunks.contains(&(
+                            item.chunk.segment_idx,
+                            item.chunk.doc_min,
+                            item.chunk.doc_max,
+                        ));
+                        if stolen {
                             if let Some(ref c) = stream_metrics.work_stolen_chunks {
                                 c.add(1);
                             }
@@ -738,12 +756,12 @@ impl ExecutionPlan for QueryShardExec {
                             &dynamic_filter,
                         ) {
                             Ok(Some(stream)) => {
-                                return Some((Ok(stream), (work, popped + 1, done_reorder)));
+                                return Some((Ok(stream), (work, own_chunks, done_reorder)));
                             }
                             // Empty chunk (no row groups after subsetting) — skip
                             // and pull the next one without emitting a stream.
                             Ok(None) => continue,
-                            Err(e) => return Some((Err(e), (work, popped + 1, done_reorder))),
+                            Err(e) => return Some((Err(e), (work, own_chunks, done_reorder))),
                         }
                     }
                 }
