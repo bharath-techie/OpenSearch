@@ -69,7 +69,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
     }
 
     public void testAllSettingsContainsAllExpectedSettings() {
-        assertEquals(30, DatafusionSettings.ALL_SETTINGS.size());
+        assertEquals(31, DatafusionSettings.ALL_SETTINGS.size());
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_REDUCE_TARGET_PARTITIONS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_SPILL_DIRECTORY));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_BATCH_SIZE));
@@ -85,6 +85,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_DYNAMIC_FILTER_PUSHDOWN));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_WORK_STEALING));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MULTI_RG_DECODE));
     }
 
     public void testDefaultSnapshotValuesMatchDefaults() {

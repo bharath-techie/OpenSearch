@@ -243,6 +243,20 @@ public final class DatafusionSettings {
         Setting.Property.Dynamic
     );
 
+    /**
+     * Consolidate a chunk's row groups into a single multi-RG push-decoder stream
+     * (amortizes per-RG decoder setup; overlaps next-RG Lucene eval with current-RG
+     * decode) instead of one DataSourceExec per row group. Off by default. Also
+     * honoured via the {@code OPENSEARCH_INDEXED_MULTI_RG_DECODE} env var on the Rust
+     * side (OR'd in), but this cluster setting is the supported toggle.
+     */
+    public static final Setting<Boolean> INDEXED_MULTI_RG_DECODE = Setting.boolSetting(
+        "datafusion.indexed.multi_rg_decode",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     // ── Concurrency gate settings ──
 
     /** Minimum guaranteed bytes for the DataFusion memory pool. Default is half of datafusion max (37% of budget). */
@@ -376,7 +390,8 @@ public final class DatafusionSettings {
         INDEXED_QUERY_STRATEGY,
         INDEXED_DYNAMIC_FILTER_PUSHDOWN,
         INDEXED_WORK_STEALING,
-        INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED
+        INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED,
+        INDEXED_MULTI_RG_DECODE
     );
 
     // ── Snapshot management ──
@@ -423,6 +438,7 @@ public final class DatafusionSettings {
             .indexedDynamicFilterPushdown(INDEXED_DYNAMIC_FILTER_PUSHDOWN.get(settings))
             .indexedWorkStealing(INDEXED_WORK_STEALING.get(settings))
             .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
+            .indexedMultiRgDecode(INDEXED_MULTI_RG_DECODE.get(settings))
             .build();
 
         registerListeners(clusterSettings);
@@ -451,6 +467,7 @@ public final class DatafusionSettings {
             .indexedDynamicFilterPushdown(INDEXED_DYNAMIC_FILTER_PUSHDOWN.get(settings))
             .indexedWorkStealing(INDEXED_WORK_STEALING.get(settings))
             .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
+            .indexedMultiRgDecode(INDEXED_MULTI_RG_DECODE.get(settings))
             .build();
     }
 
@@ -501,8 +518,14 @@ public final class DatafusionSettings {
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_WORK_STEALING, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).indexedWorkStealing(newValue).build();
+        });
+
         clusterSettings.addSettingsUpdateConsumer(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).routePureParquetThroughIndexed(newValue).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_MULTI_RG_DECODE, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).indexedMultiRgDecode(newValue).build();
         });
 
         clusterSettings.addSettingsUpdateConsumer(SearchService.CONCURRENT_SEGMENT_SEARCH_TARGET_MAX_SLICE_COUNT_SETTING, newValue -> {

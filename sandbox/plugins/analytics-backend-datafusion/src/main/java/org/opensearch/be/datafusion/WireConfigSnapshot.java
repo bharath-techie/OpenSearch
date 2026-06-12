@@ -26,7 +26,7 @@ import java.lang.foreign.ValueLayout;
 public final class WireConfigSnapshot {
 
     /** Total byte size of the wire struct ({@code WireDatafusionQueryConfig}). */
-    public static final long BYTE_SIZE = 88;
+    public static final long BYTE_SIZE = 96;
 
     private final int batchSize;
     private final int targetPartitions;
@@ -42,6 +42,7 @@ public final class WireConfigSnapshot {
     private final boolean indexedDynamicFilterPushdown;
     private final boolean indexedWorkStealing;
     private final boolean routePureParquetThroughIndexed;
+    private final boolean indexedMultiRgDecode;
 
     private WireConfigSnapshot(Builder builder) {
         this.batchSize = builder.batchSize;
@@ -58,6 +59,7 @@ public final class WireConfigSnapshot {
         this.indexedDynamicFilterPushdown = builder.indexedDynamicFilterPushdown;
         this.indexedWorkStealing = builder.indexedWorkStealing;
         this.routePureParquetThroughIndexed = builder.routePureParquetThroughIndexed;
+        this.indexedMultiRgDecode = builder.indexedMultiRgDecode;
     }
 
     public static Builder builder() {
@@ -81,8 +83,9 @@ public final class WireConfigSnapshot {
             .treeCollectorStrategy(current.treeCollectorStrategy)
             .queryStrategy(current.queryStrategy)
             .indexedDynamicFilterPushdown(current.indexedDynamicFilterPushdown)
-            .indexedWorkStealing(current.indexedWorkStealing);
-            .routePureParquetThroughIndexed(current.routePureParquetThroughIndexed);
+            .indexedWorkStealing(current.indexedWorkStealing)
+            .routePureParquetThroughIndexed(current.routePureParquetThroughIndexed)
+            .indexedMultiRgDecode(current.indexedMultiRgDecode);
     }
 
     public int batchSize() {
@@ -135,8 +138,14 @@ public final class WireConfigSnapshot {
 
     public boolean indexedWorkStealing() {
         return indexedWorkStealing;
+    }
+
     public boolean routePureParquetThroughIndexed() {
         return routePureParquetThroughIndexed;
+    }
+
+    public boolean indexedMultiRgDecode() {
+        return indexedMultiRgDecode;
     }
 
     /**
@@ -167,8 +176,10 @@ public final class WireConfigSnapshot {
      * 76      4     indexed_dynamic_filter_pushdown      i32      from snapshot (0/1)
      * 80      4     indexed_work_stealing                i32      from snapshot (0/1)
      * 84      4     route_pure_parquet_through_indexed   i32      from snapshot (0/1)
+     * 88      4     indexed_multi_rg_decode              i32      from snapshot (0/1)
+     * 92      4     (tail padding to 8-byte alignment)   —        zero
      * ──────  ────
-     * Total: 88 bytes (all fields used; 8-byte aligned, repr(C))
+     * Total: 96 bytes (92 bytes of fields + 4 bytes #[repr(C)] tail padding)
      * </pre>
      *
      * @param segment the target memory segment (at least {@link #BYTE_SIZE} bytes)
@@ -210,6 +221,8 @@ public final class WireConfigSnapshot {
         segment.set(ValueLayout.JAVA_INT, 80, indexedWorkStealing ? 1 : 0);
         // Offset 84: route_pure_parquet_through_indexed (i32) — 0 = false, 1 = true
         segment.set(ValueLayout.JAVA_INT, 84, routePureParquetThroughIndexed ? 1 : 0);
+        // Offset 88: indexed_multi_rg_decode (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 88, indexedMultiRgDecode ? 1 : 0);
     }
 
     /**
@@ -231,6 +244,7 @@ public final class WireConfigSnapshot {
         private boolean indexedDynamicFilterPushdown = true; // runtime TopK/join RG pruning on by default
         private boolean indexedWorkStealing = true; // cross-partition work-stealing on by default
         private boolean routePureParquetThroughIndexed = false;
+        private boolean indexedMultiRgDecode = false;
 
         private Builder() {}
 
@@ -296,8 +310,16 @@ public final class WireConfigSnapshot {
 
         public Builder indexedWorkStealing(boolean indexedWorkStealing) {
             this.indexedWorkStealing = indexedWorkStealing;
+            return this;
+        }
+
         public Builder routePureParquetThroughIndexed(boolean routePureParquetThroughIndexed) {
             this.routePureParquetThroughIndexed = routePureParquetThroughIndexed;
+            return this;
+        }
+
+        public Builder indexedMultiRgDecode(boolean indexedMultiRgDecode) {
+            this.indexedMultiRgDecode = indexedMultiRgDecode;
             return this;
         }
 

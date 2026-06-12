@@ -149,6 +149,9 @@ pub struct WireDatafusionQueryConfig {
     /// 0 = false, 1 = true
     pub indexed_work_stealing: i32,
     pub route_pure_parquet_through_indexed: i32,
+    /// 0 = false, 1 = true. Multi-RG push-decoder consolidation. Also honoured via
+    /// the `OPENSEARCH_INDEXED_MULTI_RG_DECODE` env var (OR'd in) for backward compat.
+    pub indexed_multi_rg_decode: i32,
 }
 
 impl DatafusionQueryConfig {
@@ -255,8 +258,8 @@ impl DatafusionQueryConfig {
             bloom_filter_on_read: w.bloom_filter_on_read != 0,
             indexed_dynamic_filter_pushdown: w.indexed_dynamic_filter_pushdown != 0,
             indexed_work_stealing: w.indexed_work_stealing != 0,
-            // Not in the Java wire format yet (experimental); driven by env.
-            indexed_multi_rg_decode: multi_rg_decode_from_env(),
+            // Cluster setting via the wire, OR the env var (backward compat).
+            indexed_multi_rg_decode: w.indexed_multi_rg_decode != 0 || multi_rg_decode_from_env(),
         }
     }
 }
@@ -394,12 +397,14 @@ mod tests {
             indexed_dynamic_filter_pushdown: 1,
             indexed_work_stealing: 1,
             route_pure_parquet_through_indexed: 1,
+            indexed_multi_rg_decode: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
         assert_eq!(c.batch_size, 16384);
         assert!(c.indexed_dynamic_filter_pushdown);
         assert!(c.indexed_work_stealing);
+        assert!(c.indexed_multi_rg_decode);
         assert_eq!(c.target_partitions, 8);
         assert_eq!(c.min_skip_run_default, 512);
         assert!((c.min_skip_run_selectivity_threshold - 0.07).abs() < 1e-9);
@@ -434,6 +439,7 @@ mod tests {
             indexed_dynamic_filter_pushdown: 0,
             indexed_work_stealing: 0,
             route_pure_parquet_through_indexed: 0,
+            indexed_multi_rg_decode: 0,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };

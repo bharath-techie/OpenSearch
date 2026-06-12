@@ -17,7 +17,7 @@ import java.lang.foreign.ValueLayout;
 public class WireConfigSnapshotTests extends OpenSearchTestCase {
 
     public void testByteSize() {
-        assertEquals(88L, WireConfigSnapshot.BYTE_SIZE);
+        assertEquals(96L, WireConfigSnapshot.BYTE_SIZE);
     }
 
     public void testWriteToWritesCorrectValuesAtCorrectOffsets() {
@@ -34,6 +34,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .indexedDynamicFilterPushdown(true)
             .indexedWorkStealing(true)
             .routePureParquetThroughIndexed(true)
+            .indexedMultiRgDecode(true)
             .build();
 
         try (Arena arena = Arena.ofConfined()) {
@@ -52,6 +53,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 76)); // indexed_dynamic_filter_pushdown = true
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 80)); // indexed_work_stealing = true
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 84)); // route_pure_parquet_through_indexed = true
+            assertEquals(1, segment.get(ValueLayout.JAVA_INT, 88)); // indexed_multi_rg_decode = true
         }
     }
 
@@ -108,6 +110,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(true, snapshot.indexedDynamicFilterPushdown()); // on by default
         assertEquals(true, snapshot.indexedWorkStealing());  // on by default
         assertEquals(false, snapshot.routePureParquetThroughIndexed());
+        assertEquals(false, snapshot.indexedMultiRgDecode());
     }
 
     public void testBuilderCopyPreservesAllFields() {
@@ -125,6 +128,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .indexedDynamicFilterPushdown(false)
             .indexedWorkStealing(true)
             .routePureParquetThroughIndexed(true)
+            .indexedMultiRgDecode(true)
             .build();
 
         WireConfigSnapshot copy = WireConfigSnapshot.builder(original).build();
@@ -142,5 +146,6 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(original.indexedDynamicFilterPushdown(), copy.indexedDynamicFilterPushdown());
         assertEquals(original.indexedWorkStealing(), copy.indexedWorkStealing());
         assertEquals(original.routePureParquetThroughIndexed(), copy.routePureParquetThroughIndexed());
+        assertEquals(original.indexedMultiRgDecode(), copy.indexedMultiRgDecode());
     }
 }
