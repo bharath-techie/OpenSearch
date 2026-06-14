@@ -131,9 +131,11 @@ pub async fn execute_indexed_query(
         .map_err(|e| DataFusionError::Execution(format!("runtime env: {}", e)))?;
 
     // Register shard-specific object store on file:// scheme for this query.
+    // LatencyStore::wrap injects per-read latency when DATAFUSION_IO_INJECT_LATENCY_MS
+    // is set (benchmark baseline); no-op passthrough otherwise.
     runtime_env.register_object_store(
         &url::Url::parse("file://").unwrap(),
-        Arc::clone(&shard_view.store),
+        crate::latency_store::LatencyStore::wrap(Arc::clone(&shard_view.store)),
     );
 
     let mut config = SessionConfig::new();

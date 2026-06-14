@@ -33,6 +33,7 @@ pub mod ffm;
 pub mod indexed_executor;
 pub mod indexed_table;
 pub mod io;
+pub mod latency_store;
 pub mod local_executor;
 pub mod memory;
 pub mod memory_guard;

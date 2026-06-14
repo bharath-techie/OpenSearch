@@ -183,9 +183,11 @@ pub async unsafe fn create_session_context(
     // Register shard-specific object store on file:// scheme for this query.
     // This is the instruction-based execution path (ShardScanInstructionHandler).
     // Without this, queries use default LocalFileSystem and fail on warm.
+    // LatencyStore::wrap injects per-read latency when DATAFUSION_IO_INJECT_LATENCY_MS
+    // is set (benchmark baseline); no-op passthrough otherwise.
     runtime_env.register_object_store(
         &url::Url::parse("file://").unwrap(),
-        Arc::clone(&shard_view.store),
+        crate::latency_store::LatencyStore::wrap(Arc::clone(&shard_view.store)),
     );
 
     // Acquire memory budget from cached parquet metadata (zero I/O).

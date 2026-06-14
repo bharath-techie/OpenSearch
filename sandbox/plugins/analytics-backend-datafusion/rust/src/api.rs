@@ -923,9 +923,11 @@ pub async unsafe fn fetch_by_row_ids(
     let runtime_env = build_query_runtime_env(runtime, &shard_view.table_path, shard_view.object_metas.as_ref())?;
 
     // Register shard-specific object store on file:// scheme for this query.
+    // LatencyStore::wrap injects per-read latency when DATAFUSION_IO_INJECT_LATENCY_MS
+    // is set (benchmark baseline); no-op passthrough otherwise.
     runtime_env.register_object_store(
         &url::Url::parse("file://").unwrap(),
-        Arc::clone(&shard_view.store),
+        crate::latency_store::LatencyStore::wrap(Arc::clone(&shard_view.store)),
     );
 
     let mut config = SessionConfig::new();

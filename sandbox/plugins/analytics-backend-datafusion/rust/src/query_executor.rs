@@ -77,9 +77,11 @@ pub async fn execute_query(
 
     // Register shard-specific object store on file:// scheme for this query.
     // Routes reads through TieredObjectStore (local + remote) or default LocalFileSystem.
+    // LatencyStore::wrap injects per-read latency when DATAFUSION_IO_INJECT_LATENCY_MS
+    // is set (benchmark baseline); no-op passthrough otherwise.
     runtime_env.register_object_store(
         &url::Url::parse("file://").unwrap(),
-        shard_store,
+        crate::latency_store::LatencyStore::wrap(shard_store),
     );
 
     // Build a fresh session state per query. TODO : Tune this during planning per query
