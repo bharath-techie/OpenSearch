@@ -977,11 +977,18 @@ async unsafe fn execute_indexed_with_context_inner(
                     },
                 );
                 let total_rgs = segment.metadata.num_row_groups();
-                let read_rgs = surviving_rgs.as_ref().map(|s| s.len()).unwrap_or(total_rgs);
+                // Indexed path loads all RGs (see note below); this is the count
+                // that WOULD survive if RG scoping were enabled here, for metrics.
+                let would_survive = surviving_rgs.as_ref().map(|s| s.len()).unwrap_or(total_rgs);
                 let seg_name = segment.object_path.to_string();
                 let store = Arc::clone(&store);
                 let object_path = segment.object_path.clone();
                 let footer = Arc::clone(&segment.metadata);
+                // RG scoping: build the page index only for row groups that
+                // survive RG-level stats pruning. Safe because the scan's RG-skip
+                // (`StatsPruneTree.rg_can_match`) is now absolute-indexed and
+                // consistent with this survivor set — a pruned (placeholder) row
+                // group is never read.
                 async move {
                     let aug = crate::indexed_table::page_index_loader::load_scoped_page_index_rgs(
                         &store,
@@ -993,8 +1000,9 @@ async unsafe fn execute_indexed_with_context_inner(
                     .await;
                     if let Some(ref a) = aug {
                         native_bridge_common::log_debug!(
-                            "scoped-pageidx: {} rgs_read={}/{} cols={} entry_bytes={}",
-                            seg_name, read_rgs, total_rgs, parquet_cols.len(), a.memory_size()
+                            "scoped-pageidx[indexed]: {} rgs_read={}/{} cols={} entry_bytes={}",
+                            seg_name, would_survive, total_rgs,
+                            parquet_cols.len(), a.memory_size()
                         );
                     }
                     aug

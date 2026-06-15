@@ -673,6 +673,15 @@ pub struct StatsPruneTree {
 }
 
 impl StatsPruneTree {
+    /// `rg_can_match` is **absolute-indexed**: position `i` corresponds to the
+    /// file's row group `i` (length = `metadata.num_row_groups()`). Row groups
+    /// not in `rg_indices` (e.g. not in this chunk) are `false`. This matches how
+    /// every consumer dereferences it — `rg_can_match.get(rg.index)` with the
+    /// absolute `RowGroupInfo.index` (and `offset_index.get(rg.index)` likewise).
+    /// Callers only ever query positions for row groups in `rg_indices`, so the
+    /// `false`-outside entries are never read; they exist purely to keep the
+    /// indexing absolute. Statistics are still evaluated only for `rg_indices`
+    /// (no extra work for row groups outside the chunk).
     pub fn build_from_bool_node(
         node: &super::bool_tree::BoolNode,
         leaf_predicates: &HashMap<usize, Arc<PruningPredicate>>,
@@ -681,14 +690,40 @@ impl StatsPruneTree {
         rg_indices: &[usize],
     ) -> Self {
         use super::bool_tree::BoolNode;
-        let num = rg_indices.len();
+        // Absolute-indexed vectors: sized to the file's row-group count, not the
+        // chunk subset. `eval_leaf` results are scattered to absolute positions.
+        let num = metadata.num_row_groups();
+        // Scatter a subset-relative leaf result (aligned to `rg_indices`) into an
+        // absolute-indexed vector; row groups outside `rg_indices` are `false`.
+        let scatter = |subset: Vec<bool>| -> Vec<bool> {
+            let mut abs = vec![false; num];
+            for (pos, &rg) in rg_indices.iter().enumerate() {
+                if rg < num {
+                    abs[rg] = subset.get(pos).copied().unwrap_or(false);
+                }
+            }
+            abs
+        };
+        // Conservative "all in-chunk RGs can match" in absolute form: true for
+        // rg_indices, false elsewhere. Used for Collector/NOT/missing-predicate.
+        let all_chunk_true = || -> Vec<bool> {
+            let mut v = vec![false; num];
+            for &rg in rg_indices {
+                if rg < num {
+                    v[rg] = true;
+                }
+            }
+            v
+        };
         match node {
             BoolNode::And(children) => {
                 let annotated_children: Vec<_> = children
                     .iter()
                     .map(|c| Self::build_from_bool_node(c, leaf_predicates, metadata, schema, rg_indices))
                     .collect();
-                let mut rg_can_match = vec![true; num];
+                // Start from "all in-chunk RGs match" (true in-chunk, false out),
+                // then AND each child. Out-of-chunk stays false throughout.
+                let mut rg_can_match = all_chunk_true();
                 for child in &annotated_children {
                     for (r, c) in rg_can_match.iter_mut().zip(child.rg_can_match.iter()) {
                         *r &= c;
@@ -701,6 +736,8 @@ impl StatsPruneTree {
                     .iter()
                     .map(|c| Self::build_from_bool_node(c, leaf_predicates, metadata, schema, rg_indices))
                     .collect();
+                // false everywhere, OR in each child's matches. Out-of-chunk
+                // children are false, so they never wrongly set a bit.
                 let mut rg_can_match = vec![false; num];
                 for child in &annotated_children {
                     for (r, c) in rg_can_match.iter_mut().zip(child.rg_can_match.iter()) {
@@ -711,31 +748,32 @@ impl StatsPruneTree {
             }
             BoolNode::Not(child) => {
                 let annotated_child = Self::build_from_bool_node(child, leaf_predicates, metadata, schema, rg_indices);
-                // NOT is conservatively all-true: negating stats-based pruning is unsound
-                // because stats give a superset, and inverting a superset is a subset.
+                // NOT is conservatively all-(in-chunk)-true: negating stats-based
+                // pruning is unsound (stats give a superset; inverting a superset
+                // is a subset).
                 native_bridge_common::log_debug!("StatsPruneTree: NOT node → all-true (conservative, cannot prune through negation)");
-                Self { rg_can_match: vec![true; num], children: vec![annotated_child] }
+                Self { rg_can_match: all_chunk_true(), children: vec![annotated_child] }
             }
             BoolNode::Predicate(expr) => {
                 let key = Arc::as_ptr(expr) as *const () as usize;
                 let rg_can_match = match leaf_predicates.get(&key) {
-                    Some(pp) => eval_leaf(pp, metadata, schema, rg_indices),
-                    None => vec![true; num],
+                    Some(pp) => scatter(eval_leaf(pp, metadata, schema, rg_indices)),
+                    None => all_chunk_true(),
                 };
                 Self { rg_can_match, children: vec![] }
             }
             BoolNode::DelegationPossible { original_expr, .. } => {
                 let key = Arc::as_ptr(original_expr) as *const () as usize;
                 let rg_can_match = match leaf_predicates.get(&key) {
-                    Some(pp) => eval_leaf(pp, metadata, schema, rg_indices),
-                    None => vec![true; num],
+                    Some(pp) => scatter(eval_leaf(pp, metadata, schema, rg_indices)),
+                    None => all_chunk_true(),
                 };
                 Self { rg_can_match, children: vec![] }
             }
             BoolNode::Collector { .. } => {
-                // Collectors have no column stats — always all-true.
+                // Collectors have no column stats — always all-(in-chunk)-true.
                 native_bridge_common::log_debug!("StatsPruneTree: Collector node → all-true (no column stats available)");
-                Self { rg_can_match: vec![true; num], children: vec![] }
+                Self { rg_can_match: all_chunk_true(), children: vec![] }
             }
         }
     }
