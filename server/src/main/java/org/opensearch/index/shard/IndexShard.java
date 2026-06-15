@@ -2482,7 +2482,6 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         }
         // Format-aware indexer (e.g. composite engine) that exposes a searcher built from its
         // own IndexReaderProvider.Reader. IndexShard never references the concrete engine type.
-        logger.info("[AGG_DELEGATION_TRACE] IndexShard.acquireSearcherSupplier: using format-aware Indexer path for shard [{}]", shardId);
         return indexer.acquireSearcherSupplier(this::wrapSearcher, scope);
     }
 
@@ -2506,11 +2505,6 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             return engineBacked.getEngine().acquireSearcher(source, scope, this::wrapSearcher);
         }
         // Format-aware indexer (e.g. composite engine). IndexShard never references the concrete engine type.
-        logger.info(
-            "[AGG_DELEGATION_TRACE] IndexShard.acquireSearcher: using format-aware Indexer path for source=[{}] shard=[{}]",
-            source,
-            shardId
-        );
         return indexer.acquireSearcher(source, scope, this::wrapSearcher);
     }
 
