@@ -38,6 +38,9 @@ impl RuntimeManager {
         );
 
         register_io_runtime(Some(io_runtime.handle().clone()));
+        // Install the process-global IO handle so SpawnIoStore can dispatch reads
+        // onto the IO runtime from any thread (including bare Java/FFM threads).
+        crate::io::set_global_io_handle(io_runtime.handle().clone());
 
         let io_monitor = RuntimeMonitor::new(&io_runtime.handle());
 
@@ -84,6 +87,11 @@ impl RuntimeManager {
 
     pub fn shutdown(&self) {
         info!("Shutting down RuntimeManager");
+        // Drop the process-global IO handle first so SpawnIoStore stops
+        // dispatching onto the runtime we are about to tear down. Otherwise a
+        // late read spawns onto a dead runtime and joins as cancelled, failing
+        // the query with "object-store read was cancelled".
+        crate::io::clear_global_io_handle();
         self.cpu_executor.join_blocking();
     }
 }

@@ -967,6 +967,7 @@ impl QueryShardExec {
             io_stats: Arc::clone(&self.io_stats),
             row_id_output_index: self.row_id_output_index,
             dynamic_filters: self.dynamic_filters.clone(),
+            advertised_ordering: self.advertised_ordering.clone(),
             shared_queue: OnceLock::new(),
         }
     }
