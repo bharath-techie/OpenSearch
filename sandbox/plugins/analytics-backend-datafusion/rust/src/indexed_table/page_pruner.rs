@@ -284,6 +284,32 @@ pub fn build_pruning_predicate(
     Some(Arc::new(pruning_predicate))
 }
 
+/// Row groups that *can* match `predicate` based on row-group-level footer
+/// statistics (min/max/null-count). Uses Cache-1 footer stats only — no page
+/// index required — so it can run inside `get_metadata` before the page index
+/// is built. Returns the surviving row-group indices (sorted).
+///
+/// Conservative: any column/predicate that can't be evaluated leaves its row
+/// groups as "can match" (never wrongly prunes). Returns `None` if no pruning
+/// predicate could be built (caller should treat as "all row groups survive").
+pub fn surviving_row_groups(
+    predicate: &Arc<dyn PhysicalExpr>,
+    metadata: &ParquetMetaData,
+    schema: &SchemaRef,
+) -> Option<Vec<usize>> {
+    let pp = build_pruning_predicate(predicate, Arc::clone(schema))?;
+    let n = metadata.num_row_groups();
+    let all: Vec<usize> = (0..n).collect();
+    let can_match = eval_leaf(&pp, metadata, schema, &all);
+    Some(
+        can_match
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &m)| if m { Some(i) } else { None })
+            .collect(),
+    )
+}
+
 /// Page statistics aligned to a common grid across all referenced columns.
 /// Each grid cell is a row range that falls within a single page of every
 /// column. min/max for each column are inherited from the page containing

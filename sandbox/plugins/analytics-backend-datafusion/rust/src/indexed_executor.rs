@@ -954,17 +954,50 @@ async unsafe fn execute_indexed_with_context_inner(
                         &segment.metadata,
                         &predicate_column_names,
                     );
+                // RG-level scoping: prune row groups using footer statistics
+                // (no page index needed) BEFORE deciding which RGs' page index to
+                // read. On selective predicates this skips page-index decode for
+                // most row groups. `None` => all RGs (when we can't build a tree).
+                let surviving_rgs: Option<Vec<usize>> = prune_tree_config.as_ref().and_then(
+                    |(tree, leaf_preds, sch)| {
+                        let n = segment.metadata.num_row_groups();
+                        let all: Vec<usize> = (0..n).collect();
+                        let spt = crate::indexed_table::page_pruner::StatsPruneTree::build_from_bool_node(
+                            tree, leaf_preds, &segment.metadata, sch, &all,
+                        );
+                        // root rg_can_match[i] == false => RG i pruned by stats.
+                        let surv: Vec<usize> = spt
+                            .rg_can_match
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, &m)| if m { Some(i) } else { None })
+                            .collect();
+                        // Only bother if pruning actually removed something.
+                        if surv.len() < n { Some(surv) } else { None }
+                    },
+                );
+                let total_rgs = segment.metadata.num_row_groups();
+                let read_rgs = surviving_rgs.as_ref().map(|s| s.len()).unwrap_or(total_rgs);
+                let seg_name = segment.object_path.to_string();
                 let store = Arc::clone(&store);
                 let object_path = segment.object_path.clone();
                 let footer = Arc::clone(&segment.metadata);
                 async move {
-                    crate::indexed_table::page_index_loader::load_scoped_page_index(
+                    let aug = crate::indexed_table::page_index_loader::load_scoped_page_index_rgs(
                         &store,
                         &object_path,
                         &footer,
                         &parquet_cols,
+                        surviving_rgs.as_deref(),
                     )
-                    .await
+                    .await;
+                    if let Some(ref a) = aug {
+                        native_bridge_common::log_debug!(
+                            "scoped-pageidx: {} rgs_read={}/{} cols={} entry_bytes={}",
+                            seg_name, read_rgs, total_rgs, parquet_cols.len(), a.memory_size()
+                        );
+                    }
+                    aug
                 }
             });
             let augmented = join_all(futures).await;

@@ -78,7 +78,8 @@ use once_cell::sync::Lazy;
 use datafusion::parquet::arrow::arrow_reader::statistics::StatisticsConverter;
 use datafusion::parquet::errors::{ParquetError, Result as ParquetResult};
 use datafusion::parquet::file::metadata::{
-    ColumnChunkMetaData, ParquetColumnIndex, ParquetMetaData, ParquetOffsetIndex,
+    ColumnChunkMetaData, OffsetIndexBuilder, ParquetColumnIndex, ParquetMetaData,
+    ParquetOffsetIndex,
 };
 use datafusion::parquet::file::page_index::column_index::ColumnIndexMetaData;
 use datafusion::parquet::file::page_index::index_reader::{
@@ -103,6 +104,10 @@ const DEFAULT_SCOPED_CACHE_LIMIT: usize = 64 * 1024 * 1024;
 struct ScopedKey {
     path: String,
     parquet_cols: Vec<usize>,
+    /// Surviving row groups the page index was built for (sorted/deduped); empty
+    /// = all row groups (no RG scoping). Different predicates prune different RGs,
+    /// so this is part of the key.
+    surviving_rgs: Vec<usize>,
 }
 
 /// One cached entry: the augmented metadata, its decoded size, and a
@@ -422,13 +427,46 @@ pub async fn load_scoped_page_index(
     footer_meta: &Arc<ParquetMetaData>,
     parquet_cols: &[usize],
 ) -> Option<Arc<ParquetMetaData>> {
+    load_scoped_page_index_rgs(store, location, footer_meta, parquet_cols, None).await
+}
+
+/// Like [`load_scoped_page_index`], but additionally scopes the page index to a
+/// set of **surviving row groups** (those not already pruned by row-group-level
+/// footer statistics). Page index is read+decoded only for `surviving_rgs`;
+/// pruned row groups get empty placeholder rows (never scanned, so never
+/// dereferenced). `surviving_rgs == None` means "all row groups" (no RG scoping).
+///
+/// This is the second scoping axis: column scoping bounds *which columns* of the
+/// ColumnIndex we decode; RG scoping bounds *which row groups*. On selective
+/// queries that prune most RGs (e.g. point lookups by indexed key) this avoids
+/// decoding page index for row groups that will be skipped anyway.
+pub async fn load_scoped_page_index_rgs(
+    store: &Arc<dyn ObjectStore>,
+    location: &object_store::path::Path,
+    footer_meta: &Arc<ParquetMetaData>,
+    parquet_cols: &[usize],
+    surviving_rgs: Option<&[usize]>,
+) -> Option<Arc<ParquetMetaData>> {
     if parquet_cols.is_empty() {
         return None;
     }
 
+    // Cache key includes the surviving-RG set: different predicates prune
+    // different RGs, so a scoped entry is only reusable for the same RG set.
+    // `None` (all RGs) is encoded as an empty sentinel distinct from a real set.
+    let rg_key: Vec<usize> = match surviving_rgs {
+        Some(rgs) => {
+            let mut v = rgs.to_vec();
+            v.sort_unstable();
+            v.dedup();
+            v
+        }
+        None => Vec::new(),
+    };
     let key = ScopedKey {
         path: location.as_ref().to_string(),
         parquet_cols: parquet_cols.to_vec(),
+        surviving_rgs: rg_key,
     };
     // Cache hit: return the already-decoded scoped page index, no I/O, no decode.
     if let Ok(mut cache) = SCOPED_CACHE.lock() {
@@ -437,7 +475,9 @@ pub async fn load_scoped_page_index(
         }
     }
 
-    let augmented = build_augmented_metadata(store, location, footer_meta, parquet_cols).await?;
+    let augmented =
+        build_augmented_metadata(store, location, footer_meta, parquet_cols, surviving_rgs)
+            .await?;
 
     // Publish to the byte-bounded LRU (evicts least-recently-used over budget).
     if let Ok(mut cache) = SCOPED_CACHE.lock() {
@@ -451,6 +491,7 @@ async fn build_augmented_metadata(
     location: &object_store::path::Path,
     footer_meta: &Arc<ParquetMetaData>,
     parquet_cols: &[usize],
+    surviving_rgs: Option<&[usize]>,
 ) -> Option<Arc<ParquetMetaData>> {
     let num_rgs = footer_meta.num_row_groups();
     if num_rgs == 0 {
@@ -462,6 +503,22 @@ async fn build_augmented_metadata(
     if parquet_cols.iter().any(|&i| i >= num_cols) {
         return None;
     }
+
+    // Which row groups to actually read+decode the page index for. A pruned RG
+    // (not in `surviving`) gets empty placeholder rows: it is never scanned, so
+    // its ColumnIndex/OffsetIndex are never dereferenced.
+    let read_rg: Vec<bool> = match surviving_rgs {
+        Some(rgs) => {
+            let mut v = vec![false; num_rgs];
+            for &r in rgs {
+                if r < num_rgs {
+                    v[r] = true;
+                }
+            }
+            v
+        }
+        None => vec![true; num_rgs],
+    };
 
     // Phase 1: per RG, gather two things and compute their union byte ranges for
     // a single vectored fetch. Bail to footer-only if any required index range is
@@ -485,15 +542,19 @@ async fn build_augmented_metadata(
     //    a small fraction of the predicate-column ColumnIndex on wide string
     //    schemas).
     struct RgPlan {
+        rg_idx: usize,
         pred_chunks: Vec<ColumnChunkMetaData>,
         all_chunks: Vec<ColumnChunkMetaData>,
         col_range: Range<u64>,
         off_range: Range<u64>,
     }
-    let mut plans: Vec<RgPlan> = Vec::with_capacity(num_rgs);
-    // Flat list of ranges for a single vectored fetch: [rg0_col, rg0_off, rg1_col, ...].
-    let mut fetch_ranges: Vec<Range<u64>> = Vec::with_capacity(num_rgs * 2);
+    let mut plans: Vec<RgPlan> = Vec::new();
+    // Flat list of ranges for a single vectored fetch, two per SURVIVING RG.
+    let mut fetch_ranges: Vec<Range<u64>> = Vec::new();
     for rg_idx in 0..num_rgs {
+        if !read_rg[rg_idx] {
+            continue; // pruned RG: skip page-index read entirely
+        }
         let rg = footer_meta.row_group(rg_idx);
         let pred_chunks: Vec<ColumnChunkMetaData> =
             parquet_cols.iter().map(|&i| rg.column(i).clone()).collect();
@@ -507,6 +568,7 @@ async fn build_augmented_metadata(
         fetch_ranges.push(col_range.clone());
         fetch_ranges.push(off_range.clone());
         plans.push(RgPlan {
+            rg_idx,
             pred_chunks,
             all_chunks,
             col_range,
@@ -514,21 +576,31 @@ async fn build_augmented_metadata(
         });
     }
 
-    // Phase 2: one vectored fetch of all index byte ranges (on the IO runtime
-    // via the SpawnIoStore-wrapped object store).
+    // If nothing survives, there is no page index to build — caller keeps footer.
+    if plans.is_empty() {
+        return None;
+    }
+
+    // Phase 2: one vectored fetch of the surviving RGs' index byte ranges.
     let buffers = store.get_ranges(location, &fetch_ranges).await.ok()?;
     if buffers.len() != fetch_ranges.len() {
         return None;
     }
 
-    // Phase 3: per RG, decode the predicate columns and scatter into full-width
-    // vectors.
-    let mut column_index: ParquetColumnIndex = Vec::with_capacity(num_rgs);
-    let mut offset_index: ParquetOffsetIndex = Vec::with_capacity(num_rgs);
+    // Phase 3: decode surviving RGs; scatter into full-width per-RG vectors.
+    // Pre-fill ALL row groups with placeholders, then overwrite the surviving ones.
+    // Pruned RGs keep placeholder rows (NONE ColumnIndex + empty OffsetIndex) —
+    // they are never scanned, so these are never dereferenced.
+    let mut column_index: ParquetColumnIndex = (0..num_rgs)
+        .map(|_| (0..num_cols).map(|_| ColumnIndexMetaData::NONE).collect())
+        .collect();
+    let mut offset_index: ParquetOffsetIndex = (0..num_rgs)
+        .map(|_| (0..num_cols).map(|_| OffsetIndexBuilder::new().build()).collect())
+        .collect();
 
-    for (rg_idx, plan) in plans.iter().enumerate() {
-        let col_buf = buffers[rg_idx * 2].clone();
-        let off_buf = buffers[rg_idx * 2 + 1].clone();
+    for (i, plan) in plans.iter().enumerate() {
+        let col_buf = buffers[i * 2].clone();
+        let off_buf = buffers[i * 2 + 1].clone();
 
         let col_reader = BufferChunkReader {
             base: plan.col_range.start,
@@ -540,13 +612,10 @@ async fn build_augmented_metadata(
         };
 
         // `read_columns_indexes` / `read_offset_indexes` are deprecated in
-        // arrow-rs (slated for removal) but are the only PUBLIC API that decodes
-        // a *column subset*; the per-column primitives are `pub(crate)`. They
-        // return a Vec aligned to the chunk slice we pass.
-        //
-        // ColumnIndex: predicate columns only (the part we scope to bound the heap).
-        // OffsetIndex: every column (needed by the reader for projected columns —
-        // see the Phase 1 note), so decode against the full chunk list.
+        // arrow-rs but are the only PUBLIC API that decodes a *column subset*
+        // (the per-column primitives are `pub(crate)`, and the replacement
+        // `ParquetMetaDataReader`/`PageIndexPolicy` is all-columns-or-nothing).
+        // They return a Vec aligned to the chunk slice we pass.
         #[allow(deprecated)]
         let decoded_cols = read_columns_indexes(&col_reader, &plan.pred_chunks).ok()??;
         #[allow(deprecated)]
@@ -555,18 +624,13 @@ async fn build_augmented_metadata(
             return None;
         }
 
-        // ColumnIndex row: NONE placeholders everywhere, real entries at predicate
-        // positions. `StatisticsConverter` only ever dereferences the predicate
-        // positions, so placeholders keep absolute indexing valid and are cheap.
-        let mut col_row: Vec<ColumnIndexMetaData> =
-            (0..num_cols).map(|_| ColumnIndexMetaData::NONE).collect();
+        // ColumnIndex: real entries at predicate positions for this surviving RG.
+        let col_row = &mut column_index[plan.rg_idx];
         for (k, &parquet_col) in parquet_cols.iter().enumerate() {
             col_row[parquet_col] = decoded_cols[k].clone();
         }
-        column_index.push(col_row);
-        // OffsetIndex row: real entries for every column, already aligned to
-        // absolute column order by `all_chunks`.
-        offset_index.push(decoded_offs);
+        // OffsetIndex: real entries for every column of this surviving RG.
+        offset_index[plan.rg_idx] = decoded_offs;
     }
 
     // Phase 4: rebuild metadata with the sparse page index grafted on.
@@ -823,6 +887,96 @@ mod tests {
         assert_eq!(
             scoped_vals, full_vals,
             "scoped read must match the full-index read exactly"
+        );
+    }
+
+    /// 4-row-group fixture: `id` 0..40 in 4 RGs of 10 rows each (page size 5 →
+    /// 2 pages/RG). Returns (bytes, schema).
+    fn four_rg_parquet() -> (Bytes, SchemaRef) {
+        use arrow::array::Int32Array;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let ids: Vec<i32> = (0..40).collect();
+        let vs: Vec<i32> = (0..40).map(|x| x * 2).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(ids)), Arc::new(Int32Array::from(vs))],
+        )
+        .unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(10) // 4 row groups
+            .set_data_page_row_count_limit(5)
+            .set_write_batch_size(5)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .build();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut w = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        (Bytes::from(buf), schema)
+    }
+
+    /// RG-scoping: when only some row groups survive (e.g. RGs 0 and 2), the
+    /// augmented metadata must (a) carry a real page index for the surviving RGs
+    /// that prunes identically to the full index, and (b) leave pruned RGs as
+    /// placeholders (empty OffsetIndex, NONE ColumnIndex) — they're never scanned.
+    #[tokio::test]
+    async fn rg_scoping_builds_only_surviving_row_groups() {
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = four_rg_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        assert_eq!(fo.num_row_groups(), 4, "fixture must have 4 row groups");
+
+        let parquet_cols = resolve_predicate_parquet_columns(&schema, &fo, &["id".to_string()]);
+        assert_eq!(parquet_cols, vec![0]);
+
+        // Survive only RG 0 and RG 2.
+        let surviving = vec![0usize, 2usize];
+        let aug = load_scoped_page_index_rgs(&store, &loc, &fo, &parquet_cols, Some(&surviving))
+            .await
+            .expect("rg-scoped augmentation must succeed");
+
+        let ci = aug.column_index().expect("has column index");
+        let oi = aug.offset_index().expect("has offset index");
+        assert_eq!(ci.len(), 4, "page index spans all 4 RGs (placeholders for pruned)");
+
+        // Surviving RGs (0, 2): real ColumnIndex for id, real OffsetIndex.
+        for &rg in &surviving {
+            assert!(
+                !matches!(ci[rg][0], ColumnIndexMetaData::NONE),
+                "surviving RG {rg} must have real ColumnIndex for predicate col"
+            );
+            assert!(
+                !oi[rg][0].page_locations.is_empty(),
+                "surviving RG {rg} must have real OffsetIndex"
+            );
+        }
+        // Pruned RGs (1, 3): placeholder NONE ColumnIndex + empty OffsetIndex.
+        for &rg in &[1usize, 3usize] {
+            assert!(
+                matches!(ci[rg][0], ColumnIndexMetaData::NONE),
+                "pruned RG {rg} ColumnIndex must be NONE placeholder (not read)"
+            );
+            assert!(
+                oi[rg][0].page_locations.is_empty(),
+                "pruned RG {rg} OffsetIndex must be empty placeholder (not read)"
+            );
+        }
+
+        // Pruning on a surviving RG must match the full index for that RG.
+        let full = full_index(&bytes);
+        let pp = build_pruning_predicate(&pred("id", 0, Operator::GtEq, 25), schema.clone()).unwrap();
+        let scoped_pruner = PagePruner::new(&schema, Arc::clone(&aug));
+        let full_pruner = PagePruner::new(&schema, full);
+        // RG 2 holds ids 20..30; `id >= 25` keeps the second page (25..30).
+        let s = scoped_pruner.prune_rg(&pp, 2, None);
+        let f = full_pruner.prune_rg(&pp, 2, None);
+        assert_eq!(
+            s.as_ref().map(kept), f.as_ref().map(kept),
+            "scoped RG-2 pruning must match full-index RG-2 pruning"
         );
     }
 

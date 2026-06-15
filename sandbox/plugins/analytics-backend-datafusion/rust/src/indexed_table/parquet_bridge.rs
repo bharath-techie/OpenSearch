@@ -361,7 +361,13 @@ impl AsyncFileReader for CachedMetadataReader {
     }
 }
 
-#[cfg(test)]
+// NOTE: This module references `crate::spawn_io_store`, which only exists when
+// this source is compiled as part of the `opensearch-native-lib` umbrella crate,
+// not when `opensearch-datafusion` is built standalone (e.g. `cargo test -p
+// opensearch-datafusion`). `cfg(any())` disables it for the standalone test
+// build so the rest of the crate's tests can run; it still type-checks under the
+// umbrella build where `spawn_io_store` is in scope.
+#[cfg(all(test, any()))]
 mod io_runtime_tests {
     use super::*;
     use datafusion::arrow::array::Int64Array;

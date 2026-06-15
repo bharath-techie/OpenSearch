@@ -122,11 +122,14 @@ impl PhysicalOptimizerRule for ScopedPageIndexOptimizer {
                 return Ok(Transformed::no(node));
             }
 
-            // Build the scoped factory and reinstall the source.
+            // Build the scoped factory and reinstall the source. Pass the
+            // predicate so the reader can prune row groups by footer stats and
+            // build the page index for surviving RGs only (RG scoping).
             let factory = Arc::new(ScopedPageIndexReaderFactory::new(
                 Arc::clone(&self.store),
                 Arc::clone(&self.metadata_cache),
                 names,
+                Some(Arc::clone(predicate)),
                 Arc::clone(file_schema),
             ));
             let new_source = parquet.clone().with_parquet_file_reader_factory(factory);
@@ -361,6 +364,7 @@ mod tests {
             Arc::clone(&store),
             Arc::clone(&cache),
             vec!["a".to_string()],
+            None,
             sch.clone(),
         ));
         let parquet = parquet_for(&sch)

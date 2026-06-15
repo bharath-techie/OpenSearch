@@ -63,7 +63,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use prost::bytes::Bytes;
 
 use crate::indexed_table::page_index_loader::{
-    load_scoped_page_index, resolve_predicate_parquet_columns,
+    load_scoped_page_index_rgs, resolve_predicate_parquet_columns,
 };
 use crate::indexed_table::parquet_bridge::load_parquet_metadata;
 
@@ -84,6 +84,10 @@ pub struct ScopedPageIndexReaderFactory {
     /// scoping" — `get_metadata` returns footer-only and the opener loads the
     /// page index on demand as usual.
     predicate_column_names: Arc<Vec<String>>,
+    /// The physical predicate (if any), used to prune row groups by footer
+    /// statistics in `get_metadata` so the page index is built only for
+    /// surviving row groups. `None` → no RG scoping (all RGs).
+    predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     /// File schema (no partition columns), for per-file column resolution.
     file_schema: SchemaRef,
 }
@@ -93,12 +97,14 @@ impl ScopedPageIndexReaderFactory {
         store: Arc<dyn ObjectStore>,
         metadata_cache: Arc<dyn FileMetadataCache>,
         predicate_column_names: Vec<String>,
+        predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         file_schema: SchemaRef,
     ) -> Self {
         Self {
             store,
             metadata_cache,
             predicate_column_names: Arc::new(predicate_column_names),
+            predicate,
             file_schema,
         }
     }
@@ -118,6 +124,7 @@ impl ParquetFileReaderFactory for ScopedPageIndexReaderFactory {
             store: Arc::clone(&self.store),
             metadata_cache: Arc::clone(&self.metadata_cache),
             predicate_column_names: Arc::clone(&self.predicate_column_names),
+            predicate: self.predicate.clone(),
             file_schema: Arc::clone(&self.file_schema),
             location: file.object_meta.location.clone(),
             metrics: file_metrics,
@@ -129,6 +136,7 @@ struct ScopedPageIndexReader {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
     predicate_column_names: Arc<Vec<String>>,
+    predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     file_schema: SchemaRef,
     location: object_store::path::Path,
     metrics: ParquetFileMetrics,
@@ -179,6 +187,7 @@ impl AsyncFileReader for ScopedPageIndexReader {
         let store = Arc::clone(&self.store);
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let predicate_names = Arc::clone(&self.predicate_column_names);
+        let predicate = self.predicate.clone();
         let file_schema = Arc::clone(&self.file_schema);
         let location = self.location.clone();
         async move {
@@ -196,17 +205,41 @@ impl AsyncFileReader for ScopedPageIndexReader {
                     })?;
 
             // 2. Resolve predicate column names → this file's parquet leaf indices
-            //    (per-file, so schema evolution across files is handled), then
-            //    augment with a predicate-scoped page index. On empty column set
-            //    or any failure, `load_scoped_page_index` returns None and we fall
-            //    back to footer-only; the opener then loads the page index on
-            //    demand exactly as it does today.
+            //    (per-file, so schema evolution across files is handled).
             if !predicate_names.is_empty() {
                 let parquet_cols =
                     resolve_predicate_parquet_columns(&file_schema, &footer, &predicate_names);
-                if let Some(augmented) =
-                    load_scoped_page_index(&store, &location, &footer, &parquet_cols).await
+
+                // 2a. RG scoping: prune row groups using footer statistics (no
+                //     page index needed — same RG-stat prune DataFusion does at
+                //     `prune_by_statistics`, but run here so we only decode the
+                //     page index for surviving row groups). `None` → all RGs.
+                //     We pass `None` to the loader when nothing prunes, so the
+                //     cache key stays the stable (file, cols) form for those.
+                let surviving = predicate.as_ref().and_then(|pred| {
+                    let n = footer.num_row_groups();
+                    crate::indexed_table::page_pruner::surviving_row_groups(
+                        pred, &footer, &file_schema,
+                    )
+                    .filter(|s| s.len() < n)
+                });
+
+                if let Some(augmented) = load_scoped_page_index_rgs(
+                    &store,
+                    &location,
+                    &footer,
+                    &parquet_cols,
+                    surviving.as_deref(),
+                )
+                .await
                 {
+                    if let Some(s) = surviving.as_ref() {
+                        native_bridge_common::log_debug!(
+                            "scoped-pageidx[listing]: {} rgs_read={}/{} cols={} entry_bytes={}",
+                            location, s.len(), footer.num_row_groups(),
+                            parquet_cols.len(), augmented.memory_size()
+                        );
+                    }
                     return Ok(augmented);
                 }
             }
@@ -290,6 +323,7 @@ mod tests {
             Arc::clone(&store),
             cache,
             vec!["price".to_string()],
+            None,
             schema,
         );
 
@@ -365,6 +399,7 @@ mod tests {
             Arc::clone(&store),
             cache,
             vec!["price".to_string()],
+            None,
             schema.clone(),
         ));
 
@@ -431,6 +466,7 @@ mod tests {
             Arc::clone(&store),
             cache,
             vec![], // no predicate columns
+            None,
             schema,
         );
         let pf = PartitionedFile::new(loc.as_ref().to_string(), {
