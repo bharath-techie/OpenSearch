@@ -159,6 +159,48 @@ ColumnIndex term to `surviving_rgs`, keep the OffsetIndex term over all RGs.
 
 ---
 
+## 3b. OffsetIndex COLUMN-scoping (better than RG-scoping it) — DRAFTED & safe
+
+User question: "do we need the OffsetIndex for ALL columns, or just projection +
+predicate?" Answer from the source: **just `predicate ∪ projection ∪ {0}`.** The
+OffsetIndex is dereferenced in exactly three places (DF54 / parquet58):
+
+| Consumer | Columns | Source |
+|---|---|---|
+| Read (`InMemoryRowGroup::fetch_ranges`) | **projected** only (`projection.leaf_included(idx)`) | `in_memory_row_group.rs:80-81` |
+| Prune (`PagesPruningStatistics::try_new`) | the **predicate** column only (`offset_index[rg][parquet_column_index]`) | `page_filter.rs:512-519` |
+| Metric (`total_pages_in_group`) | **column 0** (`offset_index[rg].first()`) — feeds only the page-skip COUNTER, not the produced RowSelection | `page_filter.rs:255-260, 359-361` |
+
+So: real OffsetIndex needed for `predicate ∪ projection`; add **column 0** to keep
+the page-skip metric identical to stock DF (stock DF also keys it off col 0). Any
+other column gets an empty placeholder — never projected, never predicate, never
+0, so never dereferenced. This is column-scoping, orthogonal to RG-scoping, and is
+the bigger win on the 402-col textbench schema (project a handful → tiny offset set).
+
+**Implemented (DRAFT, not wired):**
+- `ScopedKey` gains `offset_cols` (empty = all columns / Step 1).
+- `load_scoped_page_index_cols(.., offset_cols)`: the fn defensively unions in
+  predicate cols + col 0, clamps/sorts/dedups; if the union covers all columns it
+  COLLAPSES to the empty "all columns" key (shares the Step-1 entry).
+- `build_scoped_page_index` decodes the OffsetIndex only for `off_cols`, scatters
+  to absolute positions, empty placeholders elsewhere; size estimate follows.
+- 4 unit tests: offset real only for the scoped set; projected non-predicate read
+  works; bytes reduced; full-coverage collapse.
+
+**Wiring (TODO, same projection-availability split as RG-scoping):**
+- Listing path: projection is known in the optimizer (`config.projected_schema()` /
+  FileScanConfig) → resolve to parquet leaf indices, pass to
+  `load_scoped_page_index_cols`. Easy.
+- Indexed path: projection (`read_projection = output ∪ predicate_columns`) is
+  known in `scan()`, AFTER the `indexed_executor` augmentation site. Thread it to
+  the augmentation site, OR keep the indexed path on all-columns OffsetIndex (call
+  `load_scoped_page_index`) until threaded. Cross-path sharing requires BOTH paths
+  to pass the SAME `offset_cols` for the same query — so wire both together, or
+  accept divergent keys (separate entries) until both are wired.
+
+This combines with RG-scoping: a future `load_scoped_page_index_scoped(parquet_cols,
+surviving_rgs, offset_cols)` would do both at once (CI RG-scoped, OI col-scoped).
+
 ## 4. Step 3 (RG-scope the OffsetIndex) — likely NOT safe; decision pending
 
 To RG-scope the OffsetIndex we'd need every RG with an empty OffsetIndex to be

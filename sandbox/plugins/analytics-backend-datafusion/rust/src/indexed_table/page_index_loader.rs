@@ -137,6 +137,13 @@ struct ScopedKey {
     path: String,
     parquet_cols: Vec<usize>,
     surviving_rgs: Vec<usize>,
+    /// The (normalized) set of columns the `OffsetIndex` was built for. Empty =
+    /// all columns (Step 1). Non-empty = `predicate ∪ projection ∪ {0}` (Step 2
+    /// column-scoping). Part of the key because an OffsetIndex built for a
+    /// different column set is a different artifact; both scan paths derive it
+    /// deterministically (predicate + projection are known per query), so the key
+    /// stays identical across paths for the same logical request.
+    offset_cols: Vec<usize>,
 }
 
 /// One cached entry: the decoded page-index pair (full-width over all row groups
@@ -353,7 +360,44 @@ pub async fn load_scoped_page_index(
     footer_meta: &Arc<ParquetMetaData>,
     parquet_cols: &[usize],
 ) -> Option<Arc<ParquetMetaData>> {
-    load_scoped_page_index_inner(store, location, footer_meta, parquet_cols, None).await
+    load_scoped_page_index_inner(store, location, footer_meta, parquet_cols, None, None).await
+}
+
+/// Like [`load_scoped_page_index`], but the `OffsetIndex` is decoded only for the
+/// columns in `offset_cols` (others get an empty placeholder), instead of all
+/// columns.
+///
+/// # Why this is safe (and which columns must be included)
+///
+/// The `OffsetIndex` is dereferenced in exactly three places in DataFusion 54 /
+/// parquet 58:
+///   - **Read** (`InMemoryRowGroup::fetch_ranges`): only for **projected** columns
+///     (`projection.leaf_included(idx)`), and only when a `RowSelection` is active.
+///   - **Prune** (`page_filter::PagesPruningStatistics`): only for the **predicate**
+///     column being pruned (`offset_index[rg][parquet_column_index]`).
+///   - **Metric** (`page_filter` `total_pages_in_group`): reads **column 0**'s page
+///     count to seed the `page_index_rows_pruned` counter. This does NOT affect the
+///     produced `RowSelection` (correctness), only the skipped-pages metric.
+///
+/// So a real `OffsetIndex` is required for `predicate ∪ projection`; including
+/// **column 0** additionally keeps the page-skip metric identical to stock
+/// DataFusion. This fn always unions in the predicate columns and column 0
+/// defensively, so callers only need to pass the projection (∪ predicate). Any
+/// column NOT in the final set gets an empty placeholder — safe because it is
+/// never projected, never the predicate, and never column 0, so it is never
+/// dereferenced.
+///
+/// `offset_cols` joins the cache key. Callers MUST derive it deterministically
+/// from `(predicate, projection)` so both scan paths agree and share entries.
+pub async fn load_scoped_page_index_cols(
+    store: &Arc<dyn ObjectStore>,
+    location: &object_store::path::Path,
+    footer_meta: &Arc<ParquetMetaData>,
+    parquet_cols: &[usize],
+    offset_cols: &[usize],
+) -> Option<Arc<ParquetMetaData>> {
+    load_scoped_page_index_inner(store, location, footer_meta, parquet_cols, None, Some(offset_cols))
+        .await
 }
 
 /// Like [`load_scoped_page_index`], but the predicate-column `ColumnIndex` is
@@ -381,8 +425,15 @@ pub async fn load_scoped_page_index_rgs(
     parquet_cols: &[usize],
     surviving_rgs: &[usize],
 ) -> Option<Arc<ParquetMetaData>> {
-    load_scoped_page_index_inner(store, location, footer_meta, parquet_cols, Some(surviving_rgs))
-        .await
+    load_scoped_page_index_inner(
+        store,
+        location,
+        footer_meta,
+        parquet_cols,
+        Some(surviving_rgs),
+        None,
+    )
+    .await
 }
 
 async fn load_scoped_page_index_inner(
@@ -391,10 +442,13 @@ async fn load_scoped_page_index_inner(
     footer_meta: &Arc<ParquetMetaData>,
     parquet_cols: &[usize],
     surviving_rgs: Option<&[usize]>,
+    offset_cols: Option<&[usize]>,
 ) -> Option<Arc<ParquetMetaData>> {
     if parquet_cols.is_empty() {
         return None;
     }
+    let num_cols = footer_meta.file_metadata().schema_descr().num_columns();
+
     // Normalize the surviving-RG set into the key (sorted/deduped). `None` (all
     // RGs, Step 1) is encoded as an empty vec, distinct from a real subset.
     let key_rgs: Vec<usize> = match surviving_rgs {
@@ -406,10 +460,39 @@ async fn load_scoped_page_index_inner(
         }
         None => Vec::new(),
     };
+
+    // Normalize the OffsetIndex column set. `None` (all columns, Step 1) → empty
+    // sentinel. `Some(cols)` → cols ∪ predicate-cols ∪ {0}, clamped to in-range
+    // and sorted/deduped (the defensive union guarantees prune + metric safety
+    // regardless of what the caller passed). If the union covers every column we
+    // collapse to the empty "all columns" sentinel so it shares the Step-1 entry.
+    let key_offset_cols: Vec<usize> = match offset_cols {
+        None => Vec::new(),
+        Some(cols) => {
+            let mut set: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+            set.insert(0); // metric reads column 0
+            for &c in parquet_cols {
+                set.insert(c);
+            } // prune reads predicate cols
+            for &c in cols {
+                if c < num_cols {
+                    set.insert(c);
+                }
+            } // read needs projected cols
+            let v: Vec<usize> = set.into_iter().filter(|&c| c < num_cols).collect();
+            if v.len() == num_cols {
+                Vec::new() // full coverage → reuse the all-columns artifact
+            } else {
+                v
+            }
+        }
+    };
+
     let key = ScopedKey {
         path: location.as_ref().to_string(),
         parquet_cols: parquet_cols.to_vec(),
         surviving_rgs: key_rgs,
+        offset_cols: key_offset_cols.clone(),
     };
 
     // Cache hit: graft the cached pair onto the caller's footer. No I/O, no
@@ -420,9 +503,20 @@ async fn load_scoped_page_index_inner(
         }
     }
 
+    // Pass the normalized offset-col set (empty = all columns) to the builder.
+    let offset_cols_for_build: Option<&[usize]> =
+        if key_offset_cols.is_empty() { None } else { Some(&key_offset_cols) };
+
     // Miss: range-read + decode the scoped page index.
-    let (column_index, offset_index, size) =
-        build_scoped_page_index(store, location, footer_meta, parquet_cols, surviving_rgs).await?;
+    let (column_index, offset_index, size) = build_scoped_page_index(
+        store,
+        location,
+        footer_meta,
+        parquet_cols,
+        surviving_rgs,
+        offset_cols_for_build,
+    )
+    .await?;
 
     // Graft a copy for the caller; store the originals in the cache.
     let grafted = graft(footer_meta, column_index.clone(), offset_index.clone());
@@ -455,8 +549,11 @@ fn graft(
 /// Range-read and decode the page index scoped to `parquet_cols`, returning the
 /// full-width `(ColumnIndex, OffsetIndex)` pair plus a size estimate.
 ///
-/// - `OffsetIndex`: real for every column of EVERY row group (always — required
-///   for correctness at scan time, see [`load_scoped_page_index_rgs`]).
+/// - `OffsetIndex`: real for the columns in `offset_cols` (the caller-normalized
+///   `predicate ∪ projection ∪ {0}`), empty placeholder elsewhere. `None` → all
+///   columns (Step 1 / no projection known). Built for EVERY row group (an
+///   OffsetIndex omitted on a scanned RG would break reads — DataFusion chooses
+///   the scanned set itself, after our load).
 /// - `ColumnIndex`: real at the predicate-column positions, `NONE` elsewhere.
 ///   When `surviving_rgs` is `Some(set)`, the (heavy) predicate-column ColumnIndex
 ///   is decoded ONLY for row groups in `set`; other RGs get `NONE` (Step-2
@@ -469,6 +566,7 @@ async fn build_scoped_page_index(
     footer_meta: &Arc<ParquetMetaData>,
     parquet_cols: &[usize],
     surviving_rgs: Option<&[usize]>,
+    offset_cols: Option<&[usize]>,
 ) -> Option<(ParquetColumnIndex, ParquetOffsetIndex, usize)> {
     let num_rgs = footer_meta.num_row_groups();
     if num_rgs == 0 {
@@ -483,7 +581,7 @@ async fn build_scoped_page_index(
     // Per-RG mask: build the predicate-column ColumnIndex for this RG?
     // `None` → all RGs (Step 1). `Some(set)` → only RGs in the set (Step 2);
     // out-of-range entries are ignored. The OffsetIndex is built for all RGs
-    // regardless.
+    // regardless (see fn docs).
     let build_ci: Vec<bool> = match surviving_rgs {
         None => vec![true; num_rgs],
         Some(set) => {
@@ -497,30 +595,44 @@ async fn build_scoped_page_index(
         }
     };
 
-    // Phase 1: per RG, gather ALL columns' OffsetIndex chunks (always) and — for
-    // RGs we're building the ColumnIndex for — the predicate columns' ColumnIndex
+    // Which columns to decode the OffsetIndex for. `None` → all columns. The
+    // caller already normalized `offset_cols` to include predicate cols + col 0,
+    // so this is just clamp/sort/dedup. Same indices for every RG (the column set
+    // is per-file).
+    let off_cols: Vec<usize> = match offset_cols {
+        None => (0..num_cols).collect(),
+        Some(cols) => {
+            let mut v: Vec<usize> = cols.iter().copied().filter(|&c| c < num_cols).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        }
+    };
+    if off_cols.is_empty() {
+        return None;
+    }
+
+    // Phase 1: per RG, gather the OffsetIndex chunks for `off_cols` and — for RGs
+    // we're building the ColumnIndex for — the predicate columns' ColumnIndex
     // chunks. Compute union byte ranges for a single vectored fetch. Bail to
     // footer-only if any required index range is missing.
     struct RgPlan {
         rg_idx: usize,
         build_ci: bool,
         pred_chunks: Vec<ColumnChunkMetaData>,
-        all_chunks: Vec<ColumnChunkMetaData>,
+        off_chunks: Vec<ColumnChunkMetaData>,
         col_range: Option<Range<u64>>,
         off_range: Range<u64>,
     }
     let mut plans: Vec<RgPlan> = Vec::with_capacity(num_rgs);
-    // Flat fetch list; per RG we always push the offset range, and push the
-    // column range only when building the CI for that RG. We record each plan's
-    // buffer offsets explicitly so the decode phase can find them.
     let mut fetch_ranges: Vec<Range<u64>> = Vec::with_capacity(num_rgs * 2);
     // (off_buf_idx, Option<col_buf_idx>) per plan.
     let mut buf_idx: Vec<(usize, Option<usize>)> = Vec::with_capacity(num_rgs);
     for rg_idx in 0..num_rgs {
         let rg = footer_meta.row_group(rg_idx);
-        let all_chunks: Vec<ColumnChunkMetaData> =
-            (0..num_cols).map(|i| rg.column(i).clone()).collect();
-        let off_range = offset_index_union(&all_chunks)?;
+        let off_chunks: Vec<ColumnChunkMetaData> =
+            off_cols.iter().map(|&i| rg.column(i).clone()).collect();
+        let off_range = offset_index_union(&off_chunks)?;
 
         let off_i = fetch_ranges.len();
         fetch_ranges.push(off_range.clone());
@@ -541,7 +653,7 @@ async fn build_scoped_page_index(
             rg_idx,
             build_ci: build_ci[rg_idx],
             pred_chunks,
-            all_chunks,
+            off_chunks,
             col_range,
             off_range,
         });
@@ -557,7 +669,9 @@ async fn build_scoped_page_index(
     }
 
     // Phase 3: decode and scatter into full-width per-RG vectors. Pre-fill with
-    // placeholders so absolute `index[rg][col]` indexing is always valid.
+    // placeholders so absolute `index[rg][col]` indexing is always valid; only the
+    // columns in `off_cols` (OffsetIndex) / predicate cols (ColumnIndex) are
+    // overwritten with real entries.
     let mut column_index: ParquetColumnIndex = (0..num_rgs)
         .map(|_| (0..num_cols).map(|_| ColumnIndexMetaData::NONE).collect())
         .collect();
@@ -570,17 +684,21 @@ async fn build_scoped_page_index(
         .collect();
 
     for (plan, &(off_i, col_i)) in plans.iter().zip(buf_idx.iter()) {
-        // OffsetIndex — always, for every column of this RG.
+        // OffsetIndex — for the scoped columns of this RG, scattered to absolute
+        // column positions.
         let off_reader = BufferChunkReader {
             base: plan.off_range.start,
             bytes: buffers[off_i].clone(),
         };
         #[allow(deprecated)]
-        let decoded_offs = read_offset_indexes(&off_reader, &plan.all_chunks).ok()??;
-        if decoded_offs.len() != num_cols {
+        let decoded_offs = read_offset_indexes(&off_reader, &plan.off_chunks).ok()??;
+        if decoded_offs.len() != off_cols.len() {
             return None;
         }
-        offset_index[plan.rg_idx] = decoded_offs;
+        let off_row = &mut offset_index[plan.rg_idx];
+        for (k, &col) in off_cols.iter().enumerate() {
+            off_row[col] = decoded_offs[k].clone();
+        }
 
         // ColumnIndex — only for RGs we're building it for.
         if plan.build_ci {
@@ -605,7 +723,7 @@ async fn build_scoped_page_index(
         }
     }
 
-    let size = scoped_page_index_size(footer_meta, parquet_cols, num_cols, surviving_rgs);
+    let size = scoped_page_index_size(footer_meta, parquet_cols, surviving_rgs, &off_cols);
     Some((column_index, offset_index, size))
 }
 
@@ -734,10 +852,11 @@ pub fn surviving_row_groups(
 fn scoped_page_index_size(
     footer_meta: &ParquetMetaData,
     parquet_cols: &[usize],
-    num_cols: usize,
     surviving_rgs: Option<&[usize]>,
+    off_cols: &[usize],
 ) -> usize {
-    // ColumnIndex is only built for surviving RGs (Step 2); OffsetIndex for all.
+    // ColumnIndex is only built for surviving RGs (Step 2); OffsetIndex only for
+    // off_cols (the predicate ∪ projection ∪ {0} set).
     let build_ci = |rg_idx: usize| -> bool {
         match surviving_rgs {
             None => true,
@@ -751,7 +870,7 @@ fn scoped_page_index_size(
                 total += rg.column(pc).column_index_length().unwrap_or(0).max(0) as usize;
             }
         }
-        for c in 0..num_cols {
+        for &c in off_cols {
             total += rg.column(c).offset_index_length().unwrap_or(0).max(0) as usize;
         }
     }
@@ -1420,5 +1539,154 @@ mod tests {
         assert_eq!((scoped_cache_stats().misses, scoped_cache_stats().entries), (2, 2));
 
         clear_scoped_cache_for_test();
+    }
+
+    // ── Step 2: column-scoping the OffsetIndex ────────────────────────────
+
+    /// Column-scoped load: OffsetIndex real ONLY for the scoped columns (the
+    /// caller's set ∪ predicate ∪ {0}); empty placeholder for the rest. ColumnIndex
+    /// still predicate-scoped.
+    #[tokio::test]
+    async fn col_scoped_offset_index_only_for_requested_columns() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        // 4 columns: predicate on n1, project s0 (leaf 2). Offset set should be
+        // {0 (metric), 1 (predicate), 2 (projection)} — NOT column 3 (s1).
+        let (bytes, schema) = wide4_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let pred_cols = resolve_predicate_parquet_columns(&schema, &fo, &["n1".to_string()]);
+        assert_eq!(pred_cols, vec![1]);
+
+        // Caller passes projection = {2}; fn unions in predicate {1} + {0}.
+        let aug = load_scoped_page_index_cols(&store, &loc, &fo, &pred_cols, &[2])
+            .await
+            .expect("col-scoped load must succeed");
+        let oi = aug.offset_index().expect("has offset index");
+
+        for &c in &[0usize, 1, 2] {
+            assert!(
+                !oi[0][c].page_locations().is_empty(),
+                "col {c} (predicate/projection/metric) must have a real OffsetIndex"
+            );
+        }
+        assert!(
+            oi[0][3].page_locations().is_empty(),
+            "col 3 (not projected/predicate/0) OffsetIndex must be an empty placeholder"
+        );
+    }
+
+    /// A projected non-predicate column reads correctly through the col-scoped
+    /// metadata (its OffsetIndex is real because it's in the projection set) — the
+    /// read-path safety invariant.
+    #[tokio::test]
+    async fn col_scoped_reads_projected_non_predicate_column() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = two_col_parquet(); // price (0), qty (1)
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let pred_cols = resolve_predicate_parquet_columns(&schema, &fo, &["price".to_string()]);
+
+        // Predicate on price (0); project qty (1). Offset set = {0,1}.
+        let aug = load_scoped_page_index_cols(&store, &loc, &fo, &pred_cols, &[1])
+            .await
+            .unwrap();
+
+        let selection = RowSelection::from(vec![RowSelector::skip(16), RowSelector::select(16)]);
+        let scoped_vals = read_selected_column(&bytes, &aug, 1, selection.clone())
+            .expect("projected non-predicate read must succeed with col-scoped metadata");
+        let full = full_index(&bytes);
+        let full_vals = read_selected_column(&bytes, &full, 1, selection).unwrap();
+        let expected: Vec<i32> = (116..132).collect();
+        assert_eq!(scoped_vals, expected);
+        assert_eq!(scoped_vals, full_vals);
+    }
+
+    /// Column-scoping the OffsetIndex shrinks the cached bytes vs all-columns.
+    #[tokio::test]
+    async fn col_scoping_reduces_cached_bytes() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = wide4_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let pred_cols = resolve_predicate_parquet_columns(&schema, &fo, &["n1".to_string()]);
+
+        // All-columns OffsetIndex (Step 1).
+        let _ = load_scoped_page_index(&store, &loc, &fo, &pred_cols).await.unwrap();
+        let all_cols_bytes = scoped_cache_bytes_for_test();
+        clear_scoped_cache_for_test();
+
+        // Col-scoped to {0,1,2} (drops col 3's OffsetIndex).
+        let _ = load_scoped_page_index_cols(&store, &loc, &fo, &pred_cols, &[2]).await.unwrap();
+        let scoped_bytes = scoped_cache_bytes_for_test();
+
+        assert!(
+            scoped_bytes < all_cols_bytes,
+            "col-scoped bytes ({scoped_bytes}) must be < all-columns bytes ({all_cols_bytes})"
+        );
+        clear_scoped_cache_for_test();
+    }
+
+    /// If the offset-column set covers every column, the entry collapses to the
+    /// Step-1 all-columns artifact (shares its cache slot, no separate entry).
+    #[tokio::test]
+    async fn col_scoping_full_coverage_collapses_to_all_columns_entry() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = two_col_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let pred_cols = resolve_predicate_parquet_columns(&schema, &fo, &["price".to_string()]);
+
+        // Step-1 all-columns entry.
+        let _ = load_scoped_page_index(&store, &loc, &fo, &pred_cols).await.unwrap();
+        assert_eq!(scoped_cache_len_for_test(), 1);
+
+        // Col-scoped to {1} → union {0,1} = all 2 columns → collapses to the same
+        // key → HIT, no new entry.
+        let _ = load_scoped_page_index_cols(&store, &loc, &fo, &pred_cols, &[1]).await.unwrap();
+        assert_eq!(scoped_cache_len_for_test(), 1, "full coverage must reuse the all-columns entry");
+        assert!(scoped_cache_stats().hits >= 1);
+
+        clear_scoped_cache_for_test();
+    }
+
+    /// 4 columns (2 int `n0`,`n1` + 2 wide string `s0`,`s1`), 1 RG, multiple pages.
+    fn wide4_parquet() -> (Bytes, SchemaRef) {
+        use arrow::array::StringArray;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("n0", DataType::Int32, false),
+            Field::new("n1", DataType::Int32, false),
+            Field::new("s0", DataType::Utf8, false),
+            Field::new("s1", DataType::Utf8, false),
+        ]));
+        const ROWS: i32 = 256;
+        let n0: Vec<i32> = (0..ROWS).collect();
+        let n1: Vec<i32> = (0..ROWS).collect();
+        let s0: Vec<String> = (0..ROWS).map(|r| format!("s0_{r:05}_padpadpad")).collect();
+        let s1: Vec<String> = (0..ROWS).map(|r| format!("s1_{r:05}_padpadpad")).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(n0)),
+                Arc::new(Int32Array::from(n1)),
+                Arc::new(StringArray::from(s0)),
+                Arc::new(StringArray::from(s1)),
+            ],
+        )
+        .unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(ROWS as usize)
+            .set_data_page_row_count_limit(32)
+            .set_write_batch_size(32)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .build();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut w = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        (Bytes::from(buf), schema)
     }
 }
