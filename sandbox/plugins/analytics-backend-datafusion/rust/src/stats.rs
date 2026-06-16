@@ -5,7 +5,7 @@
 //! Stats packing helpers for the FFM `df_stats()` function.
 //!
 //! Packs Tokio runtime metrics and per-operation task monitor metrics
-//! into a `#[repr(C)]` `DfStatsBuffer` struct (600 bytes) for efficient
+//! into a `#[repr(C)]` `DfStatsBuffer` struct (640 bytes) for efficient
 //! transfer across the FFM boundary.
 //!
 //! ## Struct layout
@@ -92,6 +92,12 @@ pub struct CacheGroupRepr {
 pub struct CacheStatsRepr {
     pub metadata_cache: CacheGroupRepr,
     pub statistics_cache: CacheGroupRepr,
+    /// Process-wide scoped page-index cache (`indexed_table::page_index_loader`).
+    /// `hit_count`/`miss_count` are cumulative; `entry_count`/`memory_bytes`/
+    /// `size_limit_bytes` are point-in-time (`used_bytes`/`limit_bytes`). Evictions
+    /// are not surfaced here (the CacheGroup shape has no slot); see the cache's own
+    /// `ScopedCacheStats` for that counter.
+    pub scoped_page_index_cache: CacheGroupRepr,
 }
 
 impl Default for CacheGroupRepr {
@@ -111,6 +117,7 @@ impl Default for CacheStatsRepr {
         Self {
             metadata_cache: CacheGroupRepr::default(),
             statistics_cache: CacheGroupRepr::default(),
+            scoped_page_index_cache: CacheGroupRepr::default(),
         }
     }
 }
@@ -161,14 +168,14 @@ const _: () = assert!(std::mem::size_of::<TaskMonitorRepr>() == 5 * 8);
 const _: () = assert!(std::mem::size_of::<PartitionGateRepr>() == 8 * 8);
 const _: () = assert!(std::mem::size_of::<AdaptiveBudgetRepr>() == 2 * 8);
 const _: () = assert!(std::mem::size_of::<CacheGroupRepr>() == 5 * 8);
-const _: () = assert!(std::mem::size_of::<CacheStatsRepr>() == 10 * 8);
+const _: () = assert!(std::mem::size_of::<CacheStatsRepr>() == 15 * 8);
 const _: () = assert!(std::mem::size_of::<SearchStatsRepr>() == 17 * 8);
-const _: () = assert!(std::mem::size_of::<DfStatsBuffer>() == 75 * 8);
+const _: () = assert!(std::mem::size_of::<DfStatsBuffer>() == 80 * 8);
 
 pub mod layout {
     use super::*;
     pub const BUFFER_BYTE_SIZE: usize = std::mem::size_of::<DfStatsBuffer>();
-    const _: () = assert!(BUFFER_BYTE_SIZE == 600);
+    const _: () = assert!(BUFFER_BYTE_SIZE == 640);
 }
 
 /// Snapshot a `RuntimeMonitor` and return a populated `RuntimeMetricsRepr`.
@@ -304,6 +311,16 @@ pub fn pack_cache_stats(mgr: &CustomCacheManager) -> CacheStatsRepr {
             memory_bytes: statistics_memory,
             size_limit_bytes: mgr.statistics_cache_size_limit() as i64,
         },
+        scoped_page_index_cache: {
+            let s = crate::indexed_table::page_index_loader::scoped_cache_stats();
+            CacheGroupRepr {
+                hit_count: s.hits as i64,
+                miss_count: s.misses as i64,
+                entry_count: s.entries as i64,
+                memory_bytes: s.used_bytes as i64,
+                size_limit_bytes: s.limit_bytes as i64,
+            }
+        },
     }
 }
 
@@ -396,7 +413,7 @@ mod tests {
             search_stats: crate::search_stats::snapshot(),
         };
 
-        assert_eq!(layout::BUFFER_BYTE_SIZE, 600);
+        assert_eq!(layout::BUFFER_BYTE_SIZE, 640);
         assert!(buf.io_runtime.workers_count > 0, "IO runtime workers_count should be > 0, got {}", buf.io_runtime.workers_count);
         assert!(buf.fragment_executor_gate.max_permits > 0, "fragment_executor_gate max_permits should be > 0, got {}", buf.fragment_executor_gate.max_permits);
 
@@ -411,9 +428,9 @@ mod tests {
     #[test]
     fn test_df_stats_buffer_too_small() {
         // Verify that the buffer size assertion holds
-        assert_eq!(std::mem::size_of::<DfStatsBuffer>(), 600);
-        assert_eq!(layout::BUFFER_BYTE_SIZE, 600);
-        // A buffer smaller than 600 bytes should be rejected by df_stats.
+        assert_eq!(std::mem::size_of::<DfStatsBuffer>(), 640);
+        assert_eq!(layout::BUFFER_BYTE_SIZE, 640);
+        // A buffer smaller than 640 bytes should be rejected by df_stats.
         // We can't call df_stats directly without a runtime manager,
         // but we verify the constant is correct.
         assert!(layout::BUFFER_BYTE_SIZE > 0);

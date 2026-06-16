@@ -29,16 +29,19 @@ public class CacheStats implements Writeable, ToXContentFragment {
 
     private final CacheGroupStats metadataCache;
     private final CacheGroupStats statisticsCache;
+    private final CacheGroupStats scopedPageIndexCache;
 
     /**
      * Construct from individual sub-group stats.
      *
-     * @param metadataCache   metadata cache counters (must not be null)
-     * @param statisticsCache statistics cache counters (must not be null)
+     * @param metadataCache        metadata cache counters (must not be null)
+     * @param statisticsCache      statistics cache counters (must not be null)
+     * @param scopedPageIndexCache scoped page-index cache counters (must not be null)
      */
-    public CacheStats(CacheGroupStats metadataCache, CacheGroupStats statisticsCache) {
+    public CacheStats(CacheGroupStats metadataCache, CacheGroupStats statisticsCache, CacheGroupStats scopedPageIndexCache) {
         this.metadataCache = Objects.requireNonNull(metadataCache);
         this.statisticsCache = Objects.requireNonNull(statisticsCache);
+        this.scopedPageIndexCache = Objects.requireNonNull(scopedPageIndexCache);
     }
 
     /**
@@ -50,12 +53,14 @@ public class CacheStats implements Writeable, ToXContentFragment {
     public CacheStats(StreamInput in) throws IOException {
         this.metadataCache = new CacheGroupStats(in);
         this.statisticsCache = new CacheGroupStats(in);
+        this.scopedPageIndexCache = new CacheGroupStats(in);
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         metadataCache.writeTo(out);
         statisticsCache.writeTo(out);
+        scopedPageIndexCache.writeTo(out);
     }
 
     @Override
@@ -66,6 +71,9 @@ public class CacheStats implements Writeable, ToXContentFragment {
         builder.endObject();
         builder.startObject("statistics_cache");
         statisticsCache.toXContent(builder);
+        builder.endObject();
+        builder.startObject("scoped_page_index_cache");
+        scopedPageIndexCache.toXContent(builder);
         builder.endObject();
         builder.endObject();
         return builder;
@@ -81,16 +89,23 @@ public class CacheStats implements Writeable, ToXContentFragment {
         return statisticsCache;
     }
 
+    /** Returns the scoped page-index cache counters. */
+    public CacheGroupStats getScopedPageIndexCache() {
+        return scopedPageIndexCache;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         CacheStats that = (CacheStats) o;
-        return Objects.equals(metadataCache, that.metadataCache) && Objects.equals(statisticsCache, that.statisticsCache);
+        return Objects.equals(metadataCache, that.metadataCache)
+            && Objects.equals(statisticsCache, that.statisticsCache)
+            && Objects.equals(scopedPageIndexCache, that.scopedPageIndexCache);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(metadataCache, statisticsCache);
+        return Objects.hash(metadataCache, statisticsCache, scopedPageIndexCache);
     }
 }
