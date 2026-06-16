@@ -15,7 +15,7 @@ use crate::cache::MutexFileMetadataCache;
 use crate::statistics_cache::CustomStatisticsCache;
 use object_store::path::Path;
 use object_store::ObjectMeta;
-use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
+use object_store::ObjectStore;
 use log::{debug, error};
 
 /// Create ObjectMeta from a local file path.
@@ -359,20 +359,18 @@ impl CustomCacheManager {
 
         let metadata_cache = cache_ref.clone() as Arc<dyn FileMetadataCache>;
 
-        // Use DataFusion's metadata loading by passing the file_metadata_cache.
-        // NOTE: When a cache is provided, fetch_metadata() force-decodes the full
-        // page index (ColumnIndex + OffsetIndex) and calls cache.put() internally.
-        // Our MutexFileMetadataCache::put strips the page index at that chokepoint,
-        // so warming this cache lands a FOOTER-ONLY entry (row-group + file stats).
-        // The heavy decoded page index is released immediately; it is never warmed
-        // here. The scoped page-index cache is built per query, at query time only.
-        let _parquet_metadata = rt_handle.block_on(async {
-            let df_metadata = DFParquetMetadata::new(store.as_ref(), object_meta)
-                .with_file_metadata_cache(Some(metadata_cache));
-
-            // fetch_metadata() performs the cache put operation internally
-            df_metadata.fetch_metadata().await
-                .map_err(|e| format!("Failed to fetch metadata: {}", e))
+        // Warm the level-1 metadata cache FOOTER-ONLY. `load_parquet_metadata`
+        // manages the cache itself and fetches with PageIndexPolicy::Skip, so the
+        // heavy page index (ColumnIndex + OffsetIndex) is NEVER decoded here — only
+        // row-group + file stats are read and cached. The scoped page index is
+        // built separately, per query, only for the predicate columns.
+        let store_dyn: Arc<dyn ObjectStore> = store.clone();
+        let location = object_meta.location.clone();
+        let _footer = rt_handle.block_on(async {
+            crate::indexed_table::parquet_bridge::load_parquet_metadata(
+                store_dyn, &location, metadata_cache,
+            )
+            .await
         })?;
 
         // Verify the metadata was cached properly

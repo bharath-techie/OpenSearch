@@ -24,12 +24,15 @@ use std::time::{Duration, Instant};
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
-use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
+use datafusion::datasource::physical_plan::parquet::metadata::{
+    CachedParquetMetaData, DFParquetMetadata,
+};
 use datafusion::datasource::physical_plan::parquet::{
     ParquetAccessPlan, ParquetFileMetrics, ParquetFileReaderFactory, RowGroupAccess,
 };
 use datafusion::datasource::physical_plan::ParquetSource;
-use datafusion::execution::cache::cache_manager::FileMetadataCache;
+use datafusion::execution::cache::cache_manager::{CachedFileMetadataEntry, FileMetadataCache};
+use datafusion::execution::cache::CacheAccessor;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection};
@@ -48,8 +51,29 @@ use prost::bytes::Bytes;
 
 // ── Parquet Metadata Loading ─────────────────────────────────────────
 
-/// Load parquet metadata via DataFusion's `DFParquetMetadata`, consulting the
-/// caller-supplied `FileMetadataCache`.
+/// Load **footer-only** parquet metadata (row-group + file stats, no page index),
+/// managing the `FileMetadataCache` ourselves so the page index is **never
+/// decoded**.
+///
+/// Why we don't just hand the cache to `DFParquetMetadata::fetch_metadata`: in
+/// DataFusion 54 that method hardcodes the page-index policy — when a cache is
+/// present it uses `PageIndexPolicy::Optional` and force-decodes the FULL page
+/// index (ColumnIndex + OffsetIndex, every column, every row group) before
+/// caching, and only uses `Skip` when NO cache is passed
+/// (`datafusion-datasource-parquet/src/metadata.rs`). Stripping on `put` would
+/// discard that index but the expensive decode already happened. On wide schemas
+/// that decode is the dominant cost we're trying to avoid.
+///
+/// So this fn: consults the cache directly; on a valid hit returns the cached
+/// (footer-only) metadata with zero I/O; on a miss it fetches **without** a cache
+/// (→ `Skip` policy → the page index is never decoded) and puts the footer-only
+/// entry itself. The scoped page index is built separately, per query, only for
+/// the predicate columns (see [`super::page_index_loader`]).
+///
+/// `MutexFileMetadataCache::put` still strips defensively as a backstop for the
+/// scan paths DataFusion drives directly (the opener / `infer_schema`), but this
+/// loader makes the warm path and both scoped-reader paths skip the decode
+/// entirely.
 pub async fn load_parquet_metadata(
     store: Arc<dyn ObjectStore>,
     location: &object_store::path::Path,
@@ -61,11 +85,39 @@ pub async fn load_parquet_metadata(
         .map_err(|e| format!("object-store head {}: {}", location, e))?;
     let size = meta.size;
 
+    // Cache hit (validated against current size/last_modified) → no I/O, no decode.
+    if let Some(cached) = metadata_cache.get(location) {
+        if cached.is_valid_for(&meta) {
+            if let Some(cp) = cached
+                .file_metadata
+                .as_any()
+                .downcast_ref::<CachedParquetMetaData>()
+            {
+                let pq_meta = Arc::clone(cp.parquet_metadata());
+                let file_meta = pq_meta.file_metadata();
+                let schema =
+                    parquet_to_arrow_schema(file_meta.schema_descr(), file_meta.key_value_metadata())
+                        .map_err(|e| format!("parquet_to_arrow_schema {}: {}", location, e))?;
+                return Ok((Arc::new(schema), size, pq_meta));
+            }
+        }
+    }
+
+    // Miss → fetch WITHOUT a cache so DataFusion uses PageIndexPolicy::Skip and
+    // never decodes the page index.
     let pq_meta = DFParquetMetadata::new(&*store, &meta)
-        .with_file_metadata_cache(Some(metadata_cache))
         .fetch_metadata()
         .await
         .map_err(|e| format!("load parquet metadata {}: {}", location, e))?;
+
+    // Publish the footer-only entry to the shared cache ourselves.
+    metadata_cache.put(
+        location,
+        CachedFileMetadataEntry::new(
+            meta.clone(),
+            Arc::new(CachedParquetMetaData::new(Arc::clone(&pq_meta))),
+        ),
+    );
 
     let file_meta = pq_meta.file_metadata();
     let schema = parquet_to_arrow_schema(file_meta.schema_descr(), file_meta.key_value_metadata())
