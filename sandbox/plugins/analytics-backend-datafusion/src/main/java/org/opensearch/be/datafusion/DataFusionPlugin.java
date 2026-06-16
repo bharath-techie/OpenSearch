@@ -764,7 +764,10 @@ public class DataFusionPlugin extends Plugin
         if (dataFusionService == null) {
             return Collections.emptyList();
         }
-        return List.of(new RestDataFusionStatsAction());
+        return List.of(
+            new RestDataFusionStatsAction(),
+            new org.opensearch.be.datafusion.action.stats.RestClearScopedPageIndexCacheAction()
+        );
     }
 
     @Override

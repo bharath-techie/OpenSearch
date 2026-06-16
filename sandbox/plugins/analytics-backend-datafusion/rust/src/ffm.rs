@@ -1060,6 +1060,16 @@ pub extern "C" fn df_set_scoped_page_index_cache_limit(size_limit: i64) -> i64 {
     Ok(0)
 }
 
+/// Clear the process-global scoped page-index cache (drop entries + reset
+/// counters, keep the budget). For operational testing — reset and re-measure
+/// without a cluster restart.
+#[ffm_safe]
+#[no_mangle]
+pub extern "C" fn df_clear_scoped_page_index_cache() -> i64 {
+    crate::indexed_table::page_index_loader::clear_scoped_cache();
+    Ok(0)
+}
+
 #[ffm_safe]
 #[no_mangle]
 pub unsafe extern "C" fn df_cache_manager_contains_by_type(

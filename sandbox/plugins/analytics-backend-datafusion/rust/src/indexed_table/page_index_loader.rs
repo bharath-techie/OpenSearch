@@ -291,6 +291,20 @@ pub fn scoped_cache_stats() -> ScopedCacheStats {
     SCOPED_CACHE.lock().map(|c| c.stats()).unwrap_or_default()
 }
 
+/// Drop all cached entries and reset the hit/miss/eviction counters, keeping the
+/// configured byte budget. Exposed for operational testing (clear the cache and
+/// re-measure without a cluster restart). The next query repopulates lazily.
+pub fn clear_scoped_cache() {
+    if let Ok(mut c) = SCOPED_CACHE.lock() {
+        c.map.clear();
+        c.used = 0;
+        c.tick = 0;
+        c.hits = 0;
+        c.misses = 0;
+        c.evictions = 0;
+    }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /// Map the query's arrow predicate-column names to this file's parquet column
