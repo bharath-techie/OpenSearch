@@ -359,12 +359,13 @@ impl CustomCacheManager {
 
         let metadata_cache = cache_ref.clone() as Arc<dyn FileMetadataCache>;
 
-        // Use DataFusion's metadata loading by passing reference to file_metadata_cache to get complete metadata
-        // IMPORTANT: When a cache is provided to DFParquetMetadata, fetch_metadata() will:
-        // 1. Enable page index loading (with_page_indexes(true))
-        // 2. Load the complete metadata including column and offset indexes
-        // 3. Automatically put the metadata into the cache (lines 155-160 in datafusion's metadata.rs)
-        // This ensures we cache exactly what DataFusion would cache during query execution
+        // Use DataFusion's metadata loading by passing the file_metadata_cache.
+        // NOTE: When a cache is provided, fetch_metadata() force-decodes the full
+        // page index (ColumnIndex + OffsetIndex) and calls cache.put() internally.
+        // Our MutexFileMetadataCache::put strips the page index at that chokepoint,
+        // so warming this cache lands a FOOTER-ONLY entry (row-group + file stats).
+        // The heavy decoded page index is released immediately; it is never warmed
+        // here. The scoped page-index cache is built per query, at query time only.
         let _parquet_metadata = rt_handle.block_on(async {
             let df_metadata = DFParquetMetadata::new(store.as_ref(), object_meta)
                 .with_file_metadata_cache(Some(metadata_cache));
