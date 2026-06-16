@@ -320,4 +320,50 @@ public class ScopedPageIndexCacheIT extends AnalyticsRestTestCase {
         long mixed = scalarAgg("source=" + idx + " | where status >= 400 or match(message, 'error') | stats count()");
         assertTrue("mixed predicate query must execute", mixed >= 0);
     }
+
+    // ---- cross-path sharing (constraint #1) ------------------------------
+
+    /**
+     * The unified cache must be shared across scan paths: an entry built for a
+     * predicate column on one path is reused by the other for the same column.
+     *
+     * <p>Here a listing query filters {@code status}, then an indexed query
+     * (forced onto the indexed path by a {@code match(message, ...)} full-text
+     * filter) ALSO filters {@code status}. Because both paths resolve the same
+     * file + predicate column to the same scoped-cache key, the indexed query
+     * must HIT the entry the listing query built: hits increase while entries do
+     * not grow (no second, path-specific entry).
+     */
+    public void testCrossPathSharingListingThenIndexed() throws IOException {
+        String idx = DATASET.indexName;
+        // Listing path: numeric predicate on `status` populates the scoped entry.
+        String listingQuery = "source=" + idx + " | where status >= 400 | stats count()";
+        executePpl(listingQuery);
+        CacheGroup afterListing = scoped();
+        assertTrue("listing query must populate a scoped entry", afterListing.entries() >= 1);
+
+        // Indexed path: a match() filter forces indexed routing; it also filters
+        // `status`, so it resolves to the SAME (file, status) scoped-cache key.
+        String indexedQuery =
+            "source=" + idx + " | where match(message, 'timeout') and status >= 400 | stats count()";
+        executePpl(indexedQuery);
+        CacheGroup afterIndexed = scoped();
+
+        assertTrue(
+            String.format(Locale.ROOT,
+                "indexed query on the same predicate column must HIT the listing entry (listing hits=%d indexed hits=%d)",
+                afterListing.hits(), afterIndexed.hits()),
+            afterIndexed.hits() > afterListing.hits()
+        );
+        assertEquals(
+            "cross-path reuse must NOT create a second entry for the same (file, predicate column)",
+            afterListing.entries(),
+            afterIndexed.entries()
+        );
+        assertEquals(
+            "cross-path reuse must NOT grow memory_bytes",
+            afterListing.memoryBytes(),
+            afterIndexed.memoryBytes()
+        );
+    }
 }
