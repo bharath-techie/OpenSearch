@@ -20,6 +20,7 @@ public class CacheSettings {
 
     public static final String METADATA_CACHE_SIZE_LIMIT_KEY = "datafusion.metadata.cache.size.limit";
     public static final String STATISTICS_CACHE_SIZE_LIMIT_KEY = "datafusion.statistics.cache.size.limit";
+    public static final String SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT_KEY = "datafusion.scoped_page_index.cache.size.limit";
     public static final Setting<ByteSizeValue> METADATA_CACHE_SIZE_LIMIT = new Setting<>(
         METADATA_CACHE_SIZE_LIMIT_KEY,
         "250mb",
@@ -32,6 +33,21 @@ public class CacheSettings {
         STATISTICS_CACHE_SIZE_LIMIT_KEY,
         "100mb",
         (s) -> ByteSizeValue.parseBytesSizeValue(s, new ByteSizeValue(0, ByteSizeUnit.KB), STATISTICS_CACHE_SIZE_LIMIT_KEY),
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * Byte budget for the process-global scoped page-index cache (column index
+     * scoped to predicate columns, offset index for all columns). Pushed to
+     * native at startup via {@link CacheUtils#createCacheConfig}. Unlike the
+     * metadata/statistics caches this is a process-wide singleton, not owned by
+     * the cache manager.
+     */
+    public static final Setting<ByteSizeValue> SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT = new Setting<>(
+        SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT_KEY,
+        "64mb",
+        (s) -> ByteSizeValue.parseBytesSizeValue(s, new ByteSizeValue(0, ByteSizeUnit.KB), SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT_KEY),
         Setting.Property.NodeScope,
         Setting.Property.Dynamic
     );
@@ -74,7 +90,8 @@ public class CacheSettings {
         METADATA_CACHE_EVICTION_TYPE,
         STATISTICS_CACHE_ENABLED,
         STATISTICS_CACHE_SIZE_LIMIT,
-        STATISTICS_CACHE_EVICTION_TYPE
+        STATISTICS_CACHE_EVICTION_TYPE,
+        SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT
     );
 
     private static String validateEvictionType(String value) {

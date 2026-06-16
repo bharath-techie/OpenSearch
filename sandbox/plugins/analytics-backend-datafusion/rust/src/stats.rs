@@ -20,7 +20,7 @@
 //! | `plan_setup`         | `TaskMonitorRepr`    | 5 × i64 |
 //! | `fragment_executor_gate` | `PartitionGateRepr`  | 8 × i64 |
 //! | `adaptive_budget`       | `AdaptiveBudgetRepr`    | 2 × i64 |
-//! | `cache_stats`        | `CacheStatsRepr`     | 10 × i64 (2 × 5: metadata + statistics caches) |
+//! | `cache_stats`        | `CacheStatsRepr`     | 15 × i64 (3 × 5: metadata + statistics + scoped-page-index caches) |
 //! | `search_stats`       | `SearchStatsRepr`    | 17 × i64 |
 
 use tokio::runtime::Handle;
@@ -92,6 +92,12 @@ pub struct CacheGroupRepr {
 pub struct CacheStatsRepr {
     pub metadata_cache: CacheGroupRepr,
     pub statistics_cache: CacheGroupRepr,
+    /// Process-wide scoped page-index cache (see
+    /// [`crate::indexed_table::page_index_loader`]). `hit_count`/`miss_count`
+    /// are cumulative since process start; `entry_count`/`memory_bytes`/
+    /// `size_limit_bytes` are point-in-time. (Evictions are tracked internally
+    /// but not surfaced in this 5-field group.)
+    pub scoped_page_index_cache: CacheGroupRepr,
 }
 
 impl Default for CacheGroupRepr {
@@ -111,6 +117,7 @@ impl Default for CacheStatsRepr {
         Self {
             metadata_cache: CacheGroupRepr::default(),
             statistics_cache: CacheGroupRepr::default(),
+            scoped_page_index_cache: CacheGroupRepr::default(),
         }
     }
 }
@@ -161,14 +168,14 @@ const _: () = assert!(std::mem::size_of::<TaskMonitorRepr>() == 5 * 8);
 const _: () = assert!(std::mem::size_of::<PartitionGateRepr>() == 8 * 8);
 const _: () = assert!(std::mem::size_of::<AdaptiveBudgetRepr>() == 2 * 8);
 const _: () = assert!(std::mem::size_of::<CacheGroupRepr>() == 5 * 8);
-const _: () = assert!(std::mem::size_of::<CacheStatsRepr>() == 10 * 8);
+const _: () = assert!(std::mem::size_of::<CacheStatsRepr>() == 15 * 8);
 const _: () = assert!(std::mem::size_of::<SearchStatsRepr>() == 17 * 8);
-const _: () = assert!(std::mem::size_of::<DfStatsBuffer>() == 75 * 8);
+const _: () = assert!(std::mem::size_of::<DfStatsBuffer>() == 80 * 8);
 
 pub mod layout {
     use super::*;
     pub const BUFFER_BYTE_SIZE: usize = std::mem::size_of::<DfStatsBuffer>();
-    const _: () = assert!(BUFFER_BYTE_SIZE == 600);
+    const _: () = assert!(BUFFER_BYTE_SIZE == 640);
 }
 
 /// Snapshot a `RuntimeMonitor` and return a populated `RuntimeMetricsRepr`.
@@ -304,6 +311,17 @@ pub fn pack_cache_stats(mgr: &CustomCacheManager) -> CacheStatsRepr {
             memory_bytes: statistics_memory,
             size_limit_bytes: mgr.statistics_cache_size_limit() as i64,
         },
+        scoped_page_index_cache: {
+            // Process-global cache, not owned by the manager — read it directly.
+            let s = crate::indexed_table::page_index_loader::scoped_cache_stats();
+            CacheGroupRepr {
+                hit_count: s.hits as i64,
+                miss_count: s.misses as i64,
+                entry_count: s.entries as i64,
+                memory_bytes: s.used_bytes as i64,
+                size_limit_bytes: s.limit_bytes as i64,
+            }
+        },
     }
 }
 
@@ -396,7 +414,7 @@ mod tests {
             search_stats: crate::search_stats::snapshot(),
         };
 
-        assert_eq!(layout::BUFFER_BYTE_SIZE, 600);
+        assert_eq!(layout::BUFFER_BYTE_SIZE, 640);
         assert!(buf.io_runtime.workers_count > 0, "IO runtime workers_count should be > 0, got {}", buf.io_runtime.workers_count);
         assert!(buf.fragment_executor_gate.max_permits > 0, "fragment_executor_gate max_permits should be > 0, got {}", buf.fragment_executor_gate.max_permits);
 
@@ -411,9 +429,9 @@ mod tests {
     #[test]
     fn test_df_stats_buffer_too_small() {
         // Verify that the buffer size assertion holds
-        assert_eq!(std::mem::size_of::<DfStatsBuffer>(), 600);
-        assert_eq!(layout::BUFFER_BYTE_SIZE, 600);
-        // A buffer smaller than 600 bytes should be rejected by df_stats.
+        assert_eq!(std::mem::size_of::<DfStatsBuffer>(), 640);
+        assert_eq!(layout::BUFFER_BYTE_SIZE, 640);
+        // A buffer smaller than 640 bytes should be rejected by df_stats.
         // We can't call df_stats directly without a runtime manager,
         // but we verify the constant is correct.
         assert!(layout::BUFFER_BYTE_SIZE > 0);
@@ -431,6 +449,33 @@ mod tests {
             assert_eq!(g.memory_bytes, 0);
             assert_eq!(g.size_limit_bytes, 0);
         }
+        // The scoped page-index cache is process-global, not manager-owned, so it
+        // is NOT necessarily zero here (other tests may have populated it). It
+        // must always advertise a positive byte budget, though.
+        assert!(repr.scoped_page_index_cache.size_limit_bytes > 0);
+    }
+
+    #[test]
+    fn test_pack_cache_stats_reflects_scoped_page_index_counters() {
+        use crate::custom_cache_manager::CustomCacheManager;
+        use crate::indexed_table::page_index_loader::{
+            scoped_cache_stats, set_scoped_cache_limit, SCOPED_CACHE_TEST_GUARD,
+        };
+
+        // Serialize against the process-global scoped cache.
+        let _g = SCOPED_CACHE_TEST_GUARD.lock().unwrap();
+        // Set a known budget and read it back through the packed repr.
+        set_scoped_cache_limit(123 * 1024 * 1024);
+
+        let mgr = CustomCacheManager::new();
+        let repr = pack_cache_stats(&mgr);
+        let live = scoped_cache_stats();
+
+        assert_eq!(repr.scoped_page_index_cache.size_limit_bytes, 123 * 1024 * 1024);
+        assert_eq!(repr.scoped_page_index_cache.hit_count, live.hits as i64);
+        assert_eq!(repr.scoped_page_index_cache.miss_count, live.misses as i64);
+        assert_eq!(repr.scoped_page_index_cache.entry_count, live.entries as i64);
+        assert_eq!(repr.scoped_page_index_cache.memory_bytes, live.used_bytes as i64);
     }
 
     #[test]

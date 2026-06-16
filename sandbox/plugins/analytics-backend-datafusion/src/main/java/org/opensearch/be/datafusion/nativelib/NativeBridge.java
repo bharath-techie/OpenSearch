@@ -130,6 +130,7 @@ public final class NativeBridge {
     private static final MethodHandle CACHE_MANAGER_GET_MEMORY_BY_TYPE;
     private static final MethodHandle CACHE_MANAGER_GET_TOTAL_MEMORY;
     private static final MethodHandle CACHE_MANAGER_CONTAINS_BY_TYPE;
+    private static final MethodHandle SET_SCOPED_PAGE_INDEX_CACHE_LIMIT;
     private static final MethodHandle CREATE_SESSION_CONTEXT;
     private static final MethodHandle CREATE_SESSION_CONTEXT_INDEXED;
     private static final MethodHandle CLOSE_SESSION_CONTEXT;
@@ -501,6 +502,11 @@ public final class NativeBridge {
             )
         );
 
+        SET_SCOPED_PAGE_INDEX_CACHE_LIMIT = linker.downcallHandle(
+            lib.find("df_set_scoped_page_index_cache_limit").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+        );
+
         CANCEL_QUERY = linker.downcallHandle(lib.find("df_cancel_query").orElseThrow(), FunctionDescriptor.ofVoid(ValueLayout.JAVA_LONG));
 
         SET_CANCEL_STATS_THRESHOLD_MS = linker.downcallHandle(
@@ -759,6 +765,21 @@ public final class NativeBridge {
     public static void setMemoryPoolLimit(long runtimePtr, long newLimitBytes) {
         try (var call = new NativeCall()) {
             call.invoke(SET_MEMORY_POOL_LIMIT, runtimePtr, newLimitBytes);
+        }
+    }
+
+    /**
+     * Sets the byte budget of the process-global scoped page-index cache.
+     *
+     * <p>This cache is a process-wide singleton (not owned by any cache manager),
+     * so there is no runtime/manager pointer — the limit applies globally.
+     * Shrinking the limit evicts least-recently-used entries immediately.
+     *
+     * @param sizeLimitBytes the new byte budget (zero is ignored; keeps the current budget)
+     */
+    public static void setScopedPageIndexCacheLimit(long sizeLimitBytes) {
+        try (var call = new NativeCall()) {
+            call.invoke(SET_SCOPED_PAGE_INDEX_CACHE_LIMIT, sizeLimitBytes);
         }
     }
 
