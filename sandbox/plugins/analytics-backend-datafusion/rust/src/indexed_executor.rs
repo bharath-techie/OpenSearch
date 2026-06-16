@@ -315,6 +315,34 @@ fn collect_predicate_column_indices(extraction: Option<&ExtractionResult>) -> Ve
     }
     indices.into_iter().collect()
 }
+
+/// Collect the **names** of the columns referenced by the query predicate,
+/// resolved against `schema` (the plan/arrow schema the `Column` indices index
+/// into). Used to build the scoped page index per segment via
+/// `resolve_predicate_parquet_columns`, which maps names → per-file parquet leaf
+/// indices the SAME way the listing path does — so both paths compute the
+/// identical scoped-cache key for the same `(file, predicate columns)` and share
+/// entries. Returns a sorted, deduped set.
+fn collect_predicate_column_names(
+    extraction: Option<&ExtractionResult>,
+    schema: &arrow::datatypes::SchemaRef,
+) -> Vec<String> {
+    let Some(e) = extraction else { return vec![] };
+    let mut exprs = Vec::new();
+    collect_predicate_exprs(&e.tree, &mut exprs);
+    let mut names = BTreeSet::new();
+    for expr in &exprs {
+        let _ = expr.apply(|node| {
+            if let Some(col) = node.downcast_ref::<Column>() {
+                if let Some(field) = schema.fields().get(col.index()) {
+                    names.insert(field.name().to_string());
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+    }
+    names.into_iter().collect()
+}
 /// For a tree classified as `SingleCollector`, walk it to find the single
 /// Collector leaf and return its query bytes.
 fn single_collector_id(tree: &BoolNode) -> Option<i32> {
@@ -920,6 +948,43 @@ async unsafe fn execute_indexed_with_context_inner(
     });
 
     let predicate_columns = collect_predicate_column_indices(extraction.as_ref());
+
+    // Augment each segment's footer-only metadata with a page index scoped to the
+    // query's predicate columns, so the indexed PagePruner (which reads
+    // `column_index()` / `offset_index()` straight off `segment.metadata`) can
+    // page-prune. Since Step 1e the level-1 cache is footer-only, so without this
+    // the page index would be absent and PagePruner would conservatively no-op
+    // (scan whole RG) — correct but slow.
+    //
+    // The scoped page index is resolved per file via `resolve_predicate_parquet_columns`
+    // (predicate column NAMES → this file's parquet leaf indices) — identical to
+    // the listing path's reader — so both paths compute the SAME scoped-cache key
+    // for the same `(file, predicate columns)` and share entries. All row groups
+    // (no RG scoping in Step 1). On any failure the segment keeps footer-only
+    // metadata and pruning no-ops.
+    let predicate_column_names = collect_predicate_column_names(extraction.as_ref(), &schema);
+    if !predicate_column_names.is_empty() {
+        for segment in segments.iter_mut() {
+            let parquet_cols = crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns(
+                &schema,
+                &segment.metadata,
+                &predicate_column_names,
+            );
+            if parquet_cols.is_empty() {
+                continue;
+            }
+            if let Some(augmented) = crate::indexed_table::page_index_loader::load_scoped_page_index(
+                &store,
+                &segment.object_path,
+                &segment.metadata,
+                &parquet_cols,
+            )
+            .await
+            {
+                segment.metadata = augmented;
+            }
+        }
+    }
 
     let factory: EvaluatorFactory = match classification {
         FilterClass::None => {
