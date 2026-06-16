@@ -298,6 +298,7 @@ public final class DatafusionSettings {
         CacheSettings.STATISTICS_CACHE_EVICTION_TYPE,
         CacheSettings.METADATA_CACHE_ENABLED,
         CacheSettings.STATISTICS_CACHE_ENABLED,
+        CacheSettings.SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT,
 
         // Concurrency gate settings
         CONCURRENCY_DATANODE_MULTIPLIER,

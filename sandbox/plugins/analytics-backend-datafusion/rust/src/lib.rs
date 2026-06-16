@@ -46,6 +46,8 @@ pub mod query_budget;
 pub mod query_executor;
 pub mod query_tracker;
 pub mod relabel_exec;
+pub mod scoped_page_index_optimizer;
+pub mod shard_scoped_reader;
 pub mod shard_table_provider;
 pub mod runtime_manager;
 pub mod schema_coerce;

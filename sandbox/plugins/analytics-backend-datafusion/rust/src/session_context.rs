@@ -229,6 +229,19 @@ pub async unsafe fn create_session_context(
             );
     }
 
+    // Install the scoped page-index reader factory on every parquet scan
+    // (provider-agnostic — covers stock ListingTable for `None` and
+    // ShardTableProvider for `ListingTable`). Registered AFTER ProjectRowIdOptimizer
+    // so it sees the final DataSourceExec (ProjectRowIdOptimizer rebuilds the scan,
+    // which would otherwise drop a factory installed before it). The metadata cache
+    // is the same shared footer cache; the store is this shard's object store.
+    state_builder = state_builder.with_physical_optimizer_rule(Arc::new(
+        crate::scoped_page_index_optimizer::ScopedPageIndexOptimizer::new(
+            Arc::clone(&shard_view.store),
+            runtime.runtime_env.cache_manager.get_file_metadata_cache(),
+        ),
+    ));
+
     let state = state_builder.build();
 
     let ctx = SessionContext::new_with_state(state);
