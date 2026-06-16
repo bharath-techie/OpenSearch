@@ -130,7 +130,8 @@ public final class NativeBridge {
     private static final MethodHandle CACHE_MANAGER_GET_MEMORY_BY_TYPE;
     private static final MethodHandle CACHE_MANAGER_GET_TOTAL_MEMORY;
     private static final MethodHandle CACHE_MANAGER_CONTAINS_BY_TYPE;
-    private static final MethodHandle SET_SCOPED_PAGE_INDEX_CACHE_LIMIT;
+    private static final MethodHandle SET_COLUMN_INDEX_CACHE_LIMIT;
+    private static final MethodHandle SET_OFFSET_INDEX_CACHE_LIMIT;
     private static final MethodHandle CLEAR_SCOPED_PAGE_INDEX_CACHE;
     private static final MethodHandle CREATE_SESSION_CONTEXT;
     private static final MethodHandle CREATE_SESSION_CONTEXT_INDEXED;
@@ -503,8 +504,13 @@ public final class NativeBridge {
             )
         );
 
-        SET_SCOPED_PAGE_INDEX_CACHE_LIMIT = linker.downcallHandle(
-            lib.find("df_set_scoped_page_index_cache_limit").orElseThrow(),
+        SET_COLUMN_INDEX_CACHE_LIMIT = linker.downcallHandle(
+            lib.find("df_set_column_index_cache_limit").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+        );
+
+        SET_OFFSET_INDEX_CACHE_LIMIT = linker.downcallHandle(
+            lib.find("df_set_offset_index_cache_limit").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
         );
 
@@ -775,7 +781,7 @@ public final class NativeBridge {
     }
 
     /**
-     * Sets the byte budget of the process-global scoped page-index cache.
+     * Sets the byte budget of the process-global scoped ColumnIndex cache.
      *
      * <p>This cache is a process-wide singleton (not owned by any cache manager),
      * so there is no runtime/manager pointer — the limit applies globally.
@@ -783,9 +789,21 @@ public final class NativeBridge {
      *
      * @param sizeLimitBytes the new byte budget (zero is ignored; keeps the current budget)
      */
-    public static void setScopedPageIndexCacheLimit(long sizeLimitBytes) {
+    public static void setColumnIndexCacheLimit(long sizeLimitBytes) {
         try (var call = new NativeCall()) {
-            call.invoke(SET_SCOPED_PAGE_INDEX_CACHE_LIMIT, sizeLimitBytes);
+            call.invoke(SET_COLUMN_INDEX_CACHE_LIMIT, sizeLimitBytes);
+        }
+    }
+
+    /**
+     * Sets the byte budget of the process-global scoped OffsetIndex cache. See
+     * {@link #setColumnIndexCacheLimit(long)} for the singleton/eviction semantics.
+     *
+     * @param sizeLimitBytes the new byte budget (zero is ignored; keeps the current budget)
+     */
+    public static void setOffsetIndexCacheLimit(long sizeLimitBytes) {
+        try (var call = new NativeCall()) {
+            call.invoke(SET_OFFSET_INDEX_CACHE_LIMIT, sizeLimitBytes);
         }
     }
 

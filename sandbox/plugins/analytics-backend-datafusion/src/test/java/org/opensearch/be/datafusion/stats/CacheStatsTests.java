@@ -91,27 +91,31 @@ public class CacheStatsTests extends OpenSearchTestCase {
 
     public void testCacheStatsConstructorRejectsNullSubGroups() {
         CacheGroupStats g = new CacheGroupStats(0, 0, 0, 0, 0);
-        expectThrows(NullPointerException.class, () -> new CacheStats(null, g, g));
-        expectThrows(NullPointerException.class, () -> new CacheStats(g, null, g));
-        expectThrows(NullPointerException.class, () -> new CacheStats(g, g, null));
+        expectThrows(NullPointerException.class, () -> new CacheStats(null, g, g, g));
+        expectThrows(NullPointerException.class, () -> new CacheStats(g, null, g, g));
+        expectThrows(NullPointerException.class, () -> new CacheStats(g, g, null, g));
+        expectThrows(NullPointerException.class, () -> new CacheStats(g, g, g, null));
     }
 
     public void testCacheStatsAccessors() {
         CacheGroupStats meta = new CacheGroupStats(1, 2, 3, 4, 5);
         CacheGroupStats stats = new CacheGroupStats(6, 7, 8, 9, 10);
-        CacheGroupStats scoped = new CacheGroupStats(11, 12, 13, 14, 15);
-        CacheStats c = new CacheStats(meta, stats, scoped);
+        CacheGroupStats columnIndex = new CacheGroupStats(11, 12, 13, 14, 15);
+        CacheGroupStats offsetIndex = new CacheGroupStats(16, 17, 18, 19, 20);
+        CacheStats c = new CacheStats(meta, stats, columnIndex, offsetIndex);
 
         assertSame(meta, c.getMetadataCache());
         assertSame(stats, c.getStatisticsCache());
-        assertSame(scoped, c.getScopedPageIndexCache());
+        assertSame(columnIndex, c.getColumnIndexCache());
+        assertSame(offsetIndex, c.getOffsetIndexCache());
     }
 
     public void testCacheStatsWriteableRoundTrip() throws IOException {
         CacheStats original = new CacheStats(
             new CacheGroupStats(11, 12, 13, 14, 15),
             new CacheGroupStats(21, 22, 23, 24, 25),
-            new CacheGroupStats(31, 32, 33, 34, 35)
+            new CacheGroupStats(31, 32, 33, 34, 35),
+            new CacheGroupStats(41, 42, 43, 44, 45)
         );
         BytesStreamOutput out = new BytesStreamOutput();
         original.writeTo(out);
@@ -124,7 +128,8 @@ public class CacheStatsTests extends OpenSearchTestCase {
         CacheStats c = new CacheStats(
             new CacheGroupStats(11, 0, 3, 1024, 250_000_000),
             new CacheGroupStats(0, 7, 0, 0, 100_000_000),
-            new CacheGroupStats(5, 1, 2, 512, 64_000_000)
+            new CacheGroupStats(5, 1, 2, 512, 64_000_000),
+            new CacheGroupStats(4, 1, 2, 256, 16_000_000)
         );
         XContentBuilder builder = XContentFactory.jsonBuilder();
         builder.startObject();
@@ -134,10 +139,11 @@ public class CacheStatsTests extends OpenSearchTestCase {
 
         // Top-level wrapper
         assertTrue("expected cache_stats wrapper, got: " + json, json.contains("\"cache_stats\""));
-        // All three sub-groups present
+        // All four sub-groups present
         assertTrue(json.contains("\"metadata_cache\""));
         assertTrue(json.contains("\"statistics_cache\""));
-        assertTrue("expected scoped_page_index_cache group, got: " + json, json.contains("\"scoped_page_index_cache\""));
+        assertTrue("expected column_index_cache group, got: " + json, json.contains("\"column_index_cache\""));
+        assertTrue("expected offset_index_cache group, got: " + json, json.contains("\"offset_index_cache\""));
         // Per-group fields
         assertTrue(json.contains("\"hit_count\":11"));
         assertTrue(json.contains("\"miss_count\":7"));
@@ -146,10 +152,12 @@ public class CacheStatsTests extends OpenSearchTestCase {
         assertTrue(json.contains("\"size_limit_bytes\":250000000"));
         assertTrue(json.contains("\"size_limit_bytes\":100000000"));
         assertTrue(json.contains("\"size_limit_bytes\":64000000"));
+        assertTrue(json.contains("\"size_limit_bytes\":16000000"));
     }
 
     public void testCacheStatsZeroedRendersAllZeros() throws IOException {
         CacheStats zero = new CacheStats(
+            new CacheGroupStats(0, 0, 0, 0, 0),
             new CacheGroupStats(0, 0, 0, 0, 0),
             new CacheGroupStats(0, 0, 0, 0, 0),
             new CacheGroupStats(0, 0, 0, 0, 0)
@@ -160,9 +168,9 @@ public class CacheStatsTests extends OpenSearchTestCase {
         builder.endObject();
         String json = builder.toString();
 
-        // Disabled-cache sentinel: all three size_limit_bytes are 0
+        // Disabled-cache sentinel: all four size_limit_bytes are 0
         long sizeLimitOccurrences = json.split("\"size_limit_bytes\":0", -1).length - 1;
-        assertEquals("expected size_limit_bytes:0 to appear three times (one per sub-cache)", 3, sizeLimitOccurrences);
+        assertEquals("expected size_limit_bytes:0 to appear four times (one per sub-cache)", 4, sizeLimitOccurrences);
         // hit_rate must not be NaN
         assertFalse("hit_rate must not be NaN: " + json, json.contains("NaN"));
     }
@@ -171,18 +179,21 @@ public class CacheStatsTests extends OpenSearchTestCase {
         CacheStats a = new CacheStats(
             new CacheGroupStats(1, 2, 3, 4, 5),
             new CacheGroupStats(6, 7, 8, 9, 10),
-            new CacheGroupStats(11, 12, 13, 14, 15)
+            new CacheGroupStats(11, 12, 13, 14, 15),
+            new CacheGroupStats(16, 17, 18, 19, 20)
         );
         CacheStats b = new CacheStats(
             new CacheGroupStats(1, 2, 3, 4, 5),
             new CacheGroupStats(6, 7, 8, 9, 10),
-            new CacheGroupStats(11, 12, 13, 14, 15)
+            new CacheGroupStats(11, 12, 13, 14, 15),
+            new CacheGroupStats(16, 17, 18, 19, 20)
         );
-        // Differs only in the scoped group → must be unequal.
+        // Differs only in the offset-index group → must be unequal.
         CacheStats c = new CacheStats(
             new CacheGroupStats(1, 2, 3, 4, 5),
             new CacheGroupStats(6, 7, 8, 9, 10),
-            new CacheGroupStats(11, 12, 13, 14, 99)
+            new CacheGroupStats(11, 12, 13, 14, 15),
+            new CacheGroupStats(16, 17, 18, 19, 99)
         );
 
         assertEquals(a, b);

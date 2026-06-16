@@ -1040,23 +1040,32 @@ pub unsafe extern "C" fn df_cache_manager_get_total_memory(runtime_ptr: i64) -> 
     Ok(manager.get_total_memory_consumed() as i64)
 }
 
-/// Set the byte budget of the process-global scoped page-index cache.
+/// Set the byte budget of the process-global scoped ColumnIndex cache.
 ///
-/// Unlike the metadata/statistics caches, the scoped page-index cache is a
-/// process-wide singleton (see [`crate::indexed_table::page_index_loader`]), so
+/// Unlike the metadata/statistics caches, the scoped page-index caches are
+/// process-wide singletons (see [`crate::indexed_table::page_index_loader`]), so
 /// there is no manager pointer — the limit applies globally. Negative values are
 /// rejected; zero is ignored (keeps the existing budget). Shrinking the limit
 /// evicts least-recently-used entries immediately.
 #[ffm_safe]
 #[no_mangle]
-pub extern "C" fn df_set_scoped_page_index_cache_limit(size_limit: i64) -> i64 {
+pub extern "C" fn df_set_column_index_cache_limit(size_limit: i64) -> i64 {
     if size_limit < 0 {
-        return Err(format!(
-            "df_set_scoped_page_index_cache_limit: negative limit {}",
-            size_limit
-        ));
+        return Err(format!("df_set_column_index_cache_limit: negative limit {}", size_limit));
     }
-    crate::indexed_table::page_index_loader::set_scoped_cache_limit(size_limit as usize);
+    crate::indexed_table::page_index_loader::set_column_index_cache_limit(size_limit as usize);
+    Ok(0)
+}
+
+/// Set the byte budget of the process-global scoped OffsetIndex cache. See
+/// [`df_set_column_index_cache_limit`] for the singleton/eviction semantics.
+#[ffm_safe]
+#[no_mangle]
+pub extern "C" fn df_set_offset_index_cache_limit(size_limit: i64) -> i64 {
+    if size_limit < 0 {
+        return Err(format!("df_set_offset_index_cache_limit: negative limit {}", size_limit));
+    }
+    crate::indexed_table::page_index_loader::set_offset_index_cache_limit(size_limit as usize);
     Ok(0)
 }
 

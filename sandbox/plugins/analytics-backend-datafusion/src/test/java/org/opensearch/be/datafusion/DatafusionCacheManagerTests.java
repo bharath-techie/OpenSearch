@@ -41,6 +41,8 @@ public class DatafusionCacheManagerTests extends OpenSearchTestCase {
         clusterSettingsToAdd.add(CacheSettings.STATISTICS_CACHE_ENABLED);
         clusterSettingsToAdd.add(CacheSettings.STATISTICS_CACHE_SIZE_LIMIT);
         clusterSettingsToAdd.add(CacheSettings.STATISTICS_CACHE_EVICTION_TYPE);
+        clusterSettingsToAdd.add(CacheSettings.COLUMN_INDEX_CACHE_SIZE_LIMIT);
+        clusterSettingsToAdd.add(CacheSettings.OFFSET_INDEX_CACHE_SIZE_LIMIT);
         clusterSettingsToAdd.add(DataFusionPlugin.DATAFUSION_MEMORY_POOL_LIMIT);
         clusterSettingsToAdd.add(DataFusionPlugin.DATAFUSION_SPILL_MEMORY_LIMIT);
 

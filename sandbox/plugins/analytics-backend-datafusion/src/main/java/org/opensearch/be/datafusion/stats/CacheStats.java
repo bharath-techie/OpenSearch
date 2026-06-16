@@ -18,8 +18,11 @@ import java.io.IOException;
 import java.util.Objects;
 
 /**
- * Stats for the two parquet caches owned by {@code CustomCacheManager}:
- * the parquet metadata (footer) cache and the column-statistics cache.
+ * Stats for the parquet caches: the {@code CustomCacheManager}-owned metadata
+ * (footer) cache and column-statistics cache, plus the two process-global scoped
+ * page-index caches — the predicate-driven {@code column_index_cache} (keyed per
+ * {@code (file, col, rg)} cell) and the projection-driven {@code offset_index_cache}
+ * (keyed per {@code (file, col)} cell).
  *
  * <p>Each sub-group reports five fields. Disabled caches surface as all-zero
  * groups (in particular {@code size_limit_bytes == 0}); the JSON shape stays
@@ -29,19 +32,27 @@ public class CacheStats implements Writeable, ToXContentFragment {
 
     private final CacheGroupStats metadataCache;
     private final CacheGroupStats statisticsCache;
-    private final CacheGroupStats scopedPageIndexCache;
+    private final CacheGroupStats columnIndexCache;
+    private final CacheGroupStats offsetIndexCache;
 
     /**
      * Construct from individual sub-group stats.
      *
-     * @param metadataCache        metadata cache counters (must not be null)
-     * @param statisticsCache      statistics cache counters (must not be null)
-     * @param scopedPageIndexCache scoped page-index cache counters (must not be null)
+     * @param metadataCache     metadata cache counters (must not be null)
+     * @param statisticsCache   statistics cache counters (must not be null)
+     * @param columnIndexCache  scoped ColumnIndex cache counters (must not be null)
+     * @param offsetIndexCache  scoped OffsetIndex cache counters (must not be null)
      */
-    public CacheStats(CacheGroupStats metadataCache, CacheGroupStats statisticsCache, CacheGroupStats scopedPageIndexCache) {
+    public CacheStats(
+        CacheGroupStats metadataCache,
+        CacheGroupStats statisticsCache,
+        CacheGroupStats columnIndexCache,
+        CacheGroupStats offsetIndexCache
+    ) {
         this.metadataCache = Objects.requireNonNull(metadataCache);
         this.statisticsCache = Objects.requireNonNull(statisticsCache);
-        this.scopedPageIndexCache = Objects.requireNonNull(scopedPageIndexCache);
+        this.columnIndexCache = Objects.requireNonNull(columnIndexCache);
+        this.offsetIndexCache = Objects.requireNonNull(offsetIndexCache);
     }
 
     /**
@@ -53,14 +64,16 @@ public class CacheStats implements Writeable, ToXContentFragment {
     public CacheStats(StreamInput in) throws IOException {
         this.metadataCache = new CacheGroupStats(in);
         this.statisticsCache = new CacheGroupStats(in);
-        this.scopedPageIndexCache = new CacheGroupStats(in);
+        this.columnIndexCache = new CacheGroupStats(in);
+        this.offsetIndexCache = new CacheGroupStats(in);
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         metadataCache.writeTo(out);
         statisticsCache.writeTo(out);
-        scopedPageIndexCache.writeTo(out);
+        columnIndexCache.writeTo(out);
+        offsetIndexCache.writeTo(out);
     }
 
     @Override
@@ -72,8 +85,11 @@ public class CacheStats implements Writeable, ToXContentFragment {
         builder.startObject("statistics_cache");
         statisticsCache.toXContent(builder);
         builder.endObject();
-        builder.startObject("scoped_page_index_cache");
-        scopedPageIndexCache.toXContent(builder);
+        builder.startObject("column_index_cache");
+        columnIndexCache.toXContent(builder);
+        builder.endObject();
+        builder.startObject("offset_index_cache");
+        offsetIndexCache.toXContent(builder);
         builder.endObject();
         builder.endObject();
         return builder;
@@ -89,9 +105,14 @@ public class CacheStats implements Writeable, ToXContentFragment {
         return statisticsCache;
     }
 
-    /** Returns the scoped page-index cache counters. */
-    public CacheGroupStats getScopedPageIndexCache() {
-        return scopedPageIndexCache;
+    /** Returns the scoped ColumnIndex cache counters. */
+    public CacheGroupStats getColumnIndexCache() {
+        return columnIndexCache;
+    }
+
+    /** Returns the scoped OffsetIndex cache counters. */
+    public CacheGroupStats getOffsetIndexCache() {
+        return offsetIndexCache;
     }
 
     @Override
@@ -101,11 +122,12 @@ public class CacheStats implements Writeable, ToXContentFragment {
         CacheStats that = (CacheStats) o;
         return Objects.equals(metadataCache, that.metadataCache)
             && Objects.equals(statisticsCache, that.statisticsCache)
-            && Objects.equals(scopedPageIndexCache, that.scopedPageIndexCache);
+            && Objects.equals(columnIndexCache, that.columnIndexCache)
+            && Objects.equals(offsetIndexCache, that.offsetIndexCache);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(metadataCache, statisticsCache, scopedPageIndexCache);
+        return Objects.hash(metadataCache, statisticsCache, columnIndexCache, offsetIndexCache);
     }
 }

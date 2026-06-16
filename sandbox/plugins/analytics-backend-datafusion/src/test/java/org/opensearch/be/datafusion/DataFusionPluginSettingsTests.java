@@ -115,7 +115,9 @@ public class DataFusionPluginSettingsTests extends OpenSearchTestCase {
     public void testGetSettingsReturnsTotalExpectedCount() {
         try (DataFusionPlugin plugin = new DataFusionPlugin()) {
             List<Setting<?>> settings = plugin.getSettings();
-            assertEquals(28, settings.size());
+            // Split of the single scoped page-index limit into two (column_index +
+            // offset_index) added one net setting (29 → 30).
+            assertEquals(30, settings.size());
         } catch (Exception e) {
             throw new AssertionError(e);
         }

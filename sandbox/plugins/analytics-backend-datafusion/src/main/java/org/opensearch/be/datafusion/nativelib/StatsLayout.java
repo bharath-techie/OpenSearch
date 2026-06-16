@@ -28,9 +28,9 @@ import java.lang.invoke.VarHandle;
  * and provides {@link VarHandle} accessors for each field via layout path navigation.
  *
  * <p>The layout contains 10 named groups (2 runtime × 9 fields + 4 task monitor × 5 fields
- * + 1 partition gate × 8 fields + 1 adaptive budget × 2 fields + 1 cache stats × 15 fields
- * + 1 search stats × 17 fields = 80 longs = 640 bytes). The cache stats group holds three
- * sub-caches × 5 fields each: metadata, statistics, and scoped page-index.
+ * + 1 partition gate × 8 fields + 1 adaptive budget × 2 fields + 1 cache stats × 20 fields
+ * + 1 search stats × 17 fields = 85 longs = 680 bytes). The cache stats group holds four
+ * sub-caches × 5 fields each: metadata, statistics, scoped column-index, and scoped offset-index.
  */
 public final class StatsLayout {
 
@@ -100,8 +100,8 @@ public final class StatsLayout {
     );
 
     static {
-        if (LAYOUT.byteSize() != 80 * Long.BYTES) {
-            throw new AssertionError("StatsLayout size mismatch: expected " + (80 * Long.BYTES) + " but got " + LAYOUT.byteSize());
+        if (LAYOUT.byteSize() != 85 * Long.BYTES) {
+            throw new AssertionError("StatsLayout size mismatch: expected " + (85 * Long.BYTES) + " but got " + LAYOUT.byteSize());
         }
     }
 
@@ -183,12 +183,19 @@ public final class StatsLayout {
     private static final VarHandle CACHE_STATS_MEMORY_BYTES = cacheHandle("statistics_cache", "memory_bytes");
     private static final VarHandle CACHE_STATS_SIZE_LIMIT_BYTES = cacheHandle("statistics_cache", "size_limit_bytes");
 
-    // ---- VarHandles for cache_stats.scoped_page_index_cache fields ----
-    private static final VarHandle CACHE_SPI_HIT_COUNT = cacheHandle("scoped_page_index_cache", "hit_count");
-    private static final VarHandle CACHE_SPI_MISS_COUNT = cacheHandle("scoped_page_index_cache", "miss_count");
-    private static final VarHandle CACHE_SPI_ENTRY_COUNT = cacheHandle("scoped_page_index_cache", "entry_count");
-    private static final VarHandle CACHE_SPI_MEMORY_BYTES = cacheHandle("scoped_page_index_cache", "memory_bytes");
-    private static final VarHandle CACHE_SPI_SIZE_LIMIT_BYTES = cacheHandle("scoped_page_index_cache", "size_limit_bytes");
+    // ---- VarHandles for cache_stats.column_index_cache fields ----
+    private static final VarHandle CACHE_CI_HIT_COUNT = cacheHandle("column_index_cache", "hit_count");
+    private static final VarHandle CACHE_CI_MISS_COUNT = cacheHandle("column_index_cache", "miss_count");
+    private static final VarHandle CACHE_CI_ENTRY_COUNT = cacheHandle("column_index_cache", "entry_count");
+    private static final VarHandle CACHE_CI_MEMORY_BYTES = cacheHandle("column_index_cache", "memory_bytes");
+    private static final VarHandle CACHE_CI_SIZE_LIMIT_BYTES = cacheHandle("column_index_cache", "size_limit_bytes");
+
+    // ---- VarHandles for cache_stats.offset_index_cache fields ----
+    private static final VarHandle CACHE_OI_HIT_COUNT = cacheHandle("offset_index_cache", "hit_count");
+    private static final VarHandle CACHE_OI_MISS_COUNT = cacheHandle("offset_index_cache", "miss_count");
+    private static final VarHandle CACHE_OI_ENTRY_COUNT = cacheHandle("offset_index_cache", "entry_count");
+    private static final VarHandle CACHE_OI_MEMORY_BYTES = cacheHandle("offset_index_cache", "memory_bytes");
+    private static final VarHandle CACHE_OI_SIZE_LIMIT_BYTES = cacheHandle("offset_index_cache", "size_limit_bytes");
 
     // ---- VarHandles for search_stats fields ----
     private static final VarHandle SS_LISTING_TABLE_SCAN = handle("search_stats", "listing_table_scan");
@@ -318,14 +325,21 @@ public final class StatsLayout {
             (long) CACHE_STATS_MEMORY_BYTES.get(seg, 0L),
             (long) CACHE_STATS_SIZE_LIMIT_BYTES.get(seg, 0L)
         );
-        CacheGroupStats scopedPageIndex = new CacheGroupStats(
-            (long) CACHE_SPI_HIT_COUNT.get(seg, 0L),
-            (long) CACHE_SPI_MISS_COUNT.get(seg, 0L),
-            (long) CACHE_SPI_ENTRY_COUNT.get(seg, 0L),
-            (long) CACHE_SPI_MEMORY_BYTES.get(seg, 0L),
-            (long) CACHE_SPI_SIZE_LIMIT_BYTES.get(seg, 0L)
+        CacheGroupStats columnIndex = new CacheGroupStats(
+            (long) CACHE_CI_HIT_COUNT.get(seg, 0L),
+            (long) CACHE_CI_MISS_COUNT.get(seg, 0L),
+            (long) CACHE_CI_ENTRY_COUNT.get(seg, 0L),
+            (long) CACHE_CI_MEMORY_BYTES.get(seg, 0L),
+            (long) CACHE_CI_SIZE_LIMIT_BYTES.get(seg, 0L)
         );
-        return new CacheStats(metadata, statistics, scopedPageIndex);
+        CacheGroupStats offsetIndex = new CacheGroupStats(
+            (long) CACHE_OI_HIT_COUNT.get(seg, 0L),
+            (long) CACHE_OI_MISS_COUNT.get(seg, 0L),
+            (long) CACHE_OI_ENTRY_COUNT.get(seg, 0L),
+            (long) CACHE_OI_MEMORY_BYTES.get(seg, 0L),
+            (long) CACHE_OI_SIZE_LIMIT_BYTES.get(seg, 0L)
+        );
+        return new CacheStats(metadata, statistics, columnIndex, offsetIndex);
     }
 
     /**
@@ -419,7 +433,8 @@ public final class StatsLayout {
         return MemoryLayout.structLayout(
             cacheGroup("metadata_cache"),
             cacheGroup("statistics_cache"),
-            cacheGroup("scoped_page_index_cache")
+            cacheGroup("column_index_cache"),
+            cacheGroup("offset_index_cache")
         ).withName(name);
     }
 

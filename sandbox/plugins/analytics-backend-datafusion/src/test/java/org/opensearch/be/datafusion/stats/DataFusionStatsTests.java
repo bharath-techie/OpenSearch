@@ -279,7 +279,8 @@ public class DataFusionStatsTests extends OpenSearchTestCase {
         CacheStats cache = new CacheStats(
             new CacheGroupStats(100, 5, 25, 4096, 250_000_000),
             new CacheGroupStats(50, 0, 25, 2048, 100_000_000),
-            new CacheGroupStats(20, 3, 8, 1024, 64_000_000)
+            new CacheGroupStats(20, 3, 8, 1024, 64_000_000),
+            new CacheGroupStats(12, 2, 6, 512, 16_000_000)
         );
         DataFusionStats stats = new DataFusionStats(
             new NativeExecutorsStats(io, null, taskMonitors),

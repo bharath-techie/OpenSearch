@@ -118,14 +118,21 @@ public final class CacheUtils {
             }
         }
 
-        // The scoped page-index cache is a process-global singleton (not owned by
-        // the cache manager), so its limit is pushed straight to native rather
-        // than created on the manager. Startup-only for now; a settings-update
-        // consumer can call NativeBridge.setScopedPageIndexCacheLimit to make it
+        // The scoped page-index caches are process-global singletons (not owned by
+        // the cache manager), so their limits are pushed straight to native rather
+        // than created on the manager. The heavy ColumnIndex and the cheap
+        // OffsetIndex are budgeted independently. Startup-only for now; a
+        // settings-update consumer can call the NativeBridge setters to make them
         // dynamic.
-        long scopedLimit = clusterSettings.get(CacheSettings.SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT).getBytes();
-        logger.info("Configuring scoped page-index cache: size={} bytes", scopedLimit);
-        NativeBridge.setScopedPageIndexCacheLimit(scopedLimit);
+        long columnIndexLimit = clusterSettings.get(CacheSettings.COLUMN_INDEX_CACHE_SIZE_LIMIT).getBytes();
+        long offsetIndexLimit = clusterSettings.get(CacheSettings.OFFSET_INDEX_CACHE_SIZE_LIMIT).getBytes();
+        logger.info(
+            "Configuring scoped page-index caches: columnIndex={} bytes, offsetIndex={} bytes",
+            columnIndexLimit,
+            offsetIndexLimit
+        );
+        NativeBridge.setColumnIndexCacheLimit(columnIndexLimit);
+        NativeBridge.setOffsetIndexCacheLimit(offsetIndexLimit);
 
         logger.info("Cache configuration completed");
         return handle;

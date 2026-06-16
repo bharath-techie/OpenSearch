@@ -228,6 +228,8 @@ public class DataFusionServiceTests extends OpenSearchTestCase {
         all.add(CacheSettings.STATISTICS_CACHE_ENABLED);
         all.add(CacheSettings.STATISTICS_CACHE_SIZE_LIMIT);
         all.add(CacheSettings.STATISTICS_CACHE_EVICTION_TYPE);
+        all.add(CacheSettings.COLUMN_INDEX_CACHE_SIZE_LIMIT);
+        all.add(CacheSettings.OFFSET_INDEX_CACHE_SIZE_LIMIT);
         all.add(DataFusionPlugin.DATAFUSION_MEMORY_POOL_LIMIT);
         all.add(DataFusionPlugin.DATAFUSION_SPILL_MEMORY_LIMIT);
         return new ClusterSettings(settings, all);

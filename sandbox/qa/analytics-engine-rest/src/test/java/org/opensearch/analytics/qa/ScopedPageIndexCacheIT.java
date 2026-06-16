@@ -17,27 +17,35 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * End-to-end integration test for the unified scoped parquet page-index cache and
- * the footer-only level-1 metadata cache, verified through the node-stats API
+ * End-to-end integration test for the cell-keyed scoped parquet page-index caches
+ * and the footer-only level-1 metadata cache, verified through the node-stats API
  * ({@code GET /_plugins/_analytics_backend_datafusion/stats}) — the
- * {@code cache_stats.metadata_cache} and {@code cache_stats.scoped_page_index_cache}
- * groups.
+ * {@code cache_stats.metadata_cache}, {@code cache_stats.column_index_cache}, and
+ * {@code cache_stats.offset_index_cache} groups.
  *
- * <p>This suite is deliberately broad: it checks query <b>correctness</b> (not
- * just cache counters), that the <b>level-1 metadata cache still works</b> after
- * the page-index strip, the full <b>scoped-cache</b> hit/miss/size story, and that
- * a spread of query shapes (aggregations, multi-column filters, full-text
- * {@code match}) all still execute. The goal is to prove the page-index changes
- * broke nothing.
+ * <h2>The two scoped caches</h2>
  *
- * <h2>Why assertions are same-method, twice-run deltas</h2>
+ * The scoped page index is split into two process-global caches, each keyed at
+ * <b>cell</b> granularity so an index is decoded and stored once per file and
+ * reused across query shapes:
+ * <ul>
+ *   <li><b>{@code column_index_cache}</b> — the heavy, predicate-driven ColumnIndex
+ *       (per-page string min/max), keyed per {@code (file, col, rg)} cell. Adding a
+ *       column to a predicate, or changing a literal, never re-decodes a cell that
+ *       is already cached; only genuinely new {@code (col, rg)} cells are read.</li>
+ *   <li><b>{@code offset_index_cache}</b> — the cheap, projection-driven OffsetIndex
+ *       (fixed-width page offsets), keyed per {@code (file, col)} cell (the value
+ *       spans all row groups). Different projections reuse shared column cells.</li>
+ * </ul>
  *
- * The scoped cache is a <b>process-global singleton</b> that persists for the life
- * of the node; the cluster is preserved across methods which run in randomized
- * order; there is no reset endpoint; and provisioning triggers a refresh that
- * warms the (footer-only) metadata cache. So a method must NOT assume a cold
- * cache. The robust signal is measured within one method: run a query, snapshot,
- * run the SAME query again, snapshot — the second run must be a pure hit.
+ * <h2>Determinism: the clear endpoint + same-method deltas</h2>
+ *
+ * Most assertions clear the scoped caches first via
+ * {@code POST /_plugins/_analytics_backend_datafusion/cache/scoped_page_index/_clear}
+ * so a method starts from a known-empty state, then measure deltas across queries
+ * within the one method. (The caches are process-global singletons that persist for
+ * the life of the node and the cluster is preserved across randomly-ordered methods,
+ * so a method must never assume a globally cold cache — it clears explicitly.)
  *
  * <p>Run (fast): {@code ./gradlew :sandbox:qa:analytics-engine-rest:integTest
  * --tests "*ScopedPageIndexCacheIT" -Dsandbox.enabled=true -PrustDebug}.
@@ -92,12 +100,24 @@ public class ScopedPageIndexCacheIT extends AnalyticsRestTestCase {
         return new CacheGroup(hits, misses, entries, memory, limit);
     }
 
-    private CacheGroup scoped() throws IOException {
-        return fetchGroup("scoped_page_index_cache");
+    /** Scoped ColumnIndex cache (predicate-driven, per {@code (file, col, rg)} cell). */
+    private CacheGroup columnIndex() throws IOException {
+        return fetchGroup("column_index_cache");
+    }
+
+    /** Scoped OffsetIndex cache (projection-driven, per {@code (file, col)} cell). */
+    private CacheGroup offsetIndex() throws IOException {
+        return fetchGroup("offset_index_cache");
     }
 
     private CacheGroup metadata() throws IOException {
         return fetchGroup("metadata_cache");
+    }
+
+    /** Drop all entries + reset counters in BOTH scoped caches (testing convenience). */
+    private void clearScopedCaches() throws IOException {
+        Request request = new Request("POST", "/_plugins/_analytics_backend_datafusion/cache/scoped_page_index/_clear");
+        assertOkAndParse(client().performRequest(request), "clear scoped page-index cache");
     }
 
     private static long num(Map<String, Object> obj, String key) {
@@ -127,52 +147,53 @@ public class ScopedPageIndexCacheIT extends AnalyticsRestTestCase {
         return ((Number) first.get(0)).longValue();
     }
 
+    private String src() {
+        return "source=" + DATASET.indexName;
+    }
+
     // ---- exposure + correctness -----------------------------------------
 
     /**
-     * The scoped page-index cache group must always be present with a positive
-     * byte budget (its configured 64mb limit), even before any query runs.
+     * Both scoped cache groups must always be present with a positive byte budget
+     * (their configured limits), even before any query runs.
      */
-    public void testScopedCacheGroupIsExposedWithBudget() throws IOException {
-        CacheGroup snap = scoped();
-        assertTrue(
-            "scoped_page_index_cache must advertise a positive size_limit_bytes, got " + snap.sizeLimitBytes(),
-            snap.sizeLimitBytes() > 0
-        );
-        assertTrue("hit_count >= 0", snap.hits() >= 0);
-        assertTrue("miss_count >= 0", snap.misses() >= 0);
-        assertTrue("entry_count >= 0", snap.entries() >= 0);
+    public void testScopedCacheGroupsAreExposedWithBudgets() throws IOException {
+        for (CacheGroup snap : new CacheGroup[] { columnIndex(), offsetIndex() }) {
+            assertTrue(
+                "scoped cache must advertise a positive size_limit_bytes, got " + snap.sizeLimitBytes(),
+                snap.sizeLimitBytes() > 0
+            );
+            assertTrue("hit_count >= 0", snap.hits() >= 0);
+            assertTrue("miss_count >= 0", snap.misses() >= 0);
+            assertTrue("entry_count >= 0", snap.entries() >= 0);
+        }
     }
 
     /**
-     * The page-index changes must not change query answers. Exact-count
-     * assertions over the listing path (numeric + keyword predicates) against
-     * known dataset cardinalities.
+     * The page-index changes must not change query answers. Exact-count assertions
+     * over the listing path (numeric + keyword predicates) against known dataset
+     * cardinalities.
      */
     public void testListingQueryCorrectnessUnchanged() throws IOException {
-        assertEquals(
-            "total doc count must be exact",
-            TOTAL_DOCS,
-            scalarAgg("source=" + DATASET.indexName + " | stats count()")
-        );
+        assertEquals("total doc count must be exact", TOTAL_DOCS, scalarAgg(src() + " | stats count()"));
         assertEquals(
             "status >= 400 count must be exact (numeric listing predicate)",
             STATUS_GE_400,
-            scalarAgg("source=" + DATASET.indexName + " | where status >= 400 | stats count()")
+            scalarAgg(src() + " | where status >= 400 | stats count()")
         );
         assertEquals(
             "log_level = 'ERROR' count must be exact (keyword predicate)",
             LEVEL_ERROR,
-            scalarAgg("source=" + DATASET.indexName + " | where log_level = 'ERROR' | stats count()")
+            scalarAgg(src() + " | where log_level = 'ERROR' | stats count()")
         );
     }
 
     /**
      * The same correctness must hold when the SAME query is re-run (served partly
-     * from the scoped cache) — a cached page index must never change the answer.
+     * from the scoped caches) — a cached page index must never change the answer.
      */
     public void testCorrectnessIsStableAcrossCachedReRuns() throws IOException {
-        String q = "source=" + DATASET.indexName + " | where status >= 400 | stats count()";
+        String q = src() + " | where status >= 400 | stats count()";
         long first = scalarAgg(q);
         long second = scalarAgg(q);
         assertEquals("cold and warm runs must agree", first, second);
@@ -184,186 +205,349 @@ public class ScopedPageIndexCacheIT extends AnalyticsRestTestCase {
     /**
      * The footer-only level-1 metadata cache must still function: after repeated
      * queries it holds entries and registers hits (footers are reused, not
-     * re-read). This guards against the page-index strip accidentally breaking
-     * normal footer caching.
+     * re-read). Guards against the page-index strip breaking normal footer caching.
      */
     public void testMetadataCacheStillServesFooters() throws IOException {
-        String q = "source=" + DATASET.indexName + " | where status >= 200 | stats count() by service_name";
-        // Warm.
-        executePpl(q);
+        String q = src() + " | where status >= 200 | stats count() by service_name";
+        executePpl(q); // warm
         CacheGroup before = metadata();
-        // Several more runs — footers must come from cache, driving hits up.
         for (int i = 0; i < 5; i++) {
             executePpl(q);
         }
         CacheGroup after = metadata();
 
-        assertTrue(
-            "metadata cache must hold at least one footer entry, got " + after.entries(),
-            after.entries() >= 1
-        );
+        assertTrue("metadata cache must hold at least one footer entry, got " + after.entries(), after.entries() >= 1);
         assertTrue(
             String.format(Locale.ROOT, "metadata cache must register hits across repeated queries (before=%d after=%d)",
                 before.hits(), after.hits()),
             after.hits() > before.hits()
         );
-        assertTrue(
-            "metadata cache must advertise its configured byte budget",
-            after.sizeLimitBytes() > 0
-        );
+        assertTrue("metadata cache must advertise its configured byte budget", after.sizeLimitBytes() > 0);
     }
 
-    // ---- scoped cache: populate, hit, bounded ---------------------------
+    // ---- populate, hit, bounded -----------------------------------------
 
     /**
-     * A filtered listing query populates the scoped cache (entry + bytes &gt; 0)
-     * at query time, and re-running the IDENTICAL query is a pure hit: hits up;
-     * misses, entries, and memory_bytes flat. Measures hits, misses, AND size.
+     * A filtered listing query populates the scoped caches (entries + bytes &gt; 0)
+     * at query time, and re-running the IDENTICAL query is a pure hit in BOTH
+     * caches: hits up; misses, entries, and memory_bytes flat.
      */
     public void testSameListingQueryReRunIsPureCacheHit() throws IOException {
-        String query = "source=" + DATASET.indexName + " | where status >= 400 | stats count() by service_name";
+        clearScopedCaches();
+        String query = src() + " | where status >= 400 | stats count() by service_name";
 
         executePpl(query);
-        CacheGroup afterFirst = scoped();
-        assertTrue("scoped cache must hold >= 1 entry after a listing query", afterFirst.entries() >= 1);
-        assertTrue("populated scoped cache must consume memory_bytes", afterFirst.memoryBytes() > 0);
+        CacheGroup ci1 = columnIndex();
+        CacheGroup oi1 = offsetIndex();
+        assertTrue("ColumnIndex cache must hold >= 1 cell after a filtered query", ci1.entries() >= 1);
+        assertTrue("ColumnIndex cache must consume memory_bytes", ci1.memoryBytes() > 0);
+        assertTrue("OffsetIndex cache must hold >= 1 cell after a query that reads columns", oi1.entries() >= 1);
 
         executePpl(query);
-        CacheGroup afterSecond = scoped();
+        CacheGroup ci2 = columnIndex();
+        CacheGroup oi2 = offsetIndex();
 
         assertTrue(
-            String.format(Locale.ROOT, "re-run must register hits (h1=%d m1=%d h2=%d m2=%d)",
-                afterFirst.hits(), afterFirst.misses(), afterSecond.hits(), afterSecond.misses()),
-            afterSecond.hits() > afterFirst.hits()
+            String.format(Locale.ROOT, "CI re-run must register hits (h1=%d h2=%d)", ci1.hits(), ci2.hits()),
+            ci2.hits() > ci1.hits()
         );
-        assertEquals("re-run must NOT add misses", afterFirst.misses(), afterSecond.misses());
-        assertEquals("re-run must NOT add entries (no duplication)", afterFirst.entries(), afterSecond.entries());
-        assertEquals("re-run must NOT grow memory_bytes (no over-alloc)", afterFirst.memoryBytes(), afterSecond.memoryBytes());
+        assertEquals("CI re-run must NOT add misses", ci1.misses(), ci2.misses());
+        assertEquals("CI re-run must NOT add cells (no duplication)", ci1.entries(), ci2.entries());
+        assertEquals("CI re-run must NOT grow memory_bytes", ci1.memoryBytes(), ci2.memoryBytes());
+
+        assertTrue("OI re-run must register hits", oi2.hits() > oi1.hits());
+        assertEquals("OI re-run must NOT add misses", oi1.misses(), oi2.misses());
+        assertEquals("OI re-run must NOT add cells", oi1.entries(), oi2.entries());
+        assertEquals("OI re-run must NOT grow memory_bytes", oi1.memoryBytes(), oi2.memoryBytes());
     }
 
     /**
-     * Repeated identical queries keep the cache bounded: entries and bytes do not
+     * Repeated identical queries keep the caches bounded: cells and bytes do not
      * grow after the first populating run; the re-runs all register hits.
      */
     public void testRepeatedListingQueriesDoNotGrowTheCache() throws IOException {
-        String query = "source=" + DATASET.indexName + " | where status >= 200 | stats count()";
+        clearScopedCaches();
+        String query = src() + " | where status >= 200 | stats count()";
 
         executePpl(query);
-        CacheGroup baseline = scoped();
-        assertTrue("entry must exist after first run", baseline.entries() >= 1);
+        CacheGroup ciBase = columnIndex();
+        CacheGroup oiBase = offsetIndex();
+        assertTrue("CI cell must exist after first run", ciBase.entries() >= 1);
 
         for (int i = 0; i < 9; i++) {
             executePpl(query);
         }
-        CacheGroup after = scoped();
+        CacheGroup ciAfter = columnIndex();
+        CacheGroup oiAfter = offsetIndex();
 
-        assertEquals("repeated queries must not add entries", baseline.entries(), after.entries());
-        assertEquals("repeated queries must not grow memory_bytes", baseline.memoryBytes(), after.memoryBytes());
-        assertEquals("repeated queries must not add misses", baseline.misses(), after.misses());
+        assertEquals("repeated queries must not add CI cells", ciBase.entries(), ciAfter.entries());
+        assertEquals("repeated queries must not grow CI memory_bytes", ciBase.memoryBytes(), ciAfter.memoryBytes());
+        assertEquals("repeated queries must not add CI misses", ciBase.misses(), ciAfter.misses());
+        assertEquals("repeated queries must not add OI cells", oiBase.entries(), oiAfter.entries());
+        assertEquals("repeated queries must not add OI misses", oiBase.misses(), oiAfter.misses());
         assertTrue(
-            String.format(Locale.ROOT, "the 9 re-runs must register hits (baseline=%d after=%d)",
-                baseline.hits(), after.hits()),
-            after.hits() >= baseline.hits() + 9
+            String.format(Locale.ROOT, "the 9 CI re-runs must register hits (base=%d after=%d)",
+                ciBase.hits(), ciAfter.hits()),
+            ciAfter.hits() >= ciBase.hits() + 9
         );
     }
 
     /**
-     * The scoped cache must never exceed its configured byte budget — a basic
+     * Neither scoped cache may exceed its configured byte budget — a basic
      * "no over-allocation" invariant readable from the stats API.
      */
-    public void testScopedCacheStaysWithinBudget() throws IOException {
-        // Exercise a few distinct predicate shapes to build whatever entries the
-        // listing path produces, then assert occupancy <= budget.
-        executePpl("source=" + DATASET.indexName + " | where status >= 400 | stats count()");
-        executePpl("source=" + DATASET.indexName + " | where status < 300 | stats count()");
-        CacheGroup snap = scoped();
+    public void testScopedCachesStayWithinBudget() throws IOException {
+        executePpl(src() + " | where status >= 400 | stats count()");
+        executePpl(src() + " | where status < 300 | stats count()");
+        executePpl(src() + " | where log_level = 'ERROR' | stats count()");
+        for (CacheGroup snap : new CacheGroup[] { columnIndex(), offsetIndex() }) {
+            assertTrue(
+                String.format(Locale.ROOT, "scoped cache memory_bytes (%d) must stay within size_limit_bytes (%d)",
+                    snap.memoryBytes(), snap.sizeLimitBytes()),
+                snap.memoryBytes() <= snap.sizeLimitBytes()
+            );
+        }
+    }
+
+    // ---- cell reuse: ColumnIndex (predicate-driven) ---------------------
+
+    /**
+     * Adding a column to a predicate must reuse the cells the first predicate
+     * already decoded — only the genuinely new column's cells are read. Filter
+     * {@code status}, then {@code status AND log_level}: the {@code status} cells
+     * are reused (CI hits strictly increase) and no fewer cells exist than before
+     * (the {@code log_level} cells are added, never replacing {@code status}).
+     */
+    public void testAddingPredicateColumnReusesExistingCells() throws IOException {
+        clearScopedCaches();
+
+        executePpl(src() + " | where status >= 400 | stats count()");
+        CacheGroup afterStatus = columnIndex();
+        assertTrue("first predicate must populate CI cells", afterStatus.entries() >= 1);
+        long missesAfterStatus = afterStatus.misses();
+
+        // Predicate now also covers log_level: status cells reused, log_level new.
+        executePpl(src() + " | where status >= 400 and log_level = 'ERROR' | stats count()");
+        CacheGroup afterBoth = columnIndex();
+
         assertTrue(
-            String.format(Locale.ROOT, "scoped cache memory_bytes (%d) must stay within size_limit_bytes (%d)",
-                snap.memoryBytes(), snap.sizeLimitBytes()),
-            snap.memoryBytes() <= snap.sizeLimitBytes()
+            String.format(Locale.ROOT, "adding a column must REUSE the status cells (hits %d -> %d)",
+                afterStatus.hits(), afterBoth.hits()),
+            afterBoth.hits() > afterStatus.hits()
         );
+        assertTrue(
+            "adding a column must keep all prior cells and add the new column's cells",
+            afterBoth.entries() >= afterStatus.entries()
+        );
+        // The only NEW misses are for log_level's cells — status was never re-decoded.
+        assertTrue(
+            "new misses must be bounded by the newly added column's cells (status not re-decoded)",
+            afterBoth.misses() > missesAfterStatus
+        );
+    }
+
+    /**
+     * Two predicates on the SAME column with DIFFERENT literals must share the
+     * cells — the predicate VALUE never enters the cache key, so changing it adds
+     * no cells and the second query is a pure hit on the first's cells.
+     */
+    public void testDifferentLiteralsSameColumnShareCells() throws IOException {
+        clearScopedCaches();
+
+        executePpl(src() + " | where status >= 400 | stats count()");
+        CacheGroup first = columnIndex();
+        assertTrue("first literal must populate CI cells", first.entries() >= 1);
+
+        executePpl(src() + " | where status >= 100 | stats count()");
+        CacheGroup second = columnIndex();
+
+        assertEquals("a different literal on the same column must add NO cells", first.entries(), second.entries());
+        assertEquals("a different literal must add NO misses (cells reused)", first.misses(), second.misses());
+        assertTrue(
+            String.format(Locale.ROOT, "the second literal must HIT the existing cells (hits %d -> %d)",
+                first.hits(), second.hits()),
+            second.hits() > first.hits()
+        );
+    }
+
+    /**
+     * A predicate that is a SUBSET of an already-cached predicate's columns reuses
+     * the relevant cells without decoding anything new. Cache a two-column
+     * predicate ({@code status AND log_level}), then run a one-column predicate
+     * ({@code status}) — {@code status}'s cells are a pure hit, adding no cells and
+     * no misses. (We use a compound predicate to bring the keyword {@code log_level}
+     * onto the native page-index path; a standalone keyword equality is fully
+     * Lucene-delegated and builds no page index — see the handoff notes.)
+     */
+    public void testSubsetPredicateReusesCachedCells() throws IOException {
+        clearScopedCaches();
+
+        // Compound predicate caches cells for BOTH status and log_level.
+        executePpl(src() + " | where status >= 400 and log_level = 'ERROR' | stats count()");
+        CacheGroup afterBoth = columnIndex();
+        assertTrue("compound predicate must populate CI cells for both columns", afterBoth.entries() >= 2);
+
+        // Subset predicate (status only): its cells are already cached → pure hit.
+        executePpl(src() + " | where status >= 400 | stats count()");
+        CacheGroup afterSubset = columnIndex();
+        assertEquals("a subset predicate must add NO new cells", afterBoth.entries(), afterSubset.entries());
+        assertEquals("a subset predicate must add NO misses (cells reused)", afterBoth.misses(), afterSubset.misses());
+        assertTrue(
+            String.format(Locale.ROOT, "a subset predicate must HIT the cached cells (hits %d -> %d)",
+                afterBoth.hits(), afterSubset.hits()),
+            afterSubset.hits() > afterBoth.hits()
+        );
+    }
+
+    // ---- cell reuse: OffsetIndex (projection-driven) --------------------
+
+    /**
+     * Different projections on the same predicate must reuse the shared OffsetIndex
+     * column cells and only decode the newly projected column. Project a small set
+     * of fields, then a different set sharing some columns: OI hits increase
+     * (shared columns reused) while only the genuinely new column adds a cell.
+     */
+    public void testDifferentProjectionsReuseOffsetIndexCells() throws IOException {
+        clearScopedCaches();
+
+        // First projection.
+        executePpl(src() + " | where status >= 400 | fields status, service_name");
+        CacheGroup first = offsetIndex();
+        assertTrue("first projection must populate OI cells", first.entries() >= 1);
+
+        // Overlapping projection (shares status; adds log_level).
+        executePpl(src() + " | where status >= 400 | fields status, log_level");
+        CacheGroup second = offsetIndex();
+
+        assertTrue(
+            String.format(Locale.ROOT, "overlapping projection must REUSE shared OI column cells (hits %d -> %d)",
+                first.hits(), second.hits()),
+            second.hits() > first.hits()
+        );
+        assertTrue("overlapping projection must keep prior cells", second.entries() >= first.entries());
+    }
+
+    /**
+     * The OffsetIndex cache is keyed only on {@code (file, col)} — independent of
+     * the predicate. Two queries with DIFFERENT predicates but the SAME projection
+     * must reuse the same OffsetIndex column cells (predicate changes don't
+     * multiply OI cells).
+     */
+    public void testOffsetIndexIndependentOfPredicate() throws IOException {
+        clearScopedCaches();
+
+        executePpl(src() + " | where status >= 400 | fields status, service_name");
+        CacheGroup first = offsetIndex();
+
+        // Different predicate, same projected columns → same OI cells.
+        executePpl(src() + " | where log_level = 'ERROR' | fields status, service_name");
+        CacheGroup second = offsetIndex();
+
+        assertEquals(
+            "same projection under a different predicate must add NO new OI cells",
+            first.entries(),
+            second.entries()
+        );
+        assertTrue("the shared OI cells must be hit", second.hits() > first.hits());
+    }
+
+    // ---- cross-path sharing (one cache, both scan paths) ----------------
+
+    /**
+     * The scoped caches must be shared across scan paths: a cell built for a
+     * predicate column on the listing path is reused by the indexed path for the
+     * same column. A listing query filters {@code status}; then an indexed query
+     * (forced onto the indexed path by a {@code match(message, ...)} full-text
+     * filter) ALSO filters {@code status}, so it resolves to the SAME
+     * {@code (file, status, rg)} cells and HITS them — CI hits increase while the
+     * cell count does not grow (no second, path-specific cells).
+     */
+    public void testCrossPathSharingListingThenIndexed() throws IOException {
+        clearScopedCaches();
+
+        // Listing path: numeric predicate on `status` populates CI cells.
+        executePpl(src() + " | where status >= 400 | stats count()");
+        CacheGroup afterListing = columnIndex();
+        assertTrue("listing query must populate scoped CI cells", afterListing.entries() >= 1);
+
+        // Indexed path: a match() filter forces indexed routing; it also filters
+        // `status`, so it resolves to the SAME (file, status, rg) cells.
+        executePpl(src() + " | where match(message, 'timeout') and status >= 400 | stats count()");
+        CacheGroup afterIndexed = columnIndex();
+
+        assertTrue(
+            String.format(Locale.ROOT,
+                "indexed query on the same predicate column must HIT the listing cells (listing hits=%d indexed hits=%d)",
+                afterListing.hits(), afterIndexed.hits()),
+            afterIndexed.hits() > afterListing.hits()
+        );
+        assertEquals(
+            "cross-path reuse must NOT create new cells for the same (file, predicate column)",
+            afterListing.entries(),
+            afterIndexed.entries()
+        );
+        assertEquals(
+            "cross-path reuse must NOT grow CI memory_bytes",
+            afterListing.memoryBytes(),
+            afterIndexed.memoryBytes()
+        );
+    }
+
+    // ---- clear endpoint --------------------------------------------------
+
+    /**
+     * The clear endpoint must drop all cells and reset counters in BOTH scoped
+     * caches: after a populating query and a clear, both groups read zero entries,
+     * zero hits, and zero misses, while keeping their configured budgets.
+     */
+    public void testClearEndpointResetsBothCaches() throws IOException {
+        executePpl(src() + " | where status >= 400 | fields status, service_name");
+        // Something must be cached before we clear.
+        assertTrue("a filtered+projected query must populate CI cells", columnIndex().entries() >= 1);
+        assertTrue("a filtered+projected query must populate OI cells", offsetIndex().entries() >= 1);
+
+        clearScopedCaches();
+
+        CacheGroup ci = columnIndex();
+        CacheGroup oi = offsetIndex();
+        assertEquals("clear must reset CI cells", 0, ci.entries());
+        assertEquals("clear must reset CI hits", 0, ci.hits());
+        assertEquals("clear must reset CI misses", 0, ci.misses());
+        assertEquals("clear must reset CI memory_bytes", 0, ci.memoryBytes());
+        assertTrue("clear must keep the CI budget", ci.sizeLimitBytes() > 0);
+        assertEquals("clear must reset OI cells", 0, oi.entries());
+        assertEquals("clear must reset OI hits", 0, oi.hits());
+        assertEquals("clear must reset OI misses", 0, oi.misses());
+        assertTrue("clear must keep the OI budget", oi.sizeLimitBytes() > 0);
     }
 
     // ---- no-breakage query sweep ----------------------------------------
 
     /**
-     * A spread of query shapes must all execute successfully (HTTP 200, parseable
-     * datarows) with the page-index changes in place: plain projection,
-     * aggregation, multi-column filter, full-text match (Lucene-delegated path),
-     * and a mixed predicate. This is the broad "nothing is broken" guard.
+     * A spread of query shapes must all execute successfully with the cell-keyed
+     * caches in place: plain projection, aggregation, multi-column filter,
+     * full-text match (Lucene-delegated path), and a mixed predicate.
      */
     public void testVariedQueryShapesAllExecute() throws IOException {
         String idx = DATASET.indexName;
 
-        // Plain projection (no predicate).
         assertEquals("plain projection returns all docs", TOTAL_DOCS, rowCount("source=" + idx + " | fields service_name, status"));
 
-        // Aggregation with grouping.
         assertTrue(
             "grouped aggregation must return at least one bucket",
             rowCount("source=" + idx + " | stats count() by service_name") >= 1
         );
 
-        // Multi-column native predicate (listing path).
         assertEquals(
-            "multi-column filter must be exact",
+            "multi-column filter must be order-independent",
             scalarAgg("source=" + idx + " | where status >= 400 and log_level = 'ERROR' | stats count()"),
             scalarAgg("source=" + idx + " | where log_level = 'ERROR' and status >= 400 | stats count()")
         );
 
-        // Full-text match — exercises the Lucene-delegated path; must not error.
-        // (Count is data-dependent; we only assert it executes and is non-negative.)
         long matchCount = scalarAgg("source=" + idx + " | where match(message, 'timeout') | stats count()");
         assertTrue("match() query must execute and return a non-negative count", matchCount >= 0);
 
-        // Mixed: native predicate + full-text, then aggregate.
         long mixed = scalarAgg("source=" + idx + " | where status >= 400 or match(message, 'error') | stats count()");
         assertTrue("mixed predicate query must execute", mixed >= 0);
-    }
-
-    // ---- cross-path sharing (constraint #1) ------------------------------
-
-    /**
-     * The unified cache must be shared across scan paths: an entry built for a
-     * predicate column on one path is reused by the other for the same column.
-     *
-     * <p>Here a listing query filters {@code status}, then an indexed query
-     * (forced onto the indexed path by a {@code match(message, ...)} full-text
-     * filter) ALSO filters {@code status}. Because both paths resolve the same
-     * file + predicate column to the same scoped-cache key, the indexed query
-     * must HIT the entry the listing query built: hits increase while entries do
-     * not grow (no second, path-specific entry).
-     */
-    public void testCrossPathSharingListingThenIndexed() throws IOException {
-        String idx = DATASET.indexName;
-        // Listing path: numeric predicate on `status` populates the scoped entry.
-        String listingQuery = "source=" + idx + " | where status >= 400 | stats count()";
-        executePpl(listingQuery);
-        CacheGroup afterListing = scoped();
-        assertTrue("listing query must populate a scoped entry", afterListing.entries() >= 1);
-
-        // Indexed path: a match() filter forces indexed routing; it also filters
-        // `status`, so it resolves to the SAME (file, status) scoped-cache key.
-        String indexedQuery =
-            "source=" + idx + " | where match(message, 'timeout') and status >= 400 | stats count()";
-        executePpl(indexedQuery);
-        CacheGroup afterIndexed = scoped();
-
-        assertTrue(
-            String.format(Locale.ROOT,
-                "indexed query on the same predicate column must HIT the listing entry (listing hits=%d indexed hits=%d)",
-                afterListing.hits(), afterIndexed.hits()),
-            afterIndexed.hits() > afterListing.hits()
-        );
-        assertEquals(
-            "cross-path reuse must NOT create a second entry for the same (file, predicate column)",
-            afterListing.entries(),
-            afterIndexed.entries()
-        );
-        assertEquals(
-            "cross-path reuse must NOT grow memory_bytes",
-            afterListing.memoryBytes(),
-            afterIndexed.memoryBytes()
-        );
     }
 }

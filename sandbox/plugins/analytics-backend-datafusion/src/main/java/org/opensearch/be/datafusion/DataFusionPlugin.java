@@ -748,7 +748,13 @@ public class DataFusionPlugin extends Plugin
 
     @Override
     public List<ActionHandler<? extends ActionRequest, ? extends ActionResponse>> getActions() {
-        return List.of(new ActionHandler<>(DataFusionStatsActionType.INSTANCE, TransportDataFusionStatsAction.class));
+        return List.of(
+            new ActionHandler<>(DataFusionStatsActionType.INSTANCE, TransportDataFusionStatsAction.class),
+            new ActionHandler<>(
+                org.opensearch.be.datafusion.action.stats.ClearScopedPageIndexCacheActionType.INSTANCE,
+                org.opensearch.be.datafusion.action.stats.TransportClearScopedPageIndexCacheAction.class
+            )
+        );
     }
 
     @Override

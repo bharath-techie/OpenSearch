@@ -8,13 +8,10 @@
 
 package org.opensearch.be.datafusion.action.stats;
 
-import org.opensearch.be.datafusion.nativelib.NativeBridge;
-import org.opensearch.transport.client.node.NodeClient;
-import org.opensearch.core.rest.RestStatus;
-import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.rest.BaseRestHandler;
-import org.opensearch.rest.BytesRestResponse;
 import org.opensearch.rest.RestRequest;
+import org.opensearch.rest.action.RestActions.NodesResponseRestListener;
+import org.opensearch.transport.client.node.NodeClient;
 
 import java.io.IOException;
 import java.util.List;
@@ -23,17 +20,17 @@ import static java.util.Collections.singletonList;
 import static org.opensearch.rest.RestRequest.Method.POST;
 
 /**
- * Clears the process-global scoped page-index cache on the local node (drops
- * entries + resets counters, keeps the configured budget).
+ * Clears the process-global scoped page-index caches (ColumnIndex + OffsetIndex)
+ * across ALL nodes in the cluster (drops entries + resets counters, keeps the
+ * configured budgets).
  *
- * <p>Operational/testing convenience: reset the cache and re-measure via the
- * stats endpoint without a cluster restart.
+ * <p>Operational/testing convenience: reset the caches and re-measure via the
+ * stats endpoint without a cluster restart. Because the caches are per-node
+ * process-global singletons, this broadcasts to every node via
+ * {@link ClearScopedPageIndexCacheActionType} — clearing only the receiving node
+ * would leave the cluster-aggregated stats non-zero.
  *
  * <pre>POST /_plugins/_analytics_backend_datafusion/cache/scoped_page_index/_clear</pre>
- *
- * <p>Note: this acts on the node that receives the request only. For a single-node
- * benchmark cluster that is exactly what's wanted; for multi-node clusters, send
- * it to each node (or restart).
  *
  * @opensearch.internal
  */
@@ -53,14 +50,12 @@ public class RestClearScopedPageIndexCacheAction extends BaseRestHandler {
 
     @Override
     protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) throws IOException {
-        return channel -> {
-            NativeBridge.clearScopedPageIndexCache();
-            XContentBuilder builder = channel.newBuilder();
-            builder.startObject();
-            builder.field("acknowledged", true);
-            builder.field("cleared", "scoped_page_index_cache");
-            builder.endObject();
-            channel.sendResponse(new BytesRestResponse(RestStatus.OK, builder));
-        };
+        // Empty node-ids → broadcast to all nodes.
+        ClearScopedPageIndexCacheNodesRequest nodesRequest = new ClearScopedPageIndexCacheNodesRequest();
+        return channel -> client.execute(
+            ClearScopedPageIndexCacheActionType.INSTANCE,
+            nodesRequest,
+            new NodesResponseRestListener<>(channel)
+        );
     }
 }
