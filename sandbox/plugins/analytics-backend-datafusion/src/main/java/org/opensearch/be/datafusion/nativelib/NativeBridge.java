@@ -123,6 +123,7 @@ public final class NativeBridge {
     private static final MethodHandle CREATE_CUSTOM_CACHE_MANAGER;
     private static final MethodHandle DESTROY_CUSTOM_CACHE_MANAGER;
     private static final MethodHandle CREATE_CACHE;
+    private static final MethodHandle SET_SCOPED_PAGE_INDEX_CACHE_LIMIT;
     private static final MethodHandle CACHE_MANAGER_ADD_FILES;
     private static final MethodHandle CACHE_MANAGER_REMOVE_FILES;
     private static final MethodHandle CACHE_MANAGER_CLEAR;
@@ -406,6 +407,11 @@ public final class NativeBridge {
                 ValueLayout.ADDRESS,
                 ValueLayout.JAVA_LONG
             )
+        );
+
+        SET_SCOPED_PAGE_INDEX_CACHE_LIMIT = linker.downcallHandle(
+            lib.find("df_set_scoped_page_index_cache_limit").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
         );
 
         // ── SessionContext decomposition bindings ──
@@ -1528,6 +1534,19 @@ public final class NativeBridge {
             var type = call.str(cacheType);
             var eviction = call.str(evictionType);
             call.invoke(CREATE_CACHE, cacheManagerPtr, type.segment(), type.len(), sizeLimit, eviction.segment(), eviction.len());
+        }
+    }
+
+    /**
+     * Set the byte budget of the process-wide scoped page-index cache. Unlike the
+     * metadata/statistics caches this is a process global, not owned by a cache
+     * manager, so it takes no manager pointer. Idempotent.
+     *
+     * @param sizeLimitBytes the new byte cap (must be {@code >= 0})
+     */
+    public static void setScopedPageIndexCacheLimit(long sizeLimitBytes) {
+        try (var call = new NativeCall()) {
+            call.invoke(SET_SCOPED_PAGE_INDEX_CACHE_LIMIT, sizeLimitBytes);
         }
     }
 

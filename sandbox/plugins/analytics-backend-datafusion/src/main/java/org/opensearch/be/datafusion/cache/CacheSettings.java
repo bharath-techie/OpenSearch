@@ -20,10 +20,24 @@ public class CacheSettings {
 
     public static final String METADATA_CACHE_SIZE_LIMIT_KEY = "datafusion.metadata.cache.size.limit";
     public static final String STATISTICS_CACHE_SIZE_LIMIT_KEY = "datafusion.statistics.cache.size.limit";
+    public static final String SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT_KEY = "datafusion.scoped_page_index.cache.size.limit";
     public static final Setting<ByteSizeValue> METADATA_CACHE_SIZE_LIMIT = new Setting<>(
         METADATA_CACHE_SIZE_LIMIT_KEY,
         "250mb",
         (s) -> ByteSizeValue.parseBytesSizeValue(s, new ByteSizeValue(1000, ByteSizeUnit.KB), METADATA_CACHE_SIZE_LIMIT_KEY),
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * Byte budget for the process-wide scoped page-index cache (predicate-column
+     * page index shared by the indexed and listing scan paths). Independent of the
+     * metadata cache so the two can be tuned separately.
+     */
+    public static final Setting<ByteSizeValue> SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT = new Setting<>(
+        SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT_KEY,
+        "64mb",
+        (s) -> ByteSizeValue.parseBytesSizeValue(s, new ByteSizeValue(0, ByteSizeUnit.KB), SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT_KEY),
         Setting.Property.NodeScope,
         Setting.Property.Dynamic
     );
@@ -74,7 +88,8 @@ public class CacheSettings {
         METADATA_CACHE_EVICTION_TYPE,
         STATISTICS_CACHE_ENABLED,
         STATISTICS_CACHE_SIZE_LIMIT,
-        STATISTICS_CACHE_EVICTION_TYPE
+        STATISTICS_CACHE_EVICTION_TYPE,
+        SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT
     );
 
     private static String validateEvictionType(String value) {

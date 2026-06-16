@@ -260,6 +260,15 @@ pub fn scoped_cache_stats() -> ScopedCacheStats {
     SCOPED_CACHE.lock().map(|c| c.stats()).unwrap_or_default()
 }
 
+/// Process-wide serialization guard for tests that read/assert the global
+/// `SCOPED_CACHE` counters. The lib test binary runs tests across modules in one
+/// process, all sharing this one cache; any test that clears it or asserts on its
+/// hit/miss/entry counts must hold this guard so siblings (here and in
+/// `shard_scoped_reader`) don't race. A single shared mutex — not a per-module one
+/// — is required, since per-module guards don't mutually exclude across modules.
+#[cfg(test)]
+pub(crate) static SCOPED_CACHE_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 pub(crate) fn clear_scoped_cache_for_test() {
     if let Ok(mut c) = SCOPED_CACHE.lock() {
@@ -993,8 +1002,10 @@ mod tests {
     // parallel, so cache-population tests serialize on this mutex (and clear
     // under it) to keep their (file, column-set) keys from colliding / racing
     // with siblings. Distinct fixtures alone aren't enough because the InMemory
-    // path is always "data.parquet".
-    static CACHE_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // path is always "data.parquet". Shared crate-wide (with `shard_scoped_reader`
+    // tests) so all users of the global cache mutually exclude — see
+    // `super::SCOPED_CACHE_TEST_GUARD`.
+    use super::SCOPED_CACHE_TEST_GUARD as CACHE_TEST_GUARD;
 
     #[tokio::test]
     async fn second_load_is_cache_hit() {

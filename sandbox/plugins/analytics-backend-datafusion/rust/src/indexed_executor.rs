@@ -936,12 +936,11 @@ async unsafe fn execute_indexed_with_context_inner(
             .filter_map(|&i| schema.fields().get(i).map(|f| f.name().clone()))
             .collect();
         if !predicate_column_names.is_empty() {
-            // Keep the scoped page-index cache's byte budget in step with the
-            // runtime's configured metadata-cache limit (same tuning knob the
-            // footer cache uses). Cheap + idempotent.
-            crate::indexed_table::page_index_loader::set_scoped_cache_limit(
-                state.runtime_env().cache_manager.get_metadata_cache_limit(),
-            );
+            // NOTE: the scoped page-index cache's byte budget is configured once at
+            // startup from the dedicated `datafusion.scoped_page_index.cache.size.limit`
+            // setting (CacheUtils.createCacheConfig → df_set_scoped_page_index_cache_limit).
+            // We intentionally do NOT reset it per query here — that would clobber the
+            // independently-tunable limit on every indexed query.
             // Fetch each segment's scoped page index concurrently — these are
             // independent small range-reads that funnel onto the IO runtime via
             // the SpawnIoStore-wrapped object store. Serializing them would add

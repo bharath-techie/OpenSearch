@@ -117,6 +117,14 @@ public final class CacheUtils {
                 logger.debug("Cache type {} is disabled", type.getCacheTypeName());
             }
         }
+
+        // Scoped page-index cache: a process-wide global (not owned by the cache
+        // manager), so it is configured directly rather than via createCache. Its
+        // limit is independent of the metadata cache.
+        long scopedLimit = clusterSettings.get(CacheSettings.SCOPED_PAGE_INDEX_CACHE_SIZE_LIMIT).getBytes();
+        logger.info("Configuring scoped page-index cache: size={} bytes", scopedLimit);
+        NativeBridge.setScopedPageIndexCacheLimit(scopedLimit);
+
         logger.info("Cache configuration completed");
         return handle;
     }

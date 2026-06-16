@@ -99,8 +99,8 @@ public final class StatsLayout {
     );
 
     static {
-        if (LAYOUT.byteSize() != 75 * Long.BYTES) {
-            throw new AssertionError("StatsLayout size mismatch: expected " + (75 * Long.BYTES) + " but got " + LAYOUT.byteSize());
+        if (LAYOUT.byteSize() != 80 * Long.BYTES) {
+            throw new AssertionError("StatsLayout size mismatch: expected " + (80 * Long.BYTES) + " but got " + LAYOUT.byteSize());
         }
     }
 
@@ -181,6 +181,13 @@ public final class StatsLayout {
     private static final VarHandle CACHE_STATS_ENTRY_COUNT = cacheHandle("statistics_cache", "entry_count");
     private static final VarHandle CACHE_STATS_MEMORY_BYTES = cacheHandle("statistics_cache", "memory_bytes");
     private static final VarHandle CACHE_STATS_SIZE_LIMIT_BYTES = cacheHandle("statistics_cache", "size_limit_bytes");
+
+    // ---- VarHandles for cache_stats.scoped_page_index_cache fields ----
+    private static final VarHandle CACHE_SCOPED_HIT_COUNT = cacheHandle("scoped_page_index_cache", "hit_count");
+    private static final VarHandle CACHE_SCOPED_MISS_COUNT = cacheHandle("scoped_page_index_cache", "miss_count");
+    private static final VarHandle CACHE_SCOPED_ENTRY_COUNT = cacheHandle("scoped_page_index_cache", "entry_count");
+    private static final VarHandle CACHE_SCOPED_MEMORY_BYTES = cacheHandle("scoped_page_index_cache", "memory_bytes");
+    private static final VarHandle CACHE_SCOPED_SIZE_LIMIT_BYTES = cacheHandle("scoped_page_index_cache", "size_limit_bytes");
 
     // ---- VarHandles for search_stats fields ----
     private static final VarHandle SS_LISTING_TABLE_SCAN = handle("search_stats", "listing_table_scan");
@@ -311,7 +318,14 @@ public final class StatsLayout {
             (long) CACHE_STATS_MEMORY_BYTES.get(seg, 0L),
             (long) CACHE_STATS_SIZE_LIMIT_BYTES.get(seg, 0L)
         );
-        return new CacheStats(metadata, statistics);
+        CacheGroupStats scopedPageIndex = new CacheGroupStats(
+            (long) CACHE_SCOPED_HIT_COUNT.get(seg, 0L),
+            (long) CACHE_SCOPED_MISS_COUNT.get(seg, 0L),
+            (long) CACHE_SCOPED_ENTRY_COUNT.get(seg, 0L),
+            (long) CACHE_SCOPED_MEMORY_BYTES.get(seg, 0L),
+            (long) CACHE_SCOPED_SIZE_LIMIT_BYTES.get(seg, 0L)
+        );
+        return new CacheStats(metadata, statistics, scopedPageIndex);
     }
 
     /**
@@ -402,7 +416,11 @@ public final class StatsLayout {
     }
 
     private static StructLayout cacheStatsGroup(String name) {
-        return MemoryLayout.structLayout(cacheGroup("metadata_cache"), cacheGroup("statistics_cache")).withName(name);
+        return MemoryLayout.structLayout(
+            cacheGroup("metadata_cache"),
+            cacheGroup("statistics_cache"),
+            cacheGroup("scoped_page_index_cache")
+        ).withName(name);
     }
 
     private static StructLayout searchStatsGroup(String name) {

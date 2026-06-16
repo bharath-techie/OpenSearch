@@ -803,6 +803,24 @@ pub unsafe extern "C" fn df_create_cache(
     Ok(0)
 }
 
+/// Set the byte budget of the process-wide scoped page-index cache
+/// (`indexed_table::page_index_loader::SCOPED_CACHE`). Unlike the metadata and
+/// statistics caches, this cache is a process global rather than owned by the
+/// `CustomCacheManager`, so it takes no manager pointer. Idempotent; over-budget
+/// entries are evicted (LRU) on the next insert/at set time.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn df_set_scoped_page_index_cache_limit(size_limit: i64) -> i64 {
+    if size_limit < 0 {
+        return Err(format!(
+            "df_set_scoped_page_index_cache_limit: negative limit {}",
+            size_limit
+        ));
+    }
+    crate::indexed_table::page_index_loader::set_scoped_cache_limit(size_limit as usize);
+    Ok(0)
+}
+
 #[ffm_safe]
 #[no_mangle]
 pub unsafe extern "C" fn df_cache_manager_add_files(

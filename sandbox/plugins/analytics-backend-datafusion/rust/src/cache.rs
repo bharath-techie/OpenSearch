@@ -148,7 +148,26 @@ impl CacheAccessor<Path, CachedFileMetadataEntry> for MutexFileMetadataCache {
         // and the vanilla scan opener re-reads the page index on demand into its
         // own local reader state without ever putting it back here
         // (`opener/mod.rs::load_page_index`).
+        // DEBUG INSTRUMENTATION (temporary): observe what flows into the shared
+        // metadata cache and whether the strip actually drops the page index.
+        if let Some(c) = v.file_metadata.as_any().downcast_ref::<CachedParquetMetaData>() {
+            let m = c.parquet_metadata();
+            native_bridge_common::log_debug!(
+                "[cache-debug] PUT-IN key={} has_ci={} has_oi={} memsize={} num_rg={}",
+                k, m.column_index().is_some(), m.offset_index().is_some(),
+                m.memory_size(), m.num_row_groups()
+            );
+        } else {
+            native_bridge_common::log_info!("[cache-debug] PUT-IN key={} (not CachedParquetMetaData)", k);
+        }
         let v = strip_page_index(v);
+        if let Some(c) = v.file_metadata.as_any().downcast_ref::<CachedParquetMetaData>() {
+            let m = c.parquet_metadata();
+            native_bridge_common::log_debug!(
+                "[cache-debug] PUT-OUT key={} has_ci={} has_oi={} memsize={}",
+                k, m.column_index().is_some(), m.offset_index().is_some(), m.memory_size()
+            );
+        }
         match self.inner.lock() {
             Ok(cache) => cache.put(k, v),
             Err(e) => {

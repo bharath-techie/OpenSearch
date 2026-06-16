@@ -84,9 +84,14 @@ pub struct ScopedPageIndexReaderFactory {
     /// scoping" — `get_metadata` returns footer-only and the opener loads the
     /// page index on demand as usual.
     predicate_column_names: Arc<Vec<String>>,
-    /// The physical predicate (if any), used to prune row groups by footer
-    /// statistics in `get_metadata` so the page index is built only for
-    /// surviving row groups. `None` → no RG scoping (all RGs).
+    /// The physical predicate (if any). Retained in the constructor signature
+    /// for parity with the indexed path, but intentionally NOT used for RG
+    /// scoping here: on the listing path DataFusion owns row-group selection, so
+    /// a survivor set computed from this predicate would diverge from the RGs
+    /// DataFusion actually scans/prunes, leaving placeholder index entries it
+    /// then dereferences (panic). The page index is built for all row groups,
+    /// column-scoped only. See `get_metadata`.
+    #[allow(dead_code)]
     predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     /// File schema (no partition columns), for per-file column resolution.
     file_schema: SchemaRef,
@@ -124,7 +129,6 @@ impl ParquetFileReaderFactory for ScopedPageIndexReaderFactory {
             store: Arc::clone(&self.store),
             metadata_cache: Arc::clone(&self.metadata_cache),
             predicate_column_names: Arc::clone(&self.predicate_column_names),
-            predicate: self.predicate.clone(),
             file_schema: Arc::clone(&self.file_schema),
             location: file.object_meta.location.clone(),
             metrics: file_metrics,
@@ -136,7 +140,6 @@ struct ScopedPageIndexReader {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
     predicate_column_names: Arc<Vec<String>>,
-    predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     file_schema: SchemaRef,
     location: object_store::path::Path,
     metrics: ParquetFileMetrics,
@@ -187,7 +190,6 @@ impl AsyncFileReader for ScopedPageIndexReader {
         let store = Arc::clone(&self.store);
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let predicate_names = Arc::clone(&self.predicate_column_names);
-        let predicate = self.predicate.clone();
         let file_schema = Arc::clone(&self.file_schema);
         let location = self.location.clone();
         async move {
@@ -210,36 +212,41 @@ impl AsyncFileReader for ScopedPageIndexReader {
                 let parquet_cols =
                     resolve_predicate_parquet_columns(&file_schema, &footer, &predicate_names);
 
-                // 2a. RG scoping: prune row groups using footer statistics (no
-                //     page index needed — same RG-stat prune DataFusion does at
-                //     `prune_by_statistics`, but run here so we only decode the
-                //     page index for surviving row groups). `None` → all RGs.
-                //     We pass `None` to the loader when nothing prunes, so the
-                //     cache key stays the stable (file, cols) form for those.
-                let surviving = predicate.as_ref().and_then(|pred| {
-                    let n = footer.num_row_groups();
-                    crate::indexed_table::page_pruner::surviving_row_groups(
-                        pred, &footer, &file_schema,
-                    )
-                    .filter(|s| s.len() < n)
-                });
-
+                // 2a. NO RG scoping on the listing path — build the page index for
+                //     ALL row groups (column-scoped to the predicate columns).
+                //
+                //     Unlike the indexed path (which owns the `ParquetAccessPlan`,
+                //     so it can restrict the scan to a survivor set and prove the
+                //     unscanned RGs are never dereferenced), `ScopedPageIndexOptimizer`
+                //     only swaps the reader factory. DataFusion still selects which
+                //     row groups to scan via its OWN RG-statistics pruning, and then
+                //     its page-pruner (`PagePruningAccessPlanFilter`) and reader
+                //     dereference `offset_index[rg][col]` / `column_index[rg][col]`
+                //     for *its* chosen RGs — a set independent of any survivor set we
+                //     could compute here. If we left placeholder (empty) entries on
+                //     RGs DataFusion still touches, it panics
+                //     (`page_row_counts.first().unwrap()` on an empty OffsetIndex).
+                //     DataFusion's page-index gate is per-FILE (offset+column index
+                //     both `Some`), so a partial page index lies to it.
+                //
+                //     Heap is still bounded: the heavy ColumnIndex (per-page string
+                //     min/max) is scoped to predicate columns; only the cheaper
+                //     all-column OffsetIndex spans every RG, which is required for
+                //     correctness at read time anyway. `None` = all RGs.
                 if let Some(augmented) = load_scoped_page_index_rgs(
                     &store,
                     &location,
                     &footer,
                     &parquet_cols,
-                    surviving.as_deref(),
+                    None,
                 )
                 .await
                 {
-                    if let Some(s) = surviving.as_ref() {
-                        native_bridge_common::log_debug!(
-                            "scoped-pageidx[listing]: {} rgs_read={}/{} cols={} entry_bytes={}",
-                            location, s.len(), footer.num_row_groups(),
-                            parquet_cols.len(), augmented.memory_size()
-                        );
-                    }
+                    native_bridge_common::log_debug!(
+                        "scoped-pageidx[listing]: {} rgs={} cols={} entry_bytes={}",
+                        location, footer.num_row_groups(),
+                        parquet_cols.len(), augmented.memory_size()
+                    );
                     return Ok(augmented);
                 }
             }
@@ -263,6 +270,12 @@ mod tests {
     use object_store::memory::InMemory;
     use object_store::path::Path as ObjPath;
     use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+
+    /// Serializes tests that assert on the process-wide `SCOPED_CACHE` counters.
+    /// Shared crate-wide with `page_index_loader`'s tests so all users of the one
+    /// global cache mutually exclude (a per-module guard would not). Tests that
+    /// only inspect their own returned metadata don't need it.
+    use crate::indexed_table::page_index_loader::SCOPED_CACHE_TEST_GUARD as SCOPED_TEST_GUARD;
 
     /// Two int columns (`price`, `qty`), one row group, four 8-row data pages —
     /// enough to produce a real page index.
@@ -381,6 +394,7 @@ mod tests {
         use datafusion_datasource::PartitionedFile;
         use futures::StreamExt;
 
+        let _guard = SCOPED_TEST_GUARD.lock().unwrap();
         crate::indexed_table::page_index_loader::clear_scoped_cache_for_test();
 
         // Stage a real file on local FS (InMemory has no offset-index range reads
@@ -479,5 +493,120 @@ mod tests {
             meta.column_index().is_none() && meta.offset_index().is_none(),
             "no-predicate reader must return footer-only metadata"
         );
+    }
+
+    /// Multi-row-group file: one RG per 32 rows. `price` ascends globally, so a
+    /// selective predicate (`price >= 96`) lets DataFusion's own row-group
+    /// statistics pruner skip the early RGs and scan only the later ones.
+    fn multi_rg_parquet() -> (Bytes, SchemaRef) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("price", DataType::Int32, false),
+            Field::new("qty", DataType::Int32, false),
+        ]));
+        let prices: Vec<i32> = (0..128).collect();
+        let qtys: Vec<i32> = (1000..1128).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(prices)),
+                Arc::new(Int32Array::from(qtys)),
+            ],
+        )
+        .unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(32) // 4 row groups
+            .set_data_page_row_count_limit(8)
+            .set_write_batch_size(8)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .build();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut w = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        (Bytes::from(buf), schema)
+    }
+
+    /// REGRESSION: listing-path scan over a multi-RG file where DataFusion's own
+    /// RG-statistics pruning keeps a *different* row-group set than a footer-stat
+    /// survivor set would. Before the fix the reader built a page index only for
+    /// "its" survivors and left empty placeholders elsewhere; DataFusion's page
+    /// pruner then dereferenced a placeholder's empty OffsetIndex and panicked
+    /// (`called Option::unwrap() on a None value`). With the fix (page index for
+    /// ALL row groups, column-scoped) the scan completes and returns the right
+    /// rows.
+    #[tokio::test]
+    async fn listing_scan_multi_rg_selective_predicate_no_panic() {
+        use datafusion::datasource::physical_plan::ParquetSource;
+        use datafusion::datasource::source::DataSourceExec;
+        use datafusion::execution::object_store::ObjectStoreUrl;
+        use datafusion::physical_expr::expressions::{lit, BinaryExpr, Column};
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_plan::{execute_stream, ExecutionPlan};
+        use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
+        use datafusion_datasource::table_schema::TableSchema;
+        use datafusion_datasource::PartitionedFile;
+        use futures::StreamExt;
+
+        let _guard = SCOPED_TEST_GUARD.lock().unwrap();
+        crate::indexed_table::page_index_loader::clear_scoped_cache_for_test();
+
+        let (bytes, schema) = multi_rg_parquet();
+        let dir = std::env::temp_dir().join(format!("scoped_multirg_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("data.parquet");
+        std::fs::write(&file_path, &bytes).unwrap();
+
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::local::LocalFileSystem::new());
+        let cache = fresh_cache();
+
+        // `price >= 96` → only the last row group (prices 96..128) qualifies, so
+        // DataFusion's RG-stats pruner skips the first three RGs.
+        let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("price", 0)),
+            Operator::GtEq,
+            lit(96i32),
+        ));
+
+        let factory = Arc::new(ScopedPageIndexReaderFactory::new(
+            Arc::clone(&store),
+            cache.clone(),
+            vec!["price".to_string()],
+            Some(Arc::clone(&predicate)),
+            schema.clone(),
+        ));
+
+        let parquet = ParquetSource::new(TableSchema::new(schema.clone(), vec![]))
+            .with_predicate(Arc::clone(&predicate))
+            .with_parquet_file_reader_factory(factory);
+
+        let loc_str = file_path.to_string_lossy().to_string();
+        let pf = PartitionedFile::new(loc_str, std::fs::metadata(&file_path).unwrap().len());
+        let store_url = ObjectStoreUrl::local_filesystem();
+        let config = FileScanConfigBuilder::new(store_url.clone(), Arc::new(parquet))
+            .with_file(pf)
+            .build();
+        let exec: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(config);
+
+        let ctx = datafusion::prelude::SessionContext::new();
+        ctx.register_object_store(store_url.as_ref(), Arc::clone(&store));
+
+        let mut stream = execute_stream(exec, ctx.task_ctx()).unwrap();
+        let mut rows = 0usize;
+        while let Some(b) = stream.next().await {
+            // `b.unwrap()` here would have surfaced the native panic as an Err.
+            rows += b.expect("scan must not panic/err on divergent RG sets").num_rows();
+        }
+
+        // prices 96..128 = 32 rows survive the predicate.
+        assert_eq!(rows, 32, "price>=96 must return exactly the last row group's rows");
+
+        // The augmented metadata must carry a page index for ALL row groups (no
+        // empty placeholders), which is what makes DataFusion's page pruning safe.
+        let entries = cache.list_entries();
+        assert_eq!(entries.len(), 1, "footer cached once");
+
+        crate::indexed_table::page_index_loader::clear_scoped_cache_for_test();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
