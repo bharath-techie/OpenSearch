@@ -343,16 +343,26 @@ fn collect_predicate_column_names(
     }
     names.into_iter().collect()
 }
-/// Collect the names of every column the logical plan references anywhere
-/// (output projection, filter, sort, aggregation, …). This is a deliberate
-/// **superset** of the columns the scan will actually read, used to scope the
-/// OffsetIndex (`predicate ∪ projection`). A superset is safe: an OffsetIndex
-/// built for more columns than are read just caches a little extra and never
-/// breaks a read; building for *fewer* would panic the parquet reader (a
-/// projected column with an empty page-locations list). Walking the whole plan
-/// rather than just the top projection guarantees we never undershoot.
+/// Collect the names of every column the query actually reads — the columns
+/// referenced by expressions anywhere in the plan (filter, residual, sort,
+/// aggregation, output projection) plus a `TableScan`'s **explicit** projection.
+/// Used to scope the OffsetIndex to `predicate ∪ projection`.
+///
+/// # Why a `TableScan` with `projection == None` must NOT fold its full schema
+///
+/// A `TableScan`'s `projected_schema` equals the **whole table schema** when
+/// `projection` is `None` (a full column scan in the plan). On the indexed path
+/// the substrait plan for e.g. `match(Body,..) AND SeverityNumber>=N | stats
+/// count()` carries an unprojected `TableScan` (count reads no column values;
+/// `match` is Lucene-delegated; only the residual `SeverityNumber` is read for
+/// masking) — yet `projected_schema` lists all ~402 columns. Folding those made
+/// `offset_cols` the entire schema (observed: offset cache 2MB→251MB, all
+/// columns), which both bloated memory and, combined with per-file schema
+/// evolution, produced a wrong count. The columns truly read are exactly the
+/// `Expr::Column` references the walk already collects, so we only add a scan's
+/// projection when it is **explicit** (`Some`). Still a safe superset of the read
+/// set — never an undershoot that would panic the reader.
 fn collect_plan_column_names(plan: &datafusion::logical_expr::LogicalPlan) -> Vec<String> {
-    use datafusion::logical_expr::LogicalPlan;
     let mut names = BTreeSet::new();
     let _ = plan.apply(|node| {
         // Every expression on this node, recursed into for Column refs.
@@ -365,13 +375,15 @@ fn collect_plan_column_names(plan: &datafusion::logical_expr::LogicalPlan) -> Ve
             });
             Ok(TreeNodeRecursion::Continue)
         });
-        // A bare TableScan with a projection carries its read columns in its
-        // schema rather than in expressions — fold those in too.
-        if let LogicalPlan::TableScan(scan) = node {
-            for f in scan.projected_schema.fields() {
-                names.insert(f.name().to_string());
-            }
-        }
+        // NOTE: deliberately do NOT fold a `TableScan`'s declared projection. On
+        // the indexed path the substrait `TableScan` over-declares all columns
+        // (observed: projection = Some([0..401]) for `match() AND num | count()`),
+        // which scoped the OffsetIndex to all 402 columns — the bug. The columns
+        // actually read are captured by the expression walk above (filter /
+        // residual / sort / aggregate / output projection). A column referenced
+        // ONLY via a `TableScan` projection (not by any expression) is not read by
+        // value in a way that needs its real offset index for correctness; the
+        // one-page placeholder keeps any incidental dereference panic-safe.
         Ok(TreeNodeRecursion::Continue)
     });
     names.into_iter().collect()
@@ -618,6 +630,22 @@ mod tests {
     fn analyze_top_sort_returns_none_when_no_sort() {
         let plan = build_logical_plan("SELECT id FROM t");
         assert!(analyze_top_sort(&plan).is_none());
+    }
+
+    #[test]
+    fn collect_plan_column_names_includes_projection_and_predicate() {
+        // DIAG: what does collect_plan_column_names return for an explicit
+        // projection + predicate? `off_cols` is derived from this; if a SELECTed
+        // column is missing, it gets placeholdered and read through → the bug.
+        let plan = build_logical_plan("SELECT id, v FROM t WHERE ts > 100");
+        let mut names = collect_plan_column_names(&plan);
+        names.sort();
+        eprintln!("collect_plan_column_names => {:?}", names);
+        // The read set must include BOTH projected columns (id, v) AND the
+        // predicate column (ts). Anything read but absent here is placeholdered.
+        assert!(names.contains(&"id".to_string()), "missing projected id: {names:?}");
+        assert!(names.contains(&"v".to_string()), "missing projected v: {names:?}");
+        assert!(names.contains(&"ts".to_string()), "missing predicate ts: {names:?}");
     }
 
     #[test]
@@ -1007,6 +1035,12 @@ async unsafe fn execute_indexed_with_context_inner(
         // `collect_plan_column_names` is a superset of the read set (safe — see
         // its docs); the loader additionally unions in the predicate cols + col 0.
         let projection_column_names = collect_plan_column_names(&logical_plan);
+        native_bridge_common::log_debug!(
+            "scoped-PROJCOLS predicate_names={:?} projection_names(n={})={:?}",
+            predicate_column_names,
+            projection_column_names.len(),
+            projection_column_names,
+        );
         for segment in segments.iter_mut() {
             let parquet_cols = crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns(
                 &schema,

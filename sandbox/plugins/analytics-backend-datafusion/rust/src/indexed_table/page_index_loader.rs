@@ -1290,6 +1290,135 @@ mod tests {
         assert_eq!(s.as_ref().map(kept), Some(16));
     }
 
+    /// Schema-evolution fixture: a file whose physical layout is `[extra, price]`
+    /// (so `price` is parquet leaf **1**), 32 rows / 4 pages. Used to prove the
+    /// predicate→leaf resolution does NOT depend on a column's position in a wider
+    /// *union* schema.
+    fn evolved_extra_price_parquet() -> Bytes {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("extra", DataType::Int32, false),
+            Field::new("price", DataType::Int32, false),
+        ]));
+        let extra: Vec<i32> = (1000..1032).collect();
+        let prices: Vec<i32> = (0..32).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(extra)), Arc::new(Int32Array::from(prices))],
+        )
+        .unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(32)
+            .set_data_page_row_count_limit(8)
+            .set_write_batch_size(8)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .build();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut w = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        Bytes::from(buf)
+    }
+
+    /// Regression for the schema-evolution wrong-count bug: when the query's
+    /// (union) schema lists `price` at a DIFFERENT position than the file's
+    /// physical layout, the predicate must still resolve to the file's TRUE leaf
+    /// and scoped pruning must match the full-index pruning. Previously the
+    /// resolver used the union-schema position, scoped the page index at the wrong
+    /// leaf, and the residual mis-pruned → over-count.
+    #[tokio::test]
+    async fn scoped_resolution_is_per_file_under_schema_evolution() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let bytes = evolved_extra_price_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+
+        // The UNION/table schema the query carries: `price` at position 0 — but in
+        // THIS file `price` is physically leaf 1 (after `extra`).
+        let union_schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("price", DataType::Int32, false),
+            Field::new("qty", DataType::Int32, false),
+            Field::new("extra", DataType::Int32, false),
+        ]));
+
+        // Must resolve to the file's TRUE leaf for `price` = 1, NOT the union
+        // position 0 (which is `extra` in this file).
+        let cols = resolve_predicate_parquet_columns(&union_schema, &fo, &["price".to_string()]);
+        assert_eq!(cols, vec![1], "price must resolve to its per-file leaf (1), not union pos 0");
+
+        let aug = load_scoped_page_index(&store, &loc, &fo, &cols).await.unwrap();
+        let full = full_index(&bytes);
+        // `price` pages: 0..8,8..16,16..24,24..32; `price >= 20` keeps the last two
+        // pages (rows 16..32 = 16 rows). Build the pruning predicate against the
+        // FILE schema (price at index 1) so the converter matches the data.
+        let file_schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("extra", DataType::Int32, false),
+            Field::new("price", DataType::Int32, false),
+        ]));
+        let pp = build_pruning_predicate(&pred("price", 1, Operator::GtEq, 20), file_schema.clone()).unwrap();
+        let s = PagePruner::new(&file_schema, Arc::clone(&aug)).prune_rg(&pp, 0, None);
+        let f = PagePruner::new(&file_schema, full).prune_rg(&pp, 0, None);
+        assert_eq!(s.as_ref().map(kept), f.as_ref().map(kept), "scoped pruning must match full index");
+        assert_eq!(s.as_ref().map(kept), Some(16));
+        clear_scoped_cache_for_test();
+    }
+
+    /// Page pruning over a column-scoped index must be a SAFE SUPERSET of the
+    /// full-index pruning — never drop a row the full index would keep (that
+    /// would be an under-count / lost result). It MAY keep extra rows (the
+    /// residual mask drops them post-decode), so equality is NOT required and is
+    /// the wrong invariant.
+    ///
+    /// The hazard this guards: with the page index scoped to `price` only, `qty`
+    /// is a one-page non-panicking OffsetIndex placeholder with a `NONE`
+    /// ColumnIndex. If the pruner TRUSTED that placeholder's (absent) stats it
+    /// would build a bogus single-page grid for `qty` and could mis-prune. The
+    /// `page_pruner` fix treats a `NONE`-ColumnIndex column as "no usable stats"
+    /// (like a schema-evolution-absent column) → it contributes "unknown" and
+    /// never prunes on `qty`, so the scoped result stays a conservative superset.
+    #[tokio::test]
+    async fn scoped_pruning_is_safe_superset_with_placeholdered_residual_col() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        // price 0..32 (pages 0..8,8..16,16..24,24..32); qty 100..132 (pages
+        // 100..108,108..116,116..124,124..132). 1 RG, 4 pages each.
+        let (bytes, schema) = two_col_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+
+        // Scope the page index to `price` ONLY (mimics the predicate-scoped indexed
+        // path). `qty` therefore gets the one-page placeholder + NONE ColumnIndex.
+        let cols = resolve_predicate_parquet_columns(&schema, &fo, &["price".to_string()]);
+        assert_eq!(cols, vec![0]);
+        let aug = load_scoped_page_index(&store, &loc, &fo, &cols).await.unwrap();
+        let full = full_index(&bytes);
+
+        // Residual references BOTH columns: price >= 16 (full keeps pages 2,3) AND
+        // qty <= 115 (full keeps pages 0,1) → full intersection prunes to 0 rows.
+        let price_ge = pred("price", 0, Operator::GtEq, 16);
+        let qty_le = pred("qty", 1, Operator::LtEq, 115);
+        let residual: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(price_ge, Operator::And, qty_le));
+        let pp = build_pruning_predicate(&residual, schema.clone()).unwrap();
+
+        let s_kept = PagePruner::new(&schema, Arc::clone(&aug)).prune_rg(&pp, 0, None).map(|s| kept(&s));
+        let f_kept = PagePruner::new(&schema, full).prune_rg(&pp, 0, None).map(|s| kept(&s));
+        // Superset invariant: scoped must keep AT LEAST what full keeps (never
+        // fewer). It keeps more here (16 vs 0) because it correctly cannot prune
+        // the placeholdered `qty` — that's safe; the residual mask removes the
+        // extras post-decode. A scoped result SMALLER than full would be the real
+        // bug (lost rows). `None` = "kept everything" (no pruning) = the maximal
+        // superset, also safe.
+        let s = s_kept.unwrap_or(usize::MAX);
+        let f = f_kept.unwrap_or(usize::MAX);
+        assert!(
+            s >= f,
+            "scoped page pruning must be a safe superset of full ({} kept) but kept fewer ({})",
+            f, s
+        );
+        clear_scoped_cache_for_test();
+    }
+
     #[tokio::test]
     async fn scoped_index_reads_non_predicate_projected_column() {
         let _g = CACHE_TEST_GUARD.lock().unwrap();
@@ -1660,10 +1789,21 @@ mod tests {
 
         let aug = load_scoped_page_index_cols(&store, &loc, &fo, &pred_cols, &[2]).await.unwrap();
         let o = aug.offset_index().unwrap();
+        // wide4 has 256 rows / page-size 32 → real columns have multiple pages.
+        let full = full_index(&bytes);
+        let real_pages = full.offset_index().unwrap()[0][0].page_locations().len();
+        assert!(real_pages > 1, "fixture should have multi-page columns");
+        // Scoped columns (predicate 1 ∪ projection 2 ∪ metric 0) carry the REAL
+        // page index; the rest carry a single whole-RG placeholder page (non-empty
+        // so any consumer dereference is safe — never empty, which would panic).
         for &c in &[0usize, 1, 2] {
-            assert!(!o[0][c].page_locations().is_empty(), "col {c} (pred/proj/metric) real OI");
+            assert_eq!(o[0][c].page_locations().len(), real_pages, "col {c} (pred/proj/metric) real OI");
         }
-        assert!(o[0][3].page_locations().is_empty(), "col 3 OI is empty placeholder");
+        assert_eq!(
+            o[0][3].page_locations().len(),
+            1,
+            "col 3 (scoped out) OI is a single-page placeholder, not real and not empty"
+        );
     }
 
     #[tokio::test]

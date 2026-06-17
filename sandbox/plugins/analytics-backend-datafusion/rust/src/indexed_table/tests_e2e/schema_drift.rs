@@ -539,3 +539,278 @@ async fn utf8view_schema_with_utf8_file_does_not_panic() {
             .await;
     assert_eq!(count, 4);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// SingleCollector path + schema-evolved file + numeric residual.
+//
+// Reproduces the cluster bug: `match(Body,'connection') AND SeverityNumber>=0
+// | stats count()` drops ~2/3 of rows on schema-evolved/merged files, but the
+// vanilla listing path (`LIKE ... AND sev>=0`) keeps all of them.
+//
+// The distinguishing ingredients vs the passing `reorder_columns_aligned_and_filtered`
+// test above:
+//   - runs through `SingleCollectorEvaluator` (not `TreeBitsetSource`)
+//   - sets `pushdown_predicate: Some(residual)` + `predicate_columns` (union indices)
+//   - the file's PHYSICAL column order differs from the table/union schema, so
+//     a residual `Column` bound to a UNION index points at a different physical
+//     leaf in the file.
+//
+// The collector matches ALL rows; the residual `sev >= 0` is a tautology (every
+// sev is non-negative). So every row MUST survive. If the indexed path reads the
+// residual column from the wrong leaf (union-index, no per-file name remap), it
+// sees null/garbage → `>= 0` is null/false → rows dropped.
+// ══════════════════════════════════════════════════════════════════════
+
+use crate::indexed_table::eval::single_collector::{
+    CollectorCallStrategy, FfmDelegatedBackendCollectorFactory, SingleCollectorEvaluator,
+};
+
+/// Collector that matches every doc in `[min_doc, max_doc)`.
+#[derive(Debug)]
+struct MatchAllCollector;
+impl RowGroupDocsCollector for MatchAllCollector {
+    fn collect_packed_u64_bitset(&self, min_doc: i32, max_doc: i32) -> Result<Vec<u64>, String> {
+        let span = (max_doc - min_doc).max(0) as usize;
+        let mut out = vec![0u64; span.div_ceil(64)];
+        for rel in 0..span {
+            out[rel / 64] |= 1u64 << (rel % 64);
+        }
+        Ok(out)
+    }
+}
+
+/// Run a single-collector query (collector matches all rows) with a residual
+/// `<residual_col> >= 0` referencing `residual_union_idx` in `table_schema`,
+/// over a file whose physical schema is `file_schema`. Returns the row count.
+async fn run_single_collector_residual(
+    file_schema: SchemaRef,
+    table_schema: SchemaRef,
+    batch: &RecordBatch,
+    residual_col: &str,
+    residual_union_idx: usize,
+) -> usize {
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+    // Residual `<residual_col> >= 0`, Column bound to its UNION index (exactly
+    // how the indexed path builds it from the substrait/union DFSchema), with a
+    // RAW (uncoerced) Int32 literal — mirrors a plan that didn't coerce.
+    let residual: Arc<dyn datafusion::physical_expr::PhysicalExpr> = Arc::new(BinaryExpr::new(
+        Arc::new(Column::new(residual_col, residual_union_idx)),
+        Operator::GtEq,
+        Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+    ));
+    run_single_collector_residual_with_expr(
+        file_schema,
+        table_schema,
+        batch,
+        residual,
+        vec![residual_union_idx],
+    )
+    .await
+}
+
+/// Same as `run_single_collector_residual` but takes a pre-built residual
+/// PhysicalExpr (so tests can supply a production-coerced expr).
+async fn run_single_collector_residual_with_expr(
+    file_schema: SchemaRef,
+    table_schema: SchemaRef,
+    batch: &RecordBatch,
+    residual: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    predicate_columns: Vec<usize>,
+) -> usize {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+
+    let tmp = NamedTempFile::new().unwrap();
+    let (file, path) = tmp.keep().unwrap();
+    let props = datafusion::parquet::file::properties::WriterProperties::builder()
+        .set_max_row_group_size(256)
+        .set_statistics_enabled(datafusion::parquet::file::properties::EnabledStatistics::Page)
+        .build();
+    let mut w = ArrowWriter::try_new(file, file_schema, Some(props)).unwrap();
+    w.write(batch).unwrap();
+    w.close().unwrap();
+
+    let size = std::fs::metadata(&path).unwrap().len();
+    let rfile = std::fs::File::open(&path).unwrap();
+    let meta =
+        ArrowReaderMetadata::load(&rfile, ArrowReaderOptions::new().with_page_index(true)).unwrap();
+    let parquet_meta = meta.metadata().clone();
+    let mut rgs = Vec::new();
+    let mut offset = 0i64;
+    for i in 0..parquet_meta.num_row_groups() {
+        let n = parquet_meta.row_group(i).num_rows();
+        rgs.push(RowGroupInfo { index: i, first_row: offset, num_rows: n });
+        offset += n;
+    }
+    let segment = SegmentFileInfo {
+        writer_generation: 0,
+        max_doc: batch.num_rows() as i64,
+        object_path: object_store::path::Path::from(path.to_string_lossy().as_ref()),
+        parquet_size: size,
+        row_groups: rgs,
+        metadata: Arc::clone(&parquet_meta),
+        global_base: 0,
+        sort_min: None,
+        sort_max: None,
+    };
+
+    let eval_factory: super::super::table_provider::EvaluatorFactory = {
+        let residual = Arc::clone(&residual);
+        let schema = table_schema.clone();
+        Arc::new(move |segment, _chunk, stream_metrics, _stats_prune_tree| {
+            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata)));
+            let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(SingleCollectorEvaluator::new(
+                Some(Arc::new(MatchAllCollector) as Arc<dyn RowGroupDocsCollector>),
+                pruner,
+                None,
+                Some(Arc::clone(&residual)),
+                None,
+                stream_metrics.ffm_collector_calls.clone(),
+                CollectorCallStrategy::FullRange,
+                Arc::new(HashMap::<i32, Arc<OnceLock<crate::indexed_table::ffm_callbacks::ProviderHandle>>>::new()),
+                segment.writer_generation,
+                Arc::new(FfmDelegatedBackendCollectorFactory),
+                0,
+                None,
+                None,
+            ));
+            Ok(eval)
+        })
+    };
+
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_pushdown(Some(true))
+        // Force row-granular (min_skip_run=1 via a selectivity threshold of 1.0)
+        // so the residual is pushed into parquet's RowFilter (`with_predicate`) —
+        // the cluster's regime for a non-selective collector.
+        .min_skip_run_default(1)
+        .min_skip_run_selectivity_threshold(1.0)
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: table_schema,
+        segments: vec![segment],
+        store: Arc::new(object_store::local::LocalFileSystem::new())
+            as Arc<dyn object_store::ObjectStore>,
+        store_url: datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
+        evaluator_factory: eval_factory,
+        pushdown_predicate: Some(residual),
+        query_config: std::sync::Arc::new(qc),
+        predicate_columns,
+        emit_row_ids: false,
+        prune_tree_config: None,
+        sort_fields: vec![],
+        sort_orders: vec![],
+    }));
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    let df = ctx.sql("SELECT * FROM t").await.unwrap();
+    let mut stream = df.execute_stream().await.unwrap();
+    let mut count = 0;
+    while let Some(b) = stream.next().await {
+        count += b.unwrap().num_rows();
+    }
+    count
+}
+
+/// Production-faithful Int8 residual: build `sev >= 0` through
+/// `SessionState::create_physical_expr` (which runs the TypeCoercion analyzer,
+/// exactly like `substrait_to_tree::convert_expr` does on the cluster), so the
+/// resulting expr has the CAST DataFusion would insert. Then run it through the
+/// SingleCollector path over an Int8 column. This distinguishes:
+///   - coercion fixes it (test passes) → the fix is "always coerce the residual"
+///   - still drops/errors (test fails) → the cast doesn't survive evaluate_residual
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_collector_residual_int8_coerced_keeps_all() {
+    use datafusion::arrow::array::Int8Array;
+    use datafusion::execution::context::SessionContext;
+    use datafusion::common::DFSchema;
+    use datafusion::prelude::{col, lit};
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("brand", DataType::Utf8, false),
+        Field::new("sev", DataType::Int8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+            Arc::new(Int8Array::from(vec![0i8, 17, 9, 21])),
+        ],
+    )
+    .unwrap();
+
+    // Build the coerced physical residual `sev >= 0` the production way.
+    let ctx = SessionContext::new();
+    let df_schema = DFSchema::try_from(schema.as_ref().clone()).unwrap();
+    let logical = col("sev").gt_eq(lit(0i32));
+    let residual = ctx
+        .state()
+        .create_physical_expr(logical, &df_schema)
+        .expect("create_physical_expr (with TypeCoercion)");
+
+    let count = run_single_collector_residual_with_expr(
+        schema.clone(),
+        schema,
+        &batch,
+        residual,
+        vec![1],
+    )
+    .await;
+    assert_eq!(
+        count, 4,
+        "coerced Int8 residual sev>=0 must keep all rows; got {count}"
+    );
+}
+
+/// Aligned baseline: file order == table order. Must keep all rows (sanity).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_collector_residual_aligned_keeps_all() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("brand", DataType::Utf8, false),
+        Field::new("sev", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+            Arc::new(Int32Array::from(vec![0, 17, 9, 21])),
+        ],
+    )
+    .unwrap();
+    // sev is at union index 1 and physical leaf 1 — aligned.
+    let count = run_single_collector_residual(schema.clone(), schema, &batch, "sev", 1).await;
+    assert_eq!(count, 4, "aligned: all rows have sev>=0, none may drop");
+}
+
+/// THE BUG: file physical order != table/union order, so the residual's union
+/// index points at the wrong physical leaf. Collector matches all; `sev >= 0`
+/// is a tautology → all 4 rows must survive. Reproduces the cluster ⅔ drop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_collector_residual_evolved_file_keeps_all() {
+    // Physical file order: [sev, brand]  (sev = physical leaf 0)
+    let file_schema = Arc::new(Schema::new(vec![
+        Field::new("sev", DataType::Int32, false),
+        Field::new("brand", DataType::Utf8, false),
+    ]));
+    // Table/union order: [brand, sev]  (sev = union index 1, but physical leaf 0)
+    let table_schema = Arc::new(Schema::new(vec![
+        Field::new("brand", DataType::Utf8, false),
+        Field::new("sev", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        file_schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 17, 9, 21])),
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+        ],
+    )
+    .unwrap();
+    // Residual references sev at UNION index 1; physical leaf is 0.
+    let count = run_single_collector_residual(file_schema, table_schema, &batch, "sev", 1).await;
+    assert_eq!(
+        count, 4,
+        "evolved file: all 4 rows have sev>=0 and must survive; a smaller count \
+         means the residual read the wrong physical leaf (union-index, no per-file remap)"
+    );
+}

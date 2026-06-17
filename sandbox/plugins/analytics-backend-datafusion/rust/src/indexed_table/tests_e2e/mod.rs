@@ -335,6 +335,161 @@ async fn run_tree_and_plan(
     (rows, plan)
 }
 
+/// Full-path run with a **column-scoped** page index grafted onto the segment
+/// (mimics the indexed scan after `load_scoped_page_index_cols`), so we can prove
+/// the end-to-end result (page-prune → decode → mask → rows) matches the
+/// full-index path even when the page index is scoped to only `scope_cols` and
+/// the boolean tree references a column that got the one-page placeholder +
+/// `NONE` ColumnIndex. Uses the same `TreeBitsetSource` evaluator as
+/// [`run_tree_and_plan`]; the only difference is the grafted scoped metadata.
+///
+/// `scope_cols` = parquet leaf indices kept REAL in the scoped ColumnIndex
+/// (everything else becomes a placeholder). Returns the SELECTed rows, sorted.
+async fn run_tree_with_scoped_index(
+    tree: BoolNode,
+    scope_cols: &[usize],
+) -> Vec<(String, i32, String, String)> {
+    let tmp = write_fixture_parquet();
+    let path = tmp.path().to_path_buf();
+    let size = std::fs::metadata(&path).unwrap().len();
+    let file = std::fs::File::open(&path).unwrap();
+    let meta =
+        ArrowReaderMetadata::load(&file, ArrowReaderOptions::new().with_page_index(false)).unwrap();
+    let schema = meta.schema().clone();
+    let footer = meta.metadata().clone();
+
+    // Graft a page index scoped to `scope_cols` (offset scoped likewise) — the
+    // exact artifact the indexed path builds. Non-scoped columns get NONE
+    // ColumnIndex + one-page placeholder OffsetIndex.
+    let store_local: Arc<dyn object_store::ObjectStore> =
+        Arc::new(object_store::local::LocalFileSystem::new());
+    let obj_loc = object_store::path::Path::from(path.to_string_lossy().as_ref());
+    // ColumnIndex is scoped to `scope_cols` (the predicate columns); the
+    // OffsetIndex must cover every column the query READS (its projection),
+    // exactly as the indexed executor does via `collect_plan_column_names`.
+    // Passing `scope_cols` for the OffsetIndex too would leave projected-but-
+    // unscoped columns on the one-page placeholder and the reader would deref a
+    // fake (0,0) byte range. Scope the OffsetIndex to ALL columns here so the
+    // test mirrors production (ColumnIndex scoped, OffsetIndex covers reads).
+    let num_cols = footer.file_metadata().schema_descr().num_columns();
+    let offset_cols: Vec<usize> = (0..num_cols).collect();
+    let scoped_meta = crate::indexed_table::page_index_loader::load_scoped_page_index_cols(
+        &store_local,
+        &obj_loc,
+        &footer,
+        scope_cols,
+        &offset_cols,
+    )
+    .await
+    .expect("scoped page index must build");
+
+    let mut rgs = Vec::new();
+    let mut offset = 0i64;
+    for i in 0..scoped_meta.num_row_groups() {
+        let n = scoped_meta.row_group(i).num_rows();
+        rgs.push(RowGroupInfo { index: i, first_row: offset, num_rows: n });
+        offset += n;
+    }
+    let object_path = object_store::path::Path::from(path.to_string_lossy().as_ref());
+    let segment = SegmentFileInfo {
+        writer_generation: 0,
+        max_doc: 16,
+        object_path,
+        parquet_size: size,
+        row_groups: rgs,
+        metadata: Arc::clone(&scoped_meta),
+        global_base: 0,
+        sort_min: None,
+        sort_max: None,
+    };
+
+    let tree = tree.push_not_down();
+    let collectors = wire_collectors(&tree);
+    let per_leaf: Vec<(i32, Arc<dyn RowGroupDocsCollector>)> = collectors
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| (i as i32, c))
+        .collect();
+    let tree = Arc::new(tree);
+    let factory: super::table_provider::EvaluatorFactory = {
+        let per_leaf = per_leaf.clone();
+        let tree = Arc::clone(&tree);
+        let schema = schema.clone();
+        Arc::new(move |segment, _chunk, _stream_metrics, _stats_prune_tree| {
+            let resolved = tree.resolve(&per_leaf)?;
+            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata)));
+            let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(TreeBitsetSource {
+                tree: Arc::new(resolved),
+                evaluator: Arc::new(BitmapTreeEvaluator),
+                leaves: Arc::new(CollectorLeafBitmaps {
+                    ffm_collector_calls: _stream_metrics.ffm_collector_calls.clone(),
+                }),
+                page_pruner: pruner,
+                cost_predicate: 1,
+                cost_collector: 10,
+                max_collector_parallelism: 1,
+                pruning_predicates: std::sync::Arc::new(std::collections::HashMap::new()),
+                page_prune_metrics: Some(
+                    crate::indexed_table::page_pruner::PagePruneMetrics::from_stream_metrics(
+                        _stream_metrics,
+                    ),
+                ),
+                collector_strategy:
+                    crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
+                stats_prune_tree: None,
+            });
+            Ok(eval)
+        })
+    };
+
+    let store: Arc<dyn object_store::ObjectStore> =
+        Arc::new(object_store::local::LocalFileSystem::new());
+    let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_strategy(Some(FilterStrategy::BooleanMask))
+        .force_pushdown(Some(false))
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: schema.clone(),
+        segments: vec![segment],
+        store,
+        store_url,
+        evaluator_factory: factory,
+        pushdown_predicate: None,
+        query_config: std::sync::Arc::new(qc),
+        predicate_columns: vec![],
+        emit_row_ids: false,
+        prune_tree_config: None,
+        sort_fields: vec![],
+        sort_orders: vec![],
+    }));
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    let df = ctx.sql("SELECT brand, price, status, category FROM t").await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let mut stream =
+        datafusion::physical_plan::execute_stream(plan, ctx.task_ctx()).unwrap();
+    let mut rows: Vec<(String, i32, String, String)> = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let b = batch.unwrap();
+        let brand = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let price = b.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
+        let status = b.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+        let cat = b.column(3).as_any().downcast_ref::<StringArray>().unwrap();
+        for i in 0..b.num_rows() {
+            rows.push((
+                brand.value(i).to_string(),
+                price.value(i),
+                status.value(i).to_string(),
+                cat.value(i).to_string(),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
 // ── Tree-building helpers ──────────────────────────────────────────
 //
 // Test-only leaf encoding: `index_leaf(tag)` puts a single-byte tag into
@@ -404,4 +559,45 @@ fn wire(node: &BoolNode, out: &mut Vec<Arc<dyn RowGroupDocsCollector>>) {
         BoolNode::Predicate(_) => {}
         BoolNode::DelegationPossible { .. } => {}
     }
+}
+
+// ── Full-path scoped-page-index correctness (task #6 regression) ──────────────
+//
+// The indexed path scopes the page index to the predicate columns; other columns
+// become a one-page placeholder + NONE ColumnIndex. These tests drive the FULL
+// path (page-prune → decode → mask → rows) over a scoped index and assert the
+// rows are IDENTICAL to the full-index path — the real correctness contract
+// (page-prune conservatism alone is harmless; what matters is the final rows).
+
+/// Tree `Collector(amazon) AND price>=100 AND status='archived'`, page index
+/// scoped to `price` only (col 1). `status` (col 2) is therefore placeholdered.
+/// The full-path result MUST equal the full-index path. (brand col 0 also
+/// placeholdered, but the Collector — not the page index — handles brand.)
+#[tokio::test]
+async fn scoped_index_fullpath_matches_full_index_residual_on_placeholdered_col() {
+    let _g = crate::indexed_table::page_index_loader::SCOPED_CACHE_TEST_GUARD.lock().unwrap();
+    crate::indexed_table::page_index_loader::clear_scoped_cache_for_test();
+
+    let make_tree = || {
+        BoolNode::And(vec![
+            index_leaf(0),                                  // Collector: brand == amazon
+            pred_int("price", Operator::GtEq, 100),         // residual on price (scoped)
+            pred_str("status", Operator::Eq, "archived"),   // residual on status (placeholdered)
+        ])
+    };
+
+    // Full index (every column real) — the reference.
+    let full_rows = run_tree(make_tree()).await;
+    // Scoped to `price` only (col 1) — `status` is placeholdered.
+    let scoped_rows = run_tree_with_scoped_index(make_tree(), &[1]).await;
+
+    // Ground truth: amazon rows with price>=100 AND status=archived → row 1
+    // (amazon,150,archived) only. (row 12 amazon,30,archived fails price>=100.)
+    let mut expected = full_rows.clone();
+    expected.sort();
+    assert_eq!(
+        scoped_rows, expected,
+        "scoped-page-index full-path rows must equal full-index rows; a mismatch is the \
+         indexed residual-on-placeholdered-column over-count (task #6)"
+    );
 }

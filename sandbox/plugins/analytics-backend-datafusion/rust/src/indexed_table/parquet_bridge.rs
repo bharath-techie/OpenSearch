@@ -349,3 +349,195 @@ impl AsyncFileReader for CachedMetadataReader {
         async move { Ok(metadata) }.boxed()
     }
 }
+
+#[cfg(test)]
+mod schema_evolution_tests {
+    //! Reproduces the indexed-path schema-evolution residual bug: when the
+    //! physical parquet file's column layout differs from the union/table
+    //! schema (a column at a different leaf position than its union index),
+    //! a residual predicate referencing the column by its UNION index must
+    //! still read the correct leaf. The vanilla listing path does this via
+    //! per-file schema adaptation; this test checks the indexed bridge does
+    //! the same (and FAILS today, dropping rows / reading the wrong leaf).
+
+    use super::*;
+    use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+    use datafusion::parquet::arrow::ArrowWriter;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+    use datafusion::logical_expr::Operator;
+    use datafusion::scalar::ScalarValue;
+    use futures::StreamExt;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+
+    /// Write a parquet file whose PHYSICAL schema is `physical_schema`.
+    fn write_parquet(physical_schema: SchemaRef, columns: Vec<Arc<dyn datafusion::arrow::array::Array>>) -> NamedTempFile {
+        let batch = RecordBatch::try_new(physical_schema.clone(), columns).unwrap();
+        let tmp = NamedTempFile::new().unwrap();
+        let props = datafusion::parquet::file::properties::WriterProperties::builder()
+            .set_statistics_enabled(datafusion::parquet::file::properties::EnabledStatistics::Page)
+            .build();
+        let mut w = ArrowWriter::try_new(tmp.reopen().unwrap(), physical_schema, Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        tmp
+    }
+
+    /// The bug: residual on a numeric column that sits at a DIFFERENT leaf in
+    /// the physical file than its position in the union/table schema. With the
+    /// union schema fed to `ParquetSource` and the predicate referencing the
+    /// union index, reading must still hit the right physical leaf.
+    ///
+    /// Physical file columns: `[brand:Utf8, sev:Int32]`  (sev = leaf 1)
+    /// Union/table schema:     `[brand:Utf8, inserted:Int32, sev:Int32]` (sev = union index 2)
+    /// Residual: `sev >= 0` → references union index 2. Every row has sev>=0,
+    /// so NO row may be dropped. If the path reads union-leaf 2 against a file
+    /// with only 2 leaves (0,1), it mis-reads / nulls → drops rows.
+    #[tokio::test]
+    async fn residual_on_shifted_leaf_reads_correct_column() {
+        // Physical schema (what's actually in the file): brand, sev.
+        let physical_schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("brand", DataType::Utf8, true),
+            Field::new("sev", DataType::Int32, true),
+        ]));
+        let brands = StringArray::from(vec!["a", "b", "c", "d"]);
+        let sevs = Int32Array::from(vec![0, 17, 9, 21]); // all >= 0
+        let tmp = write_parquet(
+            physical_schema.clone(),
+            vec![Arc::new(brands), Arc::new(sevs)],
+        );
+        let path = tmp.path().to_path_buf();
+        let size = std::fs::metadata(&path).unwrap().len();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let meta =
+            ArrowReaderMetadata::load(&file, ArrowReaderOptions::new().with_page_index(true)).unwrap();
+        let parquet_meta = meta.metadata().clone();
+
+        // Union/table schema: an extra column `inserted` BEFORE sev, so sev is
+        // at union index 2 (but physical leaf 1). This simulates schema
+        // evolution / merged files where the column position shifted.
+        let union_schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("brand", DataType::Utf8, true),
+            Field::new("inserted", DataType::Int32, true),
+            Field::new("sev", DataType::Int32, true),
+        ]));
+
+        // Residual `sev >= 0`, with the Column referencing the UNION index (2),
+        // exactly as the indexed path builds it (bound to the union DFSchema).
+        let residual: Arc<dyn datafusion::physical_expr::PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("sev", 2)),
+            Operator::GtEq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+        ));
+
+        // Projection: read brand (0) and sev (2) by union index.
+        let projection = vec![0usize, 2usize];
+
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::local::LocalFileSystem::new());
+        let store_url = ObjectStoreUrl::local_filesystem();
+        let config = RowGroupStreamConfig {
+            file_path: path.to_string_lossy().to_string(),
+            file_size: size,
+            store,
+            store_url,
+            full_schema: union_schema,
+            metadata: Arc::clone(&parquet_meta),
+            projection: Some(projection),
+            predicate: Some(residual),
+            io_stats: Arc::new(ReadIoStats::default()),
+        };
+
+        // Row-granular pushdown ON (push_predicate=true) — the cluster's
+        // low-selectivity regime that pushes the residual into parquet decode.
+        let (mut stream, _exec) =
+            create_row_selection_stream(&config, 0, full_rg_selection(&parquet_meta, 0), true)
+                .expect("stream builds");
+
+        let mut total_rows = 0usize;
+        while let Some(batch) = stream.next().await {
+            let b = batch.expect("batch decodes without error");
+            total_rows += b.num_rows();
+        }
+
+        assert_eq!(
+            total_rows, 4,
+            "all 4 rows have sev>=0 and must survive the residual; got {total_rows} \
+             (indexed path read the wrong leaf for the shifted column)"
+        );
+    }
+
+    /// Variant: the residual column is ABSENT from the physical file entirely
+    /// (pure schema evolution — column added after this file was written). The
+    /// listing path null-fills it; `sev >= 0` over null → null → row excluded,
+    /// which is CORRECT. But `sev IS NULL` must keep all rows. This pins whether
+    /// the indexed path null-fills absent columns the same way the listing path
+    /// does, rather than erroring or mis-reading.
+    #[tokio::test]
+    async fn residual_on_absent_column_null_fills() {
+        // Physical file has ONLY brand — no sev column at all.
+        let physical_schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("brand", DataType::Utf8, true),
+        ]));
+        let brands = StringArray::from(vec!["a", "b", "c", "d"]);
+        let tmp = write_parquet(physical_schema.clone(), vec![Arc::new(brands)]);
+        let path = tmp.path().to_path_buf();
+        let size = std::fs::metadata(&path).unwrap().len();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let meta =
+            ArrowReaderMetadata::load(&file, ArrowReaderOptions::new().with_page_index(true)).unwrap();
+        let parquet_meta = meta.metadata().clone();
+
+        // Union schema adds `sev` at index 1 — absent from the physical file.
+        let union_schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("brand", DataType::Utf8, true),
+            Field::new("sev", DataType::Int32, true),
+        ]));
+
+        // Residual `sev IS NOT NULL` — over a null-filled absent column this is
+        // FALSE for all rows → 0 rows. That's correct. The point of the test is
+        // it must NOT error and must agree with listing-path null semantics.
+        // We assert the dual: `sev IS NULL` keeps all 4 rows.
+        use datafusion::physical_expr::expressions::IsNullExpr;
+        let residual: Arc<dyn datafusion::physical_expr::PhysicalExpr> =
+            Arc::new(IsNullExpr::new(Arc::new(Column::new("sev", 1))));
+
+        let projection = vec![0usize, 1usize];
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::local::LocalFileSystem::new());
+        let store_url = ObjectStoreUrl::local_filesystem();
+        let config = RowGroupStreamConfig {
+            file_path: path.to_string_lossy().to_string(),
+            file_size: size,
+            store,
+            store_url,
+            full_schema: union_schema,
+            metadata: Arc::clone(&parquet_meta),
+            projection: Some(projection),
+            predicate: Some(residual),
+            io_stats: Arc::new(ReadIoStats::default()),
+        };
+
+        let (mut stream, _exec) =
+            create_row_selection_stream(&config, 0, full_rg_selection(&parquet_meta, 0), true)
+                .expect("stream builds");
+        let mut total_rows = 0usize;
+        while let Some(batch) = stream.next().await {
+            let b = batch.expect("batch decodes without error");
+            total_rows += b.num_rows();
+        }
+        assert_eq!(
+            total_rows, 4,
+            "sev IS NULL over an absent (null-filled) column must keep all 4 rows; got {total_rows}"
+        );
+    }
+
+    /// Build a RowSelection that selects every row of `rg_index`.
+    fn full_rg_selection(meta: &ParquetMetaData, rg_index: usize) -> RowSelection {
+        use datafusion::parquet::arrow::arrow_reader::RowSelector;
+        let n = meta.row_group(rg_index).num_rows() as usize;
+        RowSelection::from(vec![RowSelector::select(n)])
+    }
+}

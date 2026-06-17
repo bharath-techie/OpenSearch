@@ -47,6 +47,7 @@ use datafusion::common::{Column, ScalarValue};
 use datafusion::parquet::arrow::arrow_reader::statistics::StatisticsConverter;
 use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use datafusion::parquet::file::metadata::ParquetMetaData;
+use datafusion::parquet::file::page_index::column_index::ColumnIndexMetaData;
 #[cfg(test)]
 use datafusion::physical_expr::expressions::{BinaryExpr, Column as PhysColumn, Literal};
 use datafusion::physical_expr::PhysicalExpr;
@@ -92,11 +93,28 @@ impl PagePruner {
 
         // Early-exit if the file lacks a column/page index; without
         // both we can't produce page stats for pruning.
-        self.metadata.column_index()?;
+        let column_index = self.metadata.column_index()?;
+        let rg_column_index = column_index.get(rg_idx);
         let offset_index = self.metadata.offset_index()?;
         let rg_offsets = offset_index.get(rg_idx)?;
         let rg_meta = self.metadata.row_groups().get(rg_idx)?;
         let num_rows = rg_meta.num_rows() as usize;
+
+        // Per-file arrow schema (1:1 field<->leaf). Resolving StatisticsConverter
+        // against the shared/union table schema maps a column to the WRONG leaf
+        // in a schema-evolved/merged file (SeverityNumber -> union leaf 291, true
+        // leaf 149), so page stats come from the wrong column and nearly all
+        // pages are pruned -> the indexed match() AND <residual> row loss. Mirror
+        // eval_leaf / the scoped page-index resolver.
+        let prune_file_schema = datafusion::parquet::arrow::parquet_to_arrow_schema(
+            self.metadata.file_metadata().schema_descr(),
+            self.metadata.file_metadata().key_value_metadata(),
+        )
+        .map(std::sync::Arc::new);
+        let prune_schema: &SchemaRef = match prune_file_schema.as_ref() {
+            Ok(s) => s,
+            Err(_) => &self.schema,
+        };
 
         // Build a common page grid from the union of all referenced
         // columns' page boundaries. Each grid cell is a row range that
@@ -119,7 +137,7 @@ impl PagePruner {
         for col in &columns {
             let converter = match StatisticsConverter::try_new(
                 col.name(),
-                &self.schema,
+                prune_schema,
                 self.metadata.file_metadata().schema_descr(),
             ) {
                 Ok(c) => c,
@@ -140,6 +158,24 @@ impl PagePruner {
                     continue;
                 }
             };
+            // Scoped-page-index guard: with a column-scoped page index, only the
+            // query's scoped columns carry a real `ColumnIndex`; every other column
+            // is a `NONE` ColumnIndex cell paired with a synthetic one-page
+            // `OffsetIndex` placeholder. Trusting that placeholder's (absent) stats
+            // would build a bogus single-page grid for the column and admit rows the
+            // real index would prune — the indexed `match() AND <residual>`
+            // over-count. Treat a `NONE` cell exactly like an absent column: push
+            // `(col, None)` so it contributes "unknown" (never prunes) while other
+            // columns still prune. This mirrors how DataFusion's listing pruner
+            // degrades on a column it has no usable stats for.
+            let has_real_column_index = rg_column_index
+                .and_then(|rg_ci| rg_ci.get(parquet_col_idx))
+                .map(|cell| !matches!(cell, ColumnIndexMetaData::NONE))
+                .unwrap_or(false);
+            if !has_real_column_index {
+                col_converters.push((col, None));
+                continue;
+            }
             let col_locs = match rg_offsets.get(parquet_col_idx) {
                 Some(oi) => oi.page_locations(),
                 None => {
@@ -177,7 +213,7 @@ impl PagePruner {
             &boundaries,
             num_grid_cells,
             &col_converters,
-            &self.schema,
+            prune_schema,
             &self.metadata,
             rg_idx,
         )?;
@@ -525,7 +561,30 @@ fn eval_leaf(
     if columns.is_empty() {
         return vec![true; num];
     }
-    let arrow_schema = schema.as_ref();
+    // Resolve column statistics against THIS FILE's own arrow schema, not the
+    // shared/union table schema. `StatisticsConverter`/`parquet_column` map a
+    // column by its position in the supplied arrow schema, then match that
+    // position to a parquet leaf. The union table schema (e.g. textbench's 410
+    // fields) maps a column to the WRONG leaf in a schema-evolved/merged file
+    // that physically has fewer columns (observed: `SeverityNumber` → leaf 291
+    // against the union, but its true leaf in the merged file is 149). Reading
+    // the wrong leaf yields all-null min/max with `null_count == row_count`, so
+    // `PruningPredicate` evaluates `null_count != row_count AND …` to false and
+    // PRUNES the row group — silently dropping every row of RGs that actually
+    // satisfy the predicate (the indexed `match() AND <residual>` ⅔ row loss:
+    // ~544 RGs / 557M rows skipped before the collector runs). Deriving the
+    // arrow schema from the file footer gives a 1:1 field↔leaf correspondence so
+    // the converter reads the real leaf. Mirrors
+    // `page_index_loader::resolve_predicate_parquet_columns`.
+    let file_arrow_schema = datafusion::parquet::arrow::parquet_to_arrow_schema(
+        metadata.file_metadata().schema_descr(),
+        metadata.file_metadata().key_value_metadata(),
+    )
+    .map(Arc::new);
+    let arrow_schema: &datafusion::arrow::datatypes::Schema = match file_arrow_schema.as_ref() {
+        Ok(s) => s.as_ref(),
+        Err(_) => schema.as_ref(),
+    };
     let rg_metas: Vec<_> = rg_indices
         .iter()
         .filter_map(|&idx| metadata.row_groups().get(idx))
@@ -544,6 +603,17 @@ fn eval_leaf(
             Ok(c) => c,
             Err(_) => continue,
         };
+        // Schema-evolution guard: when the column can't be mapped to a parquet
+        // leaf in THIS file (`parquet_column_index == None`), the converter
+        // produces all-NULL min/max arrays. Inserting those makes
+        // `PruningPredicate` treat the RG as "cannot match" (null compares as
+        // false) and PRUNE it — wrongly dropping every row of a row group whose
+        // values would satisfy the predicate. This is the indexed
+        // `match() AND <residual>` silent row loss: on schema-evolved / merged
+        // files the union-schema column index doesn't resolve to the file's leaf,
+        // so stats come back null and ~⅔ of row groups are skipped before the
+        // collector runs. Treat an unresolved column as "no usable stats" — skip
+        // it so other columns still prune but this RG is conservatively kept.
         let min_arr = match converter.row_group_mins(rg_metas.iter().copied()) {
             Ok(arr) => arr,
             Err(_) => continue,
@@ -999,6 +1069,120 @@ mod tests {
         let expr: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Boolean(Some(true))));
         let pp = build_pruning_predicate(&expr, schema);
         assert!(pp.is_none());
+    }
+
+    /// REPRO for the cluster ⅔-drop at the RG level: `eval_leaf` (used by
+    /// `StatsPruneTree`) must NOT prune a row group whose Int8 `sev` values all
+    /// satisfy `sev >= 0`. On the cluster, StatsPruneTree skipped 544 RGs
+    /// (~557M rows) for `match AND sev>=0` — `sev >= 0` is a tautology so it must
+    /// prune ZERO. If `eval_leaf` mis-handles the Int8-vs-Int32 stats comparison
+    /// it returns `false` for can-match → the RG is wrongly skipped before the
+    /// collector runs → the silent ⅔ row loss.
+    #[test]
+    fn eval_leaf_int8_ge_zero_keeps_all_row_groups() {
+        use datafusion::arrow::array::{Int8Array, RecordBatch};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column as PhysCol, Literal};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("sev", DataType::Int8, false)]));
+        // 3 row groups, all values >= 0.
+        let tmp = NamedTempFile::new().unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(8)
+            .set_statistics_enabled(EnabledStatistics::Chunk)
+            .build();
+        let mut w =
+            ArrowWriter::try_new(tmp.reopen().unwrap(), schema.clone(), Some(props)).unwrap();
+        for base in [0i8, 8, 16] {
+            let vals: Vec<i8> = (base..base + 8).collect();
+            let batch =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(Int8Array::from(vals))]).unwrap();
+            w.write(&batch).unwrap();
+        }
+        w.close().unwrap();
+        let meta = ArrowReaderMetadata::load(
+            &tmp.reopen().unwrap(),
+            ArrowReaderOptions::new(),
+        )
+        .unwrap();
+        let arc_meta = meta.metadata().clone();
+        let num_rgs = arc_meta.num_row_groups();
+        assert!(num_rgs >= 2, "need multiple RGs, got {num_rgs}");
+        let rg_indices: Vec<usize> = (0..num_rgs).collect();
+
+        // Residual `sev >= 0` with an Int32 literal (column is Int8) — as the
+        // planner emits. Build a PruningPredicate and run eval_leaf on every RG.
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(PhysCol::new("sev", 0)),
+            Operator::GtEq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+        ));
+        let pp = build_pruning_predicate(&expr, schema.clone())
+            .expect("`sev >= 0` should build a PruningPredicate");
+        let keep = eval_leaf(&pp, &arc_meta, &schema, &rg_indices);
+        assert_eq!(
+            keep,
+            vec![true; num_rgs],
+            "every RG has sev>=0 → eval_leaf must keep ALL row groups; a `false` is \
+             the Int8 stats mis-prune that drops ~557M rows on the cluster"
+        );
+    }
+
+    /// REPRO for the cluster ⅔-drop: an Int8 (`tinyint`) column with a residual
+    /// `sev >= 0` whose literal is Int32 (as the planner emits for an int
+    /// literal). `0` is ≤ every value in the page, so the page must be KEPT.
+    /// If `prune_rg` mis-handles the Int8-vs-Int32 stats comparison it will
+    /// wrongly prune (drop) the page → the silent row loss.
+    #[test]
+    fn int8_column_ge_int32_literal_keeps_all_pages() {
+        use datafusion::arrow::array::{Int8Array, RecordBatch};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(vec![Field::new("sev", DataType::Int8, false)]));
+        // 32 rows, values 0..=21 cycling — all >= 0.
+        let vals: Vec<i8> = (0..32).map(|i| (i % 22) as i8).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int8Array::from(vals))],
+        )
+        .unwrap();
+        let tmp = NamedTempFile::new().unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(32)
+            .set_data_page_row_count_limit(8)
+            .set_write_batch_size(8)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .build();
+        let mut w =
+            ArrowWriter::try_new(tmp.reopen().unwrap(), schema.clone(), Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        let meta = ArrowReaderMetadata::load(
+            &tmp.reopen().unwrap(),
+            ArrowReaderOptions::new().with_page_index(true),
+        )
+        .unwrap();
+        let pruner = PagePruner::new(&schema, meta.metadata().clone());
+
+        // `sev >= 0` with an Int32 literal (column is Int8). Tautology → keep all 32.
+        let expr = bin(col("sev", 0), Operator::GtEq, lit_int(0));
+        match build_pruning_predicate(&expr, schema) {
+            // always_true (no pruning) is also correct — nothing dropped.
+            None => {}
+            Some(pp) => {
+                // `prune_rg` → None means "can't prune → keep whole RG" (safe).
+                // `Some(sel)` must keep all 32 rows. Either is correct; a Some
+                // selection that drops rows is the tinyint mis-prune.
+                match pruner.prune_rg(&pp, 0, None) {
+                    None => {}
+                    Some(sel) => assert_eq!(
+                        count_rows_kept(&sel),
+                        32,
+                        "Int8 column `sev >= 0` (Int32 literal) must keep every row; \
+                         a smaller count is the tinyint stats-comparison mis-prune"
+                    ),
+                }
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
