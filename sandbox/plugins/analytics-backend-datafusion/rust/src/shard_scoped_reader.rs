@@ -73,7 +73,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use prost::bytes::Bytes;
 
 use crate::indexed_table::page_index_loader::{
-    load_scoped_page_index, resolve_predicate_parquet_columns,
+    load_scoped_page_index_cols, resolve_predicate_parquet_columns,
 };
 use crate::indexed_table::parquet_bridge::load_parquet_metadata;
 
@@ -93,6 +93,10 @@ pub struct ScopedPageIndexReaderFactory {
     /// scoping" — `get_metadata` returns footer-only and the opener loads the
     /// page index on demand as usual.
     predicate_column_names: Arc<Vec<String>>,
+    /// File-column names this scan PROJECTS (reads). Used to scope the
+    /// OffsetIndex to `predicate ∪ projection` instead of all columns. Empty =
+    /// fall back to all-column offsets (old behavior).
+    projection_column_names: Arc<Vec<String>>,
     /// The physical predicate (if any). Retained in the constructor signature for
     /// parity with the indexed path, but intentionally NOT used for RG scoping
     /// here (see module docs).
@@ -107,6 +111,7 @@ impl ScopedPageIndexReaderFactory {
         store: Arc<dyn ObjectStore>,
         metadata_cache: Arc<dyn FileMetadataCache>,
         predicate_column_names: Vec<String>,
+        projection_column_names: Vec<String>,
         predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         file_schema: SchemaRef,
     ) -> Self {
@@ -114,6 +119,7 @@ impl ScopedPageIndexReaderFactory {
             store,
             metadata_cache,
             predicate_column_names: Arc::new(predicate_column_names),
+            projection_column_names: Arc::new(projection_column_names),
             predicate,
             file_schema,
         }
@@ -134,6 +140,7 @@ impl ParquetFileReaderFactory for ScopedPageIndexReaderFactory {
             store: Arc::clone(&self.store),
             metadata_cache: Arc::clone(&self.metadata_cache),
             predicate_column_names: Arc::clone(&self.predicate_column_names),
+            projection_column_names: Arc::clone(&self.projection_column_names),
             file_schema: Arc::clone(&self.file_schema),
             location: file.object_meta.location.clone(),
             metrics: file_metrics,
@@ -145,6 +152,7 @@ struct ScopedPageIndexReader {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
     predicate_column_names: Arc<Vec<String>>,
+    projection_column_names: Arc<Vec<String>>,
     file_schema: SchemaRef,
     location: object_store::path::Path,
     metrics: ParquetFileMetrics,
@@ -193,6 +201,7 @@ impl AsyncFileReader for ScopedPageIndexReader {
         let store = Arc::clone(&self.store);
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let predicate_names = Arc::clone(&self.predicate_column_names);
+        let projection_names = Arc::clone(&self.projection_column_names);
         let file_schema = Arc::clone(&self.file_schema);
         let location = self.location.clone();
         async move {
@@ -213,14 +222,27 @@ impl AsyncFileReader for ScopedPageIndexReader {
             if !predicate_names.is_empty() {
                 let parquet_cols =
                     resolve_predicate_parquet_columns(&file_schema, &footer, &predicate_names);
-                if let Some(augmented) =
-                    load_scoped_page_index(&store, &location, &footer, &parquet_cols).await
+                // Projected leaf indices for THIS file, for OffsetIndex column
+                // scoping (predicate ∪ projection ∪ {0}). Empty projection_names
+                // (couldn't derive) → empty offset_cols → loader unions in
+                // predicate + col0 only (still far smaller than all columns).
+                let offset_cols =
+                    resolve_predicate_parquet_columns(&file_schema, &footer, &projection_names);
+                if let Some(augmented) = load_scoped_page_index_cols(
+                    &store,
+                    &location,
+                    &footer,
+                    &parquet_cols,
+                    &offset_cols,
+                )
+                .await
                 {
                     log::debug!(
-                        "scoped-pageidx[listing]: {} rgs={} cols={}",
+                        "scoped-pageidx[listing]: {} rgs={} pred_cols={} offset_cols={}",
                         location,
                         footer.num_row_groups(),
-                        parquet_cols.len()
+                        parquet_cols.len(),
+                        offset_cols.len()
                     );
                     return Ok(augmented);
                 }
@@ -310,6 +332,9 @@ mod tests {
             Arc::clone(&store),
             fresh_cache(),
             vec!["price".to_string()],
+            // Project both columns so the OffsetIndex is built for both (this test
+            // asserts a real OffsetIndex for every column).
+            vec!["price".to_string(), "qty".to_string()],
             None,
             schema,
         );
@@ -358,6 +383,7 @@ mod tests {
         let factory = ScopedPageIndexReaderFactory::new(
             Arc::clone(&store),
             fresh_cache(),
+            vec![],
             vec![],
             None,
             schema,

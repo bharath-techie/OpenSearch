@@ -109,6 +109,21 @@ impl PhysicalOptimizerRule for ScopedPageIndexOptimizer {
                 return Ok(Transformed::no(node));
             }
 
+            // Projected column NAMES (the columns this scan actually reads), for
+            // scoping the OffsetIndex to `predicate ∪ projection` instead of all
+            // columns. `projected_schema()` reflects the projection pushed into
+            // the scan; fall back to the full file schema if it can't be derived
+            // (safe — the loader then builds all-column offsets, the old behavior).
+            let projection_names: Vec<String> = match config.projected_schema() {
+                Ok(ps) => ps
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().to_string())
+                    .filter(|n| file_schema.index_of(n).is_ok())
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+
             // Build the scoped factory and reinstall the source. The predicate is
             // retained for parity but not used for RG scoping (Step 1 builds an
             // all-row-group, column-scoped page index — see the reader's docs).
@@ -116,6 +131,7 @@ impl PhysicalOptimizerRule for ScopedPageIndexOptimizer {
                 Arc::clone(&self.store),
                 Arc::clone(&self.metadata_cache),
                 names,
+                projection_names,
                 Some(Arc::clone(predicate)),
                 Arc::clone(file_schema),
             ));
@@ -232,6 +248,7 @@ mod tests {
         let pre = Arc::new(ScopedPageIndexReaderFactory::new(
             Arc::clone(&store),
             Arc::clone(&cache),
+            vec!["a".to_string()],
             vec!["a".to_string()],
             None,
             sch.clone(),

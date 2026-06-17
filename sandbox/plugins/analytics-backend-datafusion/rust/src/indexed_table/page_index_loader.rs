@@ -416,11 +416,30 @@ async fn load_combined(
     if parquet_cols.is_empty() {
         return None;
     }
+    let t_total = std::time::Instant::now();
+    let t_ci = std::time::Instant::now();
     let column_index =
         get_or_build_column_index(store, location, footer_meta, parquet_cols, surviving_rgs).await?;
+    let ci_ms = t_ci.elapsed();
+    let t_oi = std::time::Instant::now();
     let offset_index =
         get_or_build_offset_index(store, location, footer_meta, parquet_cols, offset_cols).await?;
-    Some(graft(footer_meta, column_index, offset_index))
+    let oi_ms = t_oi.elapsed();
+    // The graft deep-clones the whole footer (row_groups + column chunk metadata
+    // are owned, not Arc) — paid on EVERY query, hit or miss. Time it separately
+    // so we can see if this per-query clone (Problem B) dominates the scoped-cache
+    // path vs the cell decode/lookup.
+    let t_graft = std::time::Instant::now();
+    let grafted = graft(footer_meta, column_index, offset_index);
+    log::debug!(
+        "scoped-load {}: total={:?} (colidx={:?} offidx={:?} graft={:?})",
+        location,
+        t_total.elapsed(),
+        ci_ms,
+        oi_ms,
+        t_graft.elapsed(),
+    );
+    Some(grafted)
 }
 
 /// Build a fresh `ParquetMetaData` = `footer` with the page-index pair grafted
@@ -501,10 +520,21 @@ async fn get_or_build_column_index(
     } else {
         return None;
     }
+    let ci_hits = build_rgs.len() * parquet_cols.len() - missing.len();
+    log::debug!(
+        "scoped-colidx {}: cells {}rgs×{}cols, hit={} miss={} (rg_scoped={})",
+        location,
+        build_rgs.len(),
+        parquet_cols.len(),
+        ci_hits,
+        missing.len(),
+        surviving_rgs.is_some(),
+    );
 
     // Phase 2: decode the missing cells (vectored fetch grouped by RG), place
     // them in the matrix, and populate the cache.
     if !missing.is_empty() {
+        let t_decode = std::time::Instant::now();
         let built = build_column_index_cells(store, location, footer_meta, &missing).await?;
         if let Ok(mut cache) = COLUMN_INDEX_CACHE.lock() {
             for (col, rg, cell, size) in built {
@@ -512,6 +542,12 @@ async fn get_or_build_column_index(
                 cache.insert(CiCellKey { path: path.clone(), col, rg }, cell, size);
             }
         }
+        log::debug!(
+            "scoped-colidx {}: decoded {} miss cells in {:?}",
+            location,
+            missing.len(),
+            t_decode.elapsed(),
+        );
     }
 
     Some(matrix)
@@ -639,11 +675,27 @@ async fn get_or_build_offset_index(
     } else {
         return None;
     }
+    log::debug!(
+        "scoped-offidx {}: off_cols={}/{} (scoped={}) hit={} miss={}",
+        location,
+        off_cols.len(),
+        num_cols,
+        offset_cols.is_some(),
+        off_cols.len() - missing.len(),
+        missing.len(),
+    );
 
     // Phase 2: decode the missing columns (each spanning all RGs), scatter into
     // the matrix, and populate the cache.
     if !missing.is_empty() {
+        let t_decode = std::time::Instant::now();
         let built = build_offset_index_columns(store, location, footer_meta, &missing, num_rgs).await?;
+        log::debug!(
+            "scoped-offidx {}: decoded {} miss cols in {:?}",
+            location,
+            missing.len(),
+            t_decode.elapsed(),
+        );
         if let Ok(mut cache) = OFFSET_INDEX_CACHE.lock() {
             for (col, column, size) in built {
                 scatter_offset_column(&mut matrix, col, &column);

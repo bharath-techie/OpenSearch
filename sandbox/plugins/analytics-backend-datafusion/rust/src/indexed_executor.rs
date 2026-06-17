@@ -343,6 +343,40 @@ fn collect_predicate_column_names(
     }
     names.into_iter().collect()
 }
+/// Collect the names of every column the logical plan references anywhere
+/// (output projection, filter, sort, aggregation, …). This is a deliberate
+/// **superset** of the columns the scan will actually read, used to scope the
+/// OffsetIndex (`predicate ∪ projection`). A superset is safe: an OffsetIndex
+/// built for more columns than are read just caches a little extra and never
+/// breaks a read; building for *fewer* would panic the parquet reader (a
+/// projected column with an empty page-locations list). Walking the whole plan
+/// rather than just the top projection guarantees we never undershoot.
+fn collect_plan_column_names(plan: &datafusion::logical_expr::LogicalPlan) -> Vec<String> {
+    use datafusion::logical_expr::LogicalPlan;
+    let mut names = BTreeSet::new();
+    let _ = plan.apply(|node| {
+        // Every expression on this node, recursed into for Column refs.
+        let _ = node.apply_expressions(|expr| {
+            let _ = expr.apply(|e| {
+                if let datafusion::logical_expr::Expr::Column(col) = e {
+                    names.insert(col.name().to_string());
+                }
+                Ok(TreeNodeRecursion::Continue)
+            });
+            Ok(TreeNodeRecursion::Continue)
+        });
+        // A bare TableScan with a projection carries its read columns in its
+        // schema rather than in expressions — fold those in too.
+        if let LogicalPlan::TableScan(scan) = node {
+            for f in scan.projected_schema.fields() {
+                names.insert(f.name().to_string());
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    names.into_iter().collect()
+}
+
 /// For a tree classified as `SingleCollector`, walk it to find the single
 /// Collector leaf and return its query bytes.
 fn single_collector_id(tree: &BoolNode) -> Option<i32> {
@@ -964,6 +998,15 @@ async unsafe fn execute_indexed_with_context_inner(
     // metadata and pruning no-ops.
     let predicate_column_names = collect_predicate_column_names(extraction.as_ref(), &schema);
     if !predicate_column_names.is_empty() {
+        // Scope the OffsetIndex to the columns this query actually touches
+        // (projection ∪ predicate), instead of decoding+caching it for all
+        // columns. On the 402-column textbench schema the all-columns OffsetIndex
+        // was ~256 MB/file and was rebuilt every query regardless of the
+        // predicate; scoping it to the read columns is the difference between a
+        // few MB and 256 MB, and makes the cache actually fit its budget.
+        // `collect_plan_column_names` is a superset of the read set (safe — see
+        // its docs); the loader additionally unions in the predicate cols + col 0.
+        let projection_column_names = collect_plan_column_names(&logical_plan);
         for segment in segments.iter_mut() {
             let parquet_cols = crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns(
                 &schema,
@@ -973,11 +1016,20 @@ async unsafe fn execute_indexed_with_context_inner(
             if parquet_cols.is_empty() {
                 continue;
             }
-            if let Some(augmented) = crate::indexed_table::page_index_loader::load_scoped_page_index(
+            // Projection (∪ predicate ∪ {0}) leaf indices for THIS file, for the
+            // OffsetIndex column scoping. Resolved the same way as predicate cols
+            // so both scan paths agree on the cache key.
+            let offset_cols = crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns(
+                &schema,
+                &segment.metadata,
+                &projection_column_names,
+            );
+            if let Some(augmented) = crate::indexed_table::page_index_loader::load_scoped_page_index_cols(
                 &store,
                 &segment.object_path,
                 &segment.metadata,
                 &parquet_cols,
+                &offset_cols,
             )
             .await
             {
