@@ -222,6 +222,14 @@ impl AsyncFileReader for ScopedPageIndexReader {
             if !predicate_names.is_empty() {
                 let parquet_cols =
                     resolve_predicate_parquet_columns(&file_schema, &footer, &predicate_names);
+                native_bridge_common::log_debug!(
+                    "scoped-RESOLVE {}: names={:?} -> leaves={:?} (file_schema_fields={}, parquet_leaves={})",
+                    location,
+                    predicate_names.as_ref(),
+                    parquet_cols,
+                    file_schema.fields().len(),
+                    footer.file_metadata().schema_descr().num_columns(),
+                );
                 // Projected leaf indices for THIS file, for OffsetIndex column
                 // scoping (predicate ∪ projection ∪ {0}). Empty projection_names
                 // (couldn't derive) → empty offset_cols → loader unions in

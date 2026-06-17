@@ -323,12 +323,53 @@ pub fn clear_scoped_cache() {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/// Map the query's arrow predicate-column names to this file's parquet column
-/// indices, using the same resolution the pruner uses
-/// (`StatisticsConverter::parquet_column_index`). Columns absent from the parquet
-/// file (schema evolution) are skipped. Returns a sorted, deduped set so both
-/// scan paths produce an identical key for the same logical predicate.
+/// Map the query's predicate-column names to **this file's** parquet leaf
+/// indices, resolving against the file's OWN schema so the indices are correct
+/// even when the file is missing columns (schema evolution).
+///
+/// # Why the file's own schema, not the shared table schema
+///
+/// `StatisticsConverter`/`parquet_column` map a column by finding its position in
+/// the supplied arrow schema and then matching that position to a parquet leaf
+/// (`get_column_root_idx`). The textbench table schema is the **union** of all
+/// files' columns (410 fields); a given file may physically contain fewer (e.g.
+/// the merged file has 370 leaves — the absent columns are all-null and not
+/// written). Resolving against the 410-field union therefore maps a column to the
+/// WRONG leaf in a 370-leaf file (observed: `SeverityNumber` → leaf 291 against
+/// the union, but its true leaf in the merged file is 149). We would then build
+/// the scoped ColumnIndex/OffsetIndex at the wrong leaf and leave the real one an
+/// empty placeholder — and DataFusion's pruner, which resolves against the file's
+/// physical schema, reads the real leaf and panics on the empty `page_locations`
+/// (`statistics.rs` `page_locations.last().unwrap()`).
+///
+/// Deriving the arrow schema from the file footer (`parquet_to_arrow_schema`)
+/// gives a 1:1 field↔leaf correspondence for that file, so the resolved index
+/// matches what DataFusion dereferences. Columns absent from the file are skipped.
 pub fn resolve_predicate_parquet_columns(
+    _arrow_schema: &SchemaRef,
+    metadata: &ParquetMetaData,
+    predicate_column_names: &[String],
+) -> Vec<usize> {
+    let parquet_schema = metadata.file_metadata().schema_descr();
+    // Per-file arrow schema: 1:1 with this file's parquet leaves, so a column's
+    // arrow position maps to its true leaf. (The passed `_arrow_schema` is the
+    // union table schema and is intentionally NOT used for index resolution —
+    // see the doc comment.)
+    let file_arrow_schema = match datafusion::parquet::arrow::parquet_to_arrow_schema(
+        parquet_schema,
+        metadata.file_metadata().key_value_metadata(),
+    ) {
+        Ok(s) => Arc::new(s),
+        // If we can't derive the file schema, fall back to the union schema; the
+        // caller still falls back to footer-only on any downstream mismatch.
+        Err(_) => return resolve_with_schema(_arrow_schema, metadata, predicate_column_names),
+    };
+    resolve_with_schema(&file_arrow_schema, metadata, predicate_column_names)
+}
+
+/// Resolve predicate column names → parquet leaf indices against a specific arrow
+/// schema, via the same `StatisticsConverter` mapping DataFusion's pruner uses.
+fn resolve_with_schema(
     arrow_schema: &SchemaRef,
     metadata: &ParquetMetaData,
     predicate_column_names: &[String],
@@ -431,7 +472,7 @@ async fn load_combined(
     // path vs the cell decode/lookup.
     let t_graft = std::time::Instant::now();
     let grafted = graft(footer_meta, column_index, offset_index);
-    log::debug!(
+    native_bridge_common::log_debug!(
         "scoped-load {}: total={:?} (colidx={:?} offidx={:?} graft={:?})",
         location,
         t_total.elapsed(),
@@ -520,21 +561,9 @@ async fn get_or_build_column_index(
     } else {
         return None;
     }
-    let ci_hits = build_rgs.len() * parquet_cols.len() - missing.len();
-    log::debug!(
-        "scoped-colidx {}: cells {}rgs×{}cols, hit={} miss={} (rg_scoped={})",
-        location,
-        build_rgs.len(),
-        parquet_cols.len(),
-        ci_hits,
-        missing.len(),
-        surviving_rgs.is_some(),
-    );
-
     // Phase 2: decode the missing cells (vectored fetch grouped by RG), place
     // them in the matrix, and populate the cache.
     if !missing.is_empty() {
-        let t_decode = std::time::Instant::now();
         let built = build_column_index_cells(store, location, footer_meta, &missing).await?;
         if let Ok(mut cache) = COLUMN_INDEX_CACHE.lock() {
             for (col, rg, cell, size) in built {
@@ -542,12 +571,6 @@ async fn get_or_build_column_index(
                 cache.insert(CiCellKey { path: path.clone(), col, rg }, cell, size);
             }
         }
-        log::debug!(
-            "scoped-colidx {}: decoded {} miss cells in {:?}",
-            location,
-            missing.len(),
-            t_decode.elapsed(),
-        );
     }
 
     Some(matrix)
@@ -658,8 +681,24 @@ async fn get_or_build_offset_index(
     }
 
     let path: Arc<str> = Arc::from(location.as_ref());
+    // Placeholder for columns we don't build: a SINGLE page spanning the whole row
+    // group, NOT an empty page-locations list. A scoped OffsetIndex is grafted as a
+    // full-width `[rg][col]` matrix; consumers (DataFusion's page pruner, arrow's
+    // reader, our indexed pruner) index it by absolute column and dereference
+    // `page_locations` (`.last()`, `[0]`, `windows(2)`). An EMPTY placeholder
+    // panics those (`page_locations.last().unwrap()` etc.) if any path touches a
+    // column we scoped out — which is hard to predict across every query shape
+    // (count/agg, SingleCollector prefetch, schema-evolved files). A one-page
+    // placeholder is always safe to dereference and makes pruning conservatively
+    // keep the whole RG (1 page = all rows → can't prune), never a wrong result.
+    let placeholder_for = |rg_idx: usize| -> datafusion::parquet::file::page_index::offset_index::OffsetIndexMetaData {
+        let mut b = OffsetIndexBuilder::new();
+        b.append_offset_and_size(0, 0);
+        b.append_row_count(footer_meta.row_group(rg_idx).num_rows());
+        b.build()
+    };
     let mut matrix: ParquetOffsetIndex = (0..num_rgs)
-        .map(|_| (0..num_cols).map(|_| OffsetIndexBuilder::new().build()).collect())
+        .map(|rg| (0..num_cols).map(|_| placeholder_for(rg)).collect())
         .collect();
 
     // Phase 1: serve cached columns; collect misses.
@@ -675,12 +714,13 @@ async fn get_or_build_offset_index(
     } else {
         return None;
     }
-    log::debug!(
-        "scoped-offidx {}: off_cols={}/{} (scoped={}) hit={} miss={}",
+    native_bridge_common::log_debug!(
+        "scoped-offidx {}: off_cols={:?}/{} (scoped={}) pred={:?} hit={} miss={}",
         location,
-        off_cols.len(),
+        off_cols,
         num_cols,
         offset_cols.is_some(),
+        parquet_cols,
         off_cols.len() - missing.len(),
         missing.len(),
     );
@@ -690,7 +730,7 @@ async fn get_or_build_offset_index(
     if !missing.is_empty() {
         let t_decode = std::time::Instant::now();
         let built = build_offset_index_columns(store, location, footer_meta, &missing, num_rgs).await?;
-        log::debug!(
+        native_bridge_common::log_debug!(
             "scoped-offidx {}: decoded {} miss cols in {:?}",
             location,
             missing.len(),
@@ -763,6 +803,14 @@ async fn build_offset_index_columns(
         if decoded.len() != cols.len() {
             return None;
         }
+        // DIAG: report per-column page_locations length for this RG.
+        let plens: Vec<usize> = decoded.iter().map(|o| o.page_locations().len()).collect();
+        native_bridge_common::log_debug!(
+            "scoped-offidx-decode rg={} cols={:?} page_locs_len={:?}",
+            plan.rg_idx,
+            cols,
+            plens,
+        );
         for (k, entry) in decoded.into_iter().enumerate() {
             columns[k].push(entry);
         }
