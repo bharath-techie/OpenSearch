@@ -73,7 +73,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use prost::bytes::Bytes;
 
 use crate::indexed_table::page_index_loader::{
-    load_scoped_page_index_cols, resolve_predicate_parquet_columns,
+    load_scoped_page_index_cols,
 };
 use crate::indexed_table::parquet_bridge::load_parquet_metadata;
 
@@ -220,8 +220,12 @@ impl AsyncFileReader for ScopedPageIndexReader {
             //    (per-file, so schema evolution across files is handled), then
             //    augment with an all-RG, column-scoped page index.
             if !predicate_names.is_empty() {
-                let parquet_cols =
-                    resolve_predicate_parquet_columns(&file_schema, &footer, &predicate_names);
+                // Resolve predicate + projection in one pass (shared per-file arrow
+                // schema derivation — the dominant cost on wide schemas).
+                let (parquet_cols, offset_cols) =
+                    crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns_pair(
+                        &file_schema, &footer, &predicate_names, &projection_names,
+                    );
                 native_bridge_common::log_debug!(
                     "scoped-RESOLVE {}: names={:?} -> leaves={:?} (file_schema_fields={}, parquet_leaves={})",
                     location,
@@ -230,12 +234,8 @@ impl AsyncFileReader for ScopedPageIndexReader {
                     file_schema.fields().len(),
                     footer.file_metadata().schema_descr().num_columns(),
                 );
-                // Projected leaf indices for THIS file, for OffsetIndex column
-                // scoping (predicate ∪ projection ∪ {0}). Empty projection_names
-                // (couldn't derive) → empty offset_cols → loader unions in
-                // predicate + col0 only (still far smaller than all columns).
-                let offset_cols =
-                    resolve_predicate_parquet_columns(&file_schema, &footer, &projection_names);
+                // offset_cols (projected leaves for OffsetIndex column scoping,
+                // predicate ∪ projection ∪ {0}) came from the pair resolve above.
                 if let Some(augmented) = load_scoped_page_index_cols(
                     &store,
                     &location,
@@ -245,13 +245,6 @@ impl AsyncFileReader for ScopedPageIndexReader {
                 )
                 .await
                 {
-                    log::debug!(
-                        "scoped-pageidx[listing]: {} rgs={} pred_cols={} offset_cols={}",
-                        location,
-                        footer.num_row_groups(),
-                        parquet_cols.len(),
-                        offset_cols.len()
-                    );
                     return Ok(augmented);
                 }
             }

@@ -367,6 +367,39 @@ pub fn resolve_predicate_parquet_columns(
     resolve_with_schema(&file_arrow_schema, metadata, predicate_column_names)
 }
 
+/// Resolve TWO name-sets (e.g. predicate columns and projection columns) against
+/// the same file in one pass. Deriving the per-file arrow schema
+/// (`parquet_to_arrow_schema`) is the dominant cost of name→leaf resolution on
+/// wide schemas (it rebuilds the whole file's Schema); the two callers in the
+/// indexed setup loop previously each rebuilt it, so doing it once here removes a
+/// full schema reconstruction per file per query. Pure refactor — each returned
+/// Vec is identical to calling `resolve_predicate_parquet_columns` separately.
+pub fn resolve_predicate_parquet_columns_pair(
+    union_schema: &SchemaRef,
+    metadata: &ParquetMetaData,
+    names_a: &[String],
+    names_b: &[String],
+) -> (Vec<usize>, Vec<usize>) {
+    let parquet_schema = metadata.file_metadata().schema_descr();
+    match datafusion::parquet::arrow::parquet_to_arrow_schema(
+        parquet_schema,
+        metadata.file_metadata().key_value_metadata(),
+    ) {
+        Ok(s) => {
+            let file_arrow_schema = Arc::new(s);
+            (
+                resolve_with_schema(&file_arrow_schema, metadata, names_a),
+                resolve_with_schema(&file_arrow_schema, metadata, names_b),
+            )
+        }
+        // Same fallback as the single-name path: resolve against the union schema.
+        Err(_) => (
+            resolve_with_schema(union_schema, metadata, names_a),
+            resolve_with_schema(union_schema, metadata, names_b),
+        ),
+    }
+}
+
 /// Resolve predicate column names → parquet leaf indices against a specific arrow
 /// schema, via the same `StatisticsConverter` mapping DataFusion's pruner uses.
 fn resolve_with_schema(
@@ -468,24 +501,28 @@ async fn load_combined(
     let oi_ms = t_oi.elapsed();
     // The graft deep-clones the whole footer (row_groups + column chunk metadata
     // are owned, not Arc) — paid on EVERY query, hit or miss. Time it separately
-    // so we can see if this per-query clone (Problem B) dominates the scoped-cache
-    // path vs the cell decode/lookup.
+    // so the debug log can attribute the per-query clone vs the cell decode/lookup.
     let t_graft = std::time::Instant::now();
     let grafted = graft(footer_meta, column_index, offset_index);
+    let graft_ms = t_graft.elapsed();
     native_bridge_common::log_debug!(
         "scoped-load {}: total={:?} (colidx={:?} offidx={:?} graft={:?})",
         location,
         t_total.elapsed(),
         ci_ms,
         oi_ms,
-        t_graft.elapsed(),
+        graft_ms,
     );
     Some(grafted)
 }
 
 /// Build a fresh `ParquetMetaData` = `footer` with the page-index pair grafted
-/// on. Deep-clones the footer (the builder consumes an owned `ParquetMetaData`);
-/// that transient clone is the only footer copy and is never cached.
+/// on. Clones the footer to get an owned value for the builder — but with
+/// `ParquetMetaData.row_groups` held behind an `Arc` (see the arrow-rs change),
+/// that clone is a refcount bump, not a deep copy of every row group's
+/// column-chunk metadata. On wide / many-row-group files (e.g. textbench's
+/// ~403-col, ~64-RG footers) that deep copy was ~60ms/query; sharing makes the
+/// graft effectively free.
 fn graft(
     footer_meta: &Arc<ParquetMetaData>,
     column_index: ParquetColumnIndex,
@@ -697,8 +734,17 @@ async fn get_or_build_offset_index(
         b.append_row_count(footer_meta.row_group(rg_idx).num_rows());
         b.build()
     };
+    // The placeholder is identical for every column within a row group (it only
+    // depends on the RG's row count). Build it ONCE per RG and clone it across the
+    // columns, instead of constructing `num_cols` identical OffsetIndexMetaData
+    // (each a heap alloc) per RG. On wide schemas (clickbench ~105 cols) this is the
+    // bulk of the per-file warm scoped-load cost — only the few scoped columns get
+    // real data scattered in afterward; the rest stay as clones of this placeholder.
     let mut matrix: ParquetOffsetIndex = (0..num_rgs)
-        .map(|rg| (0..num_cols).map(|_| placeholder_for(rg)).collect())
+        .map(|rg| {
+            let ph = placeholder_for(rg);
+            vec![ph; num_cols]
+        })
         .collect();
 
     // Phase 1: serve cached columns; collect misses.
@@ -1271,6 +1317,25 @@ mod tests {
             !o[0][0].page_locations().is_empty() && !o[0][1].page_locations().is_empty(),
             "OffsetIndex real for every column (all-col default)"
         );
+    }
+
+    // The pair-resolve must return exactly what two separate single-name resolves
+    // return — it only shares the per-file arrow-schema derivation, nothing else.
+    #[tokio::test]
+    async fn resolve_pair_equals_two_single_resolves() {
+        let (bytes, schema) = two_col_parquet();
+        let fo = footer_only(&bytes);
+        let names_a = vec!["price".to_string()];
+        let names_b = vec!["qty".to_string(), "price".to_string()];
+        let single_a = resolve_predicate_parquet_columns(&schema, &fo, &names_a);
+        let single_b = resolve_predicate_parquet_columns(&schema, &fo, &names_b);
+        let (pair_a, pair_b) =
+            resolve_predicate_parquet_columns_pair(&schema, &fo, &names_a, &names_b);
+        assert_eq!(pair_a, single_a, "pair predicate result must match single");
+        assert_eq!(pair_b, single_b, "pair projection result must match single");
+        // And the values are the expected leaves (price=0, qty=1).
+        assert_eq!(pair_a, vec![0]);
+        assert_eq!(pair_b, vec![0, 1]);
     }
 
     #[tokio::test]

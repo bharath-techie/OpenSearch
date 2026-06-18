@@ -1042,22 +1042,20 @@ async unsafe fn execute_indexed_with_context_inner(
             projection_column_names,
         );
         for segment in segments.iter_mut() {
-            let parquet_cols = crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns(
-                &schema,
-                &segment.metadata,
-                &predicate_column_names,
-            );
+            // Resolve predicate + projection leaves in ONE pass — both share the
+            // per-file arrow schema derivation, which is the dominant cost on wide
+            // schemas. (offset_cols = projection; predicate ∪ {0} is unioned inside
+            // the loader.)
+            let (parquet_cols, offset_cols) =
+                crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns_pair(
+                    &schema,
+                    &segment.metadata,
+                    &predicate_column_names,
+                    &projection_column_names,
+                );
             if parquet_cols.is_empty() {
                 continue;
             }
-            // Projection (∪ predicate ∪ {0}) leaf indices for THIS file, for the
-            // OffsetIndex column scoping. Resolved the same way as predicate cols
-            // so both scan paths agree on the cache key.
-            let offset_cols = crate::indexed_table::page_index_loader::resolve_predicate_parquet_columns(
-                &schema,
-                &segment.metadata,
-                &projection_column_names,
-            );
             if let Some(augmented) = crate::indexed_table::page_index_loader::load_scoped_page_index_cols(
                 &store,
                 &segment.object_path,
