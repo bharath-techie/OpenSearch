@@ -487,13 +487,27 @@ async fn load_combined(
     surviving_rgs: Option<&[usize]>,
     offset_cols: Option<&[usize]>,
 ) -> Option<Arc<ParquetMetaData>> {
-    if parquet_cols.is_empty() {
+    // Nothing to build only when there is NEITHER a predicate (ColumnIndex for
+    // pruning) NOR an explicit projection (OffsetIndex for page-level IO). A
+    // match-only query has empty `parquet_cols` but a real, non-empty
+    // `offset_cols` (the projected columns) — it still needs the OffsetIndex so
+    // the parquet reader can fetch just the matched rows' pages instead of whole
+    // column chunks. `offset_cols == None` (all-columns) with no predicate is the
+    // legacy "nothing requested" case → return None as before.
+    let has_offset_work = offset_cols.map(|c| !c.is_empty()).unwrap_or(false);
+    if parquet_cols.is_empty() && !has_offset_work {
         return None;
     }
     let t_total = std::time::Instant::now();
     let t_ci = std::time::Instant::now();
-    let column_index =
-        get_or_build_column_index(store, location, footer_meta, parquet_cols, surviving_rgs).await?;
+    // ColumnIndex (predicate-driven, for page pruning). Skipped when there's no
+    // predicate — a `None` matrix grafts cleanly (consumers treat absent CI as
+    // "no usable stats", same as footer-only).
+    let column_index = if parquet_cols.is_empty() {
+        None
+    } else {
+        Some(get_or_build_column_index(store, location, footer_meta, parquet_cols, surviving_rgs).await?)
+    };
     let ci_ms = t_ci.elapsed();
     let t_oi = std::time::Instant::now();
     let offset_index =
@@ -525,13 +539,13 @@ async fn load_combined(
 /// graft effectively free.
 fn graft(
     footer_meta: &Arc<ParquetMetaData>,
-    column_index: ParquetColumnIndex,
+    column_index: Option<ParquetColumnIndex>,
     offset_index: ParquetOffsetIndex,
 ) -> Arc<ParquetMetaData> {
     let base = ParquetMetaData::clone(footer_meta);
     let rebuilt = base
         .into_builder()
-        .set_column_index(Some(column_index))
+        .set_column_index(column_index)
         .set_offset_index(Some(offset_index))
         .build();
     Arc::new(rebuilt)
@@ -1336,6 +1350,37 @@ mod tests {
         // And the values are the expected leaves (price=0, qty=1).
         assert_eq!(pair_a, vec![0]);
         assert_eq!(pair_b, vec![0, 1]);
+    }
+
+    /// Regression: a match()-only query has NO residual predicate columns
+    /// (`parquet_cols` empty) but DOES project columns (`offset_cols` non-empty).
+    /// The scoped load must still build the OffsetIndex for the projected column
+    /// so the parquet reader fetches only matched-row pages, not whole chunks.
+    /// (Bug: the load short-circuited on empty `parquet_cols`, skipping the
+    /// OffsetIndex → reader over-read ~2.5× the bytes on `... | stats ... by URL`.)
+    #[tokio::test]
+    async fn projection_only_builds_offset_index_without_predicate() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, _schema) = two_col_parquet(); // price=col0, qty=col1
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+
+        // No predicate columns; project qty (col 1).
+        let parquet_cols: Vec<usize> = vec![];
+        let offset_cols: Vec<usize> = vec![1];
+        let aug = load_scoped_page_index_cols(&store, &loc, &fo, &parquet_cols, &offset_cols)
+            .await
+            .expect("projection-only load must produce grafted metadata (not None)");
+
+        // No predicate → no ColumnIndex grafted.
+        assert!(aug.column_index().is_none(), "no predicate → ColumnIndex absent");
+
+        // OffsetIndex must be real for the projected col (1) AND col 0 (loader
+        // always unions in {0}); other behavior unchanged.
+        let o = aug.offset_index().expect("OffsetIndex must be grafted");
+        assert!(!o[0][1].page_locations().is_empty(), "projected col qty has real OffsetIndex");
+        assert!(!o[0][0].page_locations().is_empty(), "col 0 OffsetIndex real (always unioned)");
     }
 
     #[tokio::test]

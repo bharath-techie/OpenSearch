@@ -1025,16 +1025,15 @@ async unsafe fn execute_indexed_with_context_inner(
     // (no RG scoping in Step 1). On any failure the segment keeps footer-only
     // metadata and pruning no-ops.
     let predicate_column_names = collect_predicate_column_names(extraction.as_ref(), &schema);
-    if !predicate_column_names.is_empty() {
-        // Scope the OffsetIndex to the columns this query actually touches
-        // (projection ∪ predicate), instead of decoding+caching it for all
-        // columns. On the 402-column textbench schema the all-columns OffsetIndex
-        // was ~256 MB/file and was rebuilt every query regardless of the
-        // predicate; scoping it to the read columns is the difference between a
-        // few MB and 256 MB, and makes the cache actually fit its budget.
-        // `collect_plan_column_names` is a superset of the read set (safe — see
-        // its docs); the loader additionally unions in the predicate cols + col 0.
-        let projection_column_names = collect_plan_column_names(&logical_plan);
+    // Projected columns this query reads (superset of the read set; safe). A
+    // match()-only query has NO residual predicate columns but DOES project real
+    // columns (e.g. `... | stats count() by URL` projects URL) — those columns
+    // still need a scoped OffsetIndex so the parquet reader fetches only the
+    // matched rows' pages instead of whole column chunks. Gating the scoped build
+    // on the predicate alone (the old behavior) skipped the OffsetIndex for these
+    // queries, making them read the full column (measured 2.5× more bytes_scanned).
+    let projection_column_names = collect_plan_column_names(&logical_plan);
+    if !predicate_column_names.is_empty() || !projection_column_names.is_empty() {
         native_bridge_common::log_debug!(
             "scoped-PROJCOLS predicate_names={:?} projection_names(n={})={:?}",
             predicate_column_names,
@@ -1053,7 +1052,9 @@ async unsafe fn execute_indexed_with_context_inner(
                     &predicate_column_names,
                     &projection_column_names,
                 );
-            if parquet_cols.is_empty() {
+            // Proceed if EITHER a predicate (→ ColumnIndex for pruning) OR a
+            // projection (→ OffsetIndex for page-level IO) resolved to real leaves.
+            if parquet_cols.is_empty() && offset_cols.is_empty() {
                 continue;
             }
             if let Some(augmented) = crate::indexed_table::page_index_loader::load_scoped_page_index_cols(
