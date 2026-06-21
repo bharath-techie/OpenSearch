@@ -347,6 +347,20 @@ public class DataFusionPlugin extends Plugin
      *       simpler input lifecycle with no cross-runtime spawn or oneshot machinery.</li>
      * </ul>
      */
+    /**
+     * Master kill-switch for the scoped page-index cache. When {@code false} the
+     * {@code ScopedPageIndexOptimizer} is a no-op and DataFusion falls back to its
+     * default full-column page-index loading — identical to pre-cache behaviour.
+     * Useful for A/B benchmarking without a node restart or a rebuild.
+     * Default: {@code true} (cache enabled).
+     */
+    public static final Setting<Boolean> SCOPED_PAGE_INDEX_ENABLED = Setting.boolSetting(
+        "datafusion.scoped_page_index.enabled",
+        true,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     public static final Setting<String> DATAFUSION_REDUCE_INPUT_MODE = Setting.simpleString(
         "datafusion.reduce.input_mode",
         "streaming",
@@ -479,6 +493,10 @@ public class DataFusionPlugin extends Plugin
             );
         clusterService.getClusterSettings()
             .addSettingsUpdateConsumer(DATAFUSION_REDUCE_TARGET_PARTITIONS, NativeBridge::setReduceTargetPartitions);
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(
+            SCOPED_PAGE_INDEX_ENABLED,
+            v -> NativeBridge.setScopedPageIndexEnabled(v)
+        );
         clusterService.getClusterSettings()
             .addSettingsUpdateConsumer(DATAFUSION_MEMORY_GUARD_ADMISSION_THROTTLE_THRESHOLD, v -> updateMemoryGuardThresholds());
         clusterService.getClusterSettings()
@@ -504,6 +522,7 @@ public class DataFusionPlugin extends Plugin
         // Apply initial values
         NativeBridge.setMinTargetPartitions(DATAFUSION_MIN_TARGET_PARTITIONS.get(settings));
         NativeBridge.setReduceTargetPartitions(DATAFUSION_REDUCE_TARGET_PARTITIONS.get(settings));
+        NativeBridge.setScopedPageIndexEnabled(SCOPED_PAGE_INDEX_ENABLED.get(settings));
         NativeBridge.setMemoryGuardThresholds(
             DATAFUSION_MEMORY_GUARD_ADMISSION_THROTTLE_THRESHOLD.get(settings),
             DATAFUSION_MEMORY_GUARD_ADMISSION_REJECT_THRESHOLD.get(settings),

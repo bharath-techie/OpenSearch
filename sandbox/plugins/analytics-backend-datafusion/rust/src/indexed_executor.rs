@@ -969,7 +969,9 @@ async unsafe fn execute_indexed_with_context_inner(
     // scoped OffsetIndex so the reader fetches only matched pages.
     let predicate_column_names = collect_predicate_column_names(extraction.as_ref(), &schema);
     let projection_column_names = collect_plan_column_names(&logical_plan);
-    if !predicate_column_names.is_empty() || !projection_column_names.is_empty() {
+    if crate::scoped_index_optimizer::is_scoped_page_index_enabled()
+        && (!predicate_column_names.is_empty() || !projection_column_names.is_empty())
+    {
         for segment in segments.iter_mut() {
             let (parquet_cols, offset_cols) =
                 crate::parquet_page_cache::resolve_predicate_parquet_columns_pair(

@@ -39,6 +39,21 @@
 //!    columns — skipped (nothing to scope; the opener loads on demand as today).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-global kill-switch for the scoped page-index optimizer.
+/// When false, `ScopedPageIndexOptimizer::optimize` is a no-op — DataFusion
+/// falls back to its default full-column page-index loading.
+/// Toggled via `datafusion.scoped_page_index.enabled` dynamic cluster setting.
+static SCOPED_PAGE_INDEX_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_scoped_page_index_enabled(enabled: bool) {
+    SCOPED_PAGE_INDEX_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn is_scoped_page_index_enabled() -> bool {
+    SCOPED_PAGE_INDEX_ENABLED.load(Ordering::Relaxed)
+}
 
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -77,6 +92,9 @@ impl PhysicalOptimizerRule for ScopedPageIndexOptimizer {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        if !SCOPED_PAGE_INDEX_ENABLED.load(Ordering::Relaxed) {
+            return Ok(plan);
+        }
         let rewritten = plan.transform_up(|node| {
             let Some(dse) = node.downcast_ref::<DataSourceExec>() else {
                 return Ok(Transformed::no(node));

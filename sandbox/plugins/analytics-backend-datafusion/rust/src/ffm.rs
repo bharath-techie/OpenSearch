@@ -1365,6 +1365,16 @@ pub extern "C" fn df_clear_scoped_page_index_cache() -> i64 {
     Ok(0)
 }
 
+/// Enable or disable the scoped page-index optimizer at runtime.
+/// When disabled, DataFusion falls back to its default full-column page-index
+/// loading — identical to pre-cache behaviour. For A/B benchmarking.
+#[ffm_safe]
+#[no_mangle]
+pub extern "C" fn df_set_scoped_page_index_enabled(enabled: i64) -> i64 {
+    crate::scoped_index_optimizer::set_scoped_page_index_enabled(enabled != 0);
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -137,6 +137,7 @@ public final class NativeBridge {
     private static final MethodHandle SET_COLUMN_INDEX_CACHE_LIMIT;
     private static final MethodHandle SET_OFFSET_INDEX_CACHE_LIMIT;
     private static final MethodHandle CLEAR_SCOPED_PAGE_INDEX_CACHE;
+    private static final MethodHandle SET_SCOPED_PAGE_INDEX_ENABLED;
     private static final MethodHandle CANCEL_QUERY;
     private static final MethodHandle SET_CANCEL_STATS_THRESHOLD_MS;
     private static final MethodHandle STATS;
@@ -510,6 +511,10 @@ public final class NativeBridge {
         );
         SET_OFFSET_INDEX_CACHE_LIMIT = linker.downcallHandle(
             lib.find("df_set_offset_index_cache_limit").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+        );
+        SET_SCOPED_PAGE_INDEX_ENABLED = linker.downcallHandle(
+            lib.find("df_set_scoped_page_index_enabled").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
         );
         CLEAR_SCOPED_PAGE_INDEX_CACHE = linker.downcallHandle(
@@ -1656,6 +1661,13 @@ public final class NativeBridge {
         // TODO(PR1): wire to df_clear_offset_index_cache when available
         try (var call = new NativeCall()) {
             call.invoke(CLEAR_SCOPED_PAGE_INDEX_CACHE);
+        }
+    }
+
+    /** Enable or disable the scoped page-index optimizer at runtime. */
+    public static void setScopedPageIndexEnabled(boolean enabled) {
+        try (var call = new NativeCall()) {
+            call.invoke(SET_SCOPED_PAGE_INDEX_ENABLED, enabled ? 1L : 0L);
         }
     }
 
