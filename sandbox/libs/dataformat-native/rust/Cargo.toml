@@ -82,6 +82,31 @@ opensearch-repository-gcs = { path = "../../../plugins/native-repository-gcs/src
 opensearch-repository-azure = { path = "../../../plugins/native-repository-azure/src/main/rust" }
 opensearch-repository-fs = { path = "../../../plugins/native-repository-fs/src/main/rust" }
 
+# Redirect arrow-rs crates to the OpenSearch fork, which stores
+# ParquetMetaData.row_groups behind an Arc so cloning the footer (to graft a
+# scoped page index) is a refcount bump instead of a deep copy of every
+# RowGroupMetaData/ColumnChunkMetaData. On wide, many-row-group footers
+# (textbench: ~403 cols × ~64 RGs) that deep clone was ~60ms/query.
+# Patch ALL arrow crates in the graph so a single arrow version is used
+# (mixing patched + crates.io arrow → type mismatches).
+# Fork: https://github.com/bharath-techie/arrow-rs  branch: opensearch-fixes
+[patch.crates-io]
+arrow = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-arith = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-array = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-buffer = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-cast = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-csv = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-data = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-ipc = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-json = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-ord = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-row = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-schema = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-select = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+arrow-string = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+parquet = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+
 [profile.release]
 lto = true
 codegen-units = 1
