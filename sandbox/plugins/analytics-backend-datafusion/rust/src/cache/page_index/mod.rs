@@ -30,12 +30,14 @@
 //! - **ColumnIndex — predicate-driven.** Read only at *prune* time, and only for
 //!   the predicate column being evaluated
 //!   (`page_filter::PagesPruningStatistics`, `offset_index[rg][predicate_col]`).
-//!   Key: `(file, predicate_cols, surviving_rgs)`. Deterministic in the
-//!   *predicate* (independent of what you `SELECT`), so the same filter shares
-//!   its entry across scan paths **and** across queries with different
-//!   projections. This is the heavy index (string min/max) and the big heap win.
-//!   Scoped to predicate columns (`NONE` placeholders elsewhere) and, optionally,
-//!   to the row groups that pass footer-stats pruning ([`surviving_row_groups`]).
+//!   Key: `(file, col)`. Each entry stores a column's ColumnIndex across ALL row
+//!   groups — decoded once per file and reused by every query that filters on
+//!   that column, regardless of predicate literal, column combination, or
+//!   surviving-RG set. This is the heavy index (string min/max) and the big
+//!   heap win. The output matrix is scoped to predicate columns (`NONE`
+//!   placeholders elsewhere) and, optionally, to the row groups that pass
+//!   footer-stats pruning ([`surviving_row_groups`]), but the *cache* is not
+//!   RG-scoped — scatter filters on lookup.
 //!
 //! - **OffsetIndex — projection-driven.** Read at *scan* time for **projected**
 //!   columns (`InMemoryRowGroup::fetch_ranges`, `projection.leaf_included(idx)`),
@@ -78,10 +80,9 @@ pub mod page_index_io;
 pub mod column_schema_resolver;
 
 use cache_store::{BoundedCache, DEFAULT_SCOPED_CACHE_LIMIT};
-use cache_keys::{CiCellKey, OiCellKey, OiColumn};
+use cache_keys::{CiCellKey, CiColumn, OiCellKey, OiColumn};
 
 use crate::cache::eviction_policy::PolicyType;
-use datafusion::parquet::file::page_index::column_index::ColumnIndexMetaData;
 use once_cell::sync::Lazy;
 
 pub use cache_store::ScopedCacheStats;
@@ -99,7 +100,7 @@ pub use column_schema_resolver::{
 
 // Process-global caches
 
-pub(crate) static COLUMN_INDEX_CACHE: Lazy<BoundedCache<CiCellKey, ColumnIndexMetaData>> =
+pub(crate) static COLUMN_INDEX_CACHE: Lazy<BoundedCache<CiCellKey, CiColumn>> =
     Lazy::new(|| BoundedCache::new(DEFAULT_SCOPED_CACHE_LIMIT, PolicyType::Lru));
 
 pub(crate) static OFFSET_INDEX_CACHE: Lazy<BoundedCache<OiCellKey, OiColumn>> =

@@ -11,7 +11,7 @@
 //! The four public `load_scoped_page_index*` functions are the only callers of
 //! the cache machinery; all decoding, cache lookup, and grafting happens here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ use object_store::ObjectStore;
 use parquet::file::page_index::offset_index::OffsetIndexMetaData;
 use prost::bytes::{buf, Buf, Bytes};
 
-use super::cache_keys::{CiCellKey, OiCellKey, OiColumn};
+use super::cache_keys::{CiCellKey, CiColumn, OiCellKey, OiColumn};
 use super::{COLUMN_INDEX_CACHE, OFFSET_INDEX_CACHE};
 
 /// Load + graft a scoped page index: ColumnIndex for `predicate_cols` (all RGs),
@@ -243,12 +243,16 @@ fn graft(
 
 /// Assemble the full-width `[rg][col]` `ColumnIndex` matrix (real cells only at
 /// `predicate_cols` × built RGs; `NONE` everywhere else) by looking up each
-/// `(file, col, rg)` cell in the cache and decoding only the cells that miss.
+/// `(file, col)` column in the cache and decoding only the columns that miss.
 ///
-/// `surviving_rgs == None` builds every RG; `Some(set)` restricts the built RGs
-/// to footer-stats survivors ([`surviving_row_groups`]). Either way a cell is
-/// keyed solely on `(file, col, rg)`, so it is decoded once per file and reused
-/// across every predicate combination and surviving-RG set that touches it.
+/// Each cached entry is a column's ColumnIndex across **all** row groups, keyed
+/// only on `(file, col)` — matching the `OiCellKey` pattern. A column is decoded
+/// once per file and reused across every predicate combination and
+/// surviving-row-group set that touches it.
+///
+/// `surviving_rgs` controls which RGs are scattered into the output matrix (the
+/// rest stay `NONE`), but does NOT affect the cache key or what is decoded —
+/// decoding always covers all RGs so the cached entry is universally reusable.
 async fn get_or_build_column_index(
     store: &Arc<dyn ObjectStore>,
     location: &object_store::path::Path,
@@ -270,8 +274,10 @@ async fn get_or_build_column_index(
         return None;
     }
 
-    // Which RGs to build the (heavy) predicate-column ColumnIndex for.
-    let build_rgs: Vec<usize> = match surviving_rgs {
+    // Which RGs to scatter into the output matrix. Decoding always covers all
+    // RGs (the cache stores the full column), but the matrix only needs real
+    // entries at the surviving positions — the rest stay NONE.
+    let scatter_rgs: Vec<usize> = match surviving_rgs {
         None => (0..num_rgs).collect(),
         Some(set) => {
             debug_assert!(
@@ -281,62 +287,61 @@ async fn get_or_build_column_index(
             set.iter().copied().filter(|&r| r < num_rgs).collect()
         }
     };
-    if build_rgs.is_empty() {
-        // Nothing to build (e.g. an empty survivor set) → footer-only fallback.
+    if scatter_rgs.is_empty() {
         return None;
     }
 
     let path: Arc<str> = Arc::from(location.as_ref());
 
-    // Initially filled NONE for all RGs and all cols - as placeholders
     let mut col_index_matrix: ParquetColumnIndex = (0..num_rgs)
         .map(|_| (0..num_cols).map(|_| ColumnIndexMetaData::NONE).collect())
         .collect();
 
-    // Phase 1: serve every needed cell that is already cached; collect misses.
-    let mut missing_col_rg_matrix: Vec<(usize, usize)> = Vec::new(); // (col, rg)
-    for &rg in &build_rgs {
-        for &col in predicate_cols {
-            let key = CiCellKey { path: path.clone(), col, rg };
-            match COLUMN_INDEX_CACHE.get(&key) {
-                Some(cell) => col_index_matrix[rg][col] = cell,
-                None => missing_col_rg_matrix.push((col, rg)),
-            }
+    // Phase 1: serve cached columns; collect misses.
+    let mut missing_cols: Vec<usize> = Vec::new();
+    for &col in predicate_cols {
+        let key = CiCellKey { path: path.clone(), col };
+        match COLUMN_INDEX_CACHE.get(&key) {
+            Some(column) => scatter_column_index(&mut col_index_matrix, col, &column, &scatter_rgs),
+            None => missing_cols.push(col),
         }
     }
-    // Phase 2: decode the missing cells (vectored fetch grouped by RG), place
-    // them in the matrix, and populate the cache.
-    if !missing_col_rg_matrix.is_empty() {
-        let built = build_column_index_cells(store, location, footer_meta, &missing_col_rg_matrix).await?;
+
+    // Phase 2: decode the missing columns (all RGs), scatter into the matrix,
+    // and populate the cache.
+    if !missing_cols.is_empty() {
+        let built = build_column_index_columns(store, location, footer_meta, &missing_cols, num_rgs).await?;
         for cell in built {
-            debug_assert!(
-                cell.rg < col_index_matrix.len() && cell.col < col_index_matrix[cell.rg].len(),
-                "cell ({}, {}) out of matrix bounds ({num_rgs} rgs, {num_cols} cols)",
-                cell.col, cell.rg,
-            );
             COLUMN_INDEX_CACHE.insert(
-                CiCellKey { path: path.clone(), col: cell.col, rg: cell.rg },
+                CiCellKey { path: path.clone(), col: cell.col },
                 cell.data.clone(),
                 cell.size,
             );
-            col_index_matrix[cell.rg][cell.col] = cell.data;
+            scatter_column_index(&mut col_index_matrix, cell.col, &cell.data, &scatter_rgs);
         }
     }
 
     Some(col_index_matrix)
 }
 
-struct RgPlan {
-    rg: usize,
-    cols: Vec<usize>,
-    chunks: Vec<ColumnChunkMetaData>,
-    range_start: u64,
+/// Place a column's all-RG ColumnIndex into the matrix at `col`, but only at
+/// the row-group positions in `scatter_rgs`.
+fn scatter_column_index(
+    matrix: &mut ParquetColumnIndex,
+    col: usize,
+    column: &CiColumn,
+    scatter_rgs: &[usize],
+) {
+    for &rg in scatter_rgs {
+        if rg < column.len() && rg < matrix.len() {
+            matrix[rg][col] = column[rg].clone();
+        }
+    }
 }
 
 struct CiCell {
     col: usize,
-    rg: usize,
-    data: ColumnIndexMetaData,
+    data: CiColumn,
     size: usize,
 }
 
@@ -346,27 +351,28 @@ struct OiCell {
     size: usize,
 }
 
-/// Range-read + decode the requested `(col, rg)` ColumnIndex cells, grouping by
-/// row group so each RG's columns share one vectored fetch + decode. `None` if
-/// any requested column lacks a column-index range (→ footer-only fallback).
-async fn build_column_index_cells(
+/// Range-read + decode the ColumnIndex for each requested column across **every**
+/// row group. Matches the `build_offset_index_columns` pattern: one vectored
+/// fetch per RG, accumulate per-column across RGs. `None` if any requested
+/// column lacks a column-index range (→ footer-only fallback).
+async fn build_column_index_columns(
     store: &Arc<dyn ObjectStore>,
     location: &object_store::path::Path,
     footer_meta: &Arc<ParquetMetaData>,
-    col_rg_matrix: &[(usize, usize)],
+    cols: &[usize],
+    num_rgs: usize,
 ) -> Option<Vec<CiCell>> {
-    let mut by_rg: HashMap<usize, Vec<usize>> = HashMap::new();
-    for &(col, rg) in col_rg_matrix {
-        by_rg.entry(rg).or_default().push(col);
+    struct RgPlan {
+        chunks: Vec<ColumnChunkMetaData>,
+        range_start: u64,
     }
-
-    let mut plans: Vec<RgPlan> = Vec::with_capacity(by_rg.len());
-    let mut fetch_ranges: Vec<Range<u64>> = Vec::with_capacity(by_rg.len());
-    for (rg, cols) in by_rg {
-        let rgm = footer_meta.row_group(rg);
-        let chunks: Vec<ColumnChunkMetaData> = cols.iter().map(|&i| rgm.column(i).clone()).collect();
+    let mut plans: Vec<RgPlan> = Vec::with_capacity(num_rgs);
+    let mut fetch_ranges: Vec<Range<u64>> = Vec::with_capacity(num_rgs);
+    for rg_idx in 0..num_rgs {
+        let rg = footer_meta.row_group(rg_idx);
+        let chunks: Vec<ColumnChunkMetaData> = cols.iter().map(|&i| rg.column(i).clone()).collect();
         let range = column_index_union(&chunks)?;
-        plans.push(RgPlan { rg, cols, chunks, range_start: range.start });
+        plans.push(RgPlan { chunks, range_start: range.start });
         fetch_ranges.push(range);
     }
 
@@ -375,20 +381,28 @@ async fn build_column_index_cells(
         return None;
     }
 
-    let mut out: Vec<CiCell> = Vec::with_capacity(col_rg_matrix.len());
+    // Per-column accumulator: one CiColumn slot per requested col, filled RG by RG.
+    let mut columns: Vec<CiColumn> = cols.iter().map(|_| Vec::with_capacity(num_rgs)).collect();
     for (plan, buf) in plans.iter().zip(buffers.iter()) {
         let reader = BufferChunkReader { base: plan.range_start, bytes: buf.clone() };
-        // Deprecated but the only PUBLIC column-subset decoder (arrow-rs#8643).
         #[allow(deprecated)]
         let decoded = read_columns_indexes(&reader, &plan.chunks).ok()??;
-        if decoded.len() != plan.cols.len() {
+        if decoded.len() != cols.len() {
             return None;
         }
-        let rgm = footer_meta.row_group(plan.rg);
-        for (entry, &col) in decoded.into_iter().zip(plan.cols.iter()) {
-            let size = rgm.column(col).column_index_length().unwrap_or(0).max(0) as usize;
-            out.push(CiCell { col, rg: plan.rg, data: entry, size });
+        for (k, entry) in decoded.into_iter().enumerate() {
+            columns[k].push(entry);
         }
+    }
+
+    let mut out: Vec<CiCell> = Vec::with_capacity(cols.len());
+    for (k, &col) in cols.iter().enumerate() {
+        let size = footer_meta
+            .row_groups()
+            .iter()
+            .map(|rg| rg.column(col).column_index_length().unwrap_or(0).max(0) as usize)
+            .sum();
+        out.push(CiCell { col, data: mem::take(&mut columns[k]), size });
     }
     Some(out)
 }
@@ -1115,8 +1129,8 @@ mod tests {
     // ── cache behavior: hits, independence, eviction ──────────────────────
 
     /// Second identical load is a pure hit in BOTH caches; no new cells/bytes.
-    /// Cells: predicate `price` → 1 CI cell `(col0,rg0)`; all-column OffsetIndex
-    /// (the default) → 2 OI cells (one per column).
+    /// Cells: predicate `price` → 1 CI entry `(col0)`; all-column OffsetIndex
+    /// (the default) → 2 OI entries (one per column).
     #[tokio::test]
     async fn second_load_is_cache_hit() {
         let _g = CACHE_TEST_GUARD.lock().unwrap();
@@ -1128,8 +1142,8 @@ mod tests {
 
         let _ = load_scoped_page_index(&store, &loc, &fo, &cols).await.unwrap();
         let (c1, o1) = (ci(), oi());
-        assert_eq!((c1.hits, c1.misses, c1.entries), (0, 1, 1), "1 CI cell (price,rg0)");
-        assert_eq!((o1.hits, o1.misses, o1.entries), (0, 2, 2), "2 OI cells (col0,col1)");
+        assert_eq!((c1.hits, c1.misses, c1.entries), (0, 1, 1), "1 CI entry (price)");
+        assert_eq!((o1.hits, o1.misses, o1.entries), (0, 2, 2), "2 OI entries (col0,col1)");
         assert!(c1.used_bytes > 0 && o1.used_bytes > 0);
 
         let _ = load_scoped_page_index(&store, &loc, &fo, &cols).await.unwrap();
@@ -1138,10 +1152,10 @@ mod tests {
         assert_eq!((o2.hits, o2.misses, o2.entries, o2.used_bytes), (2, 2, 2, o1.used_bytes));
     }
 
-    /// Distinct predicate columns → distinct CI cells, but the OffsetIndex column
-    /// cells are SHARED. Both loads default to the all-column OffsetIndex, so the
-    /// second load re-reads the SAME 2 OI cells from cache (no new cells). This is
-    /// the whole point of cell-keying: a column's index is stored once per file.
+    /// Distinct predicate columns → distinct CI entries, but the OffsetIndex
+    /// entries are SHARED. Both loads default to the all-column OffsetIndex, so the
+    /// second load re-reads the SAME 2 OI entries from cache (no new entries). This
+    /// is the whole point of column-keying: a column's index is stored once per file.
     #[tokio::test]
     async fn distinct_predicates_share_offset_index() {
         let _g = CACHE_TEST_GUARD.lock().unwrap();
@@ -1155,9 +1169,9 @@ mod tests {
         let _ = load_scoped_page_index(&store, &loc, &fo, &c_price).await.unwrap();
         let _ = load_scoped_page_index(&store, &loc, &fo, &c_qty).await.unwrap();
 
-        assert_eq!(ci().entries, 2, "distinct predicate cells: (price,rg0) + (qty,rg0)");
-        assert_eq!(oi().entries, 2, "all-column OffsetIndex: 2 column cells, shared");
-        // Second (qty) load re-read the same 2 OI cells from cache.
+        assert_eq!(ci().entries, 2, "distinct predicate entries: (price) + (qty)");
+        assert_eq!(oi().entries, 2, "all-column OffsetIndex: 2 column entries, shared");
+        // Second (qty) load re-read the same 2 OI entries from cache.
         assert_eq!(oi().hits, 2);
     }
 
@@ -1322,7 +1336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rg_scoping_reduces_column_index_bytes() {
+    async fn rg_scoping_cache_same_bytes_as_full() {
         let _g = CACHE_TEST_GUARD.lock().unwrap();
         clear_scoped_cache_for_test();
         let (bytes, schema) = four_rg_parquet();
@@ -1330,20 +1344,20 @@ mod tests {
         let fo = footer_only(&bytes);
         let cols = resolve_predicate_parquet_columns(&schema, &fo, &["id".to_string()]);
 
+        // Cache always stores the full column (all RGs) regardless of survivor set.
         let _ = load_scoped_page_index(&store, &loc, &fo, &cols).await.unwrap();
         let all_rg = ci().used_bytes;
         clear_scoped_cache_for_test();
         let _ = load_scoped_page_index_rgs(&store, &loc, &fo, &cols, &[2, 3]).await.unwrap();
-        assert!(ci().used_bytes < all_rg, "RG-scoped CI bytes {} < all-RG {}", ci().used_bytes, all_rg);
+        assert_eq!(ci().used_bytes, all_rg, "cache stores full column regardless of survivors");
         clear_scoped_cache_for_test();
     }
 
-    /// CI cells are keyed per `(col, rg)`. Loading survivors {2,3} caches cells
-    /// (id,rg2) + (id,rg3); reloading the same survivor set hits both; a different
-    /// survivor set {0,1} adds two fresh cells. So a column's per-RG index is
-    /// reused across overlapping survivor sets instead of re-decoded per set.
+    /// CI entries are keyed per `(path, col)`. Loading different survivor sets
+    /// for the same column reuses the ONE cached entry — a single decode covers
+    /// all RGs, and any survivor set is just a scatter filter on lookup.
     #[tokio::test]
-    async fn rg_scoped_key_includes_surviving_rgs() {
+    async fn rg_scoped_different_survivors_share_column_entry() {
         let _g = CACHE_TEST_GUARD.lock().unwrap();
         clear_scoped_cache_for_test();
         let (bytes, schema) = four_rg_parquet();
@@ -1352,22 +1366,21 @@ mod tests {
         let cols = resolve_predicate_parquet_columns(&schema, &fo, &["id".to_string()]);
 
         let _ = load_scoped_page_index_rgs(&store, &loc, &fo, &cols, &[2, 3]).await.unwrap();
-        assert_eq!((ci().misses, ci().entries), (2, 2), "cells (id,rg2)+(id,rg3)");
+        assert_eq!((ci().misses, ci().entries), (1, 1), "1 column entry (id)");
         let _ = load_scoped_page_index_rgs(&store, &loc, &fo, &cols, &[2, 3]).await.unwrap();
-        assert_eq!((ci().hits, ci().entries), (2, 2), "same survivors → both cells hit");
+        assert_eq!((ci().hits, ci().entries), (1, 1), "same column → hit");
         let _ = load_scoped_page_index_rgs(&store, &loc, &fo, &cols, &[0, 1]).await.unwrap();
-        assert_eq!((ci().misses, ci().entries), (4, 4), "new survivors → 2 fresh cells");
-        // OI stayed all-columns across all three → 2 column cells, shared.
+        assert_eq!((ci().hits, ci().entries), (2, 1), "different survivors → still a hit (same column)");
+        // OI stayed all-columns across all three → 2 column entries, shared.
         assert_eq!(oi().entries, 2);
         clear_scoped_cache_for_test();
     }
 
-    /// Partial-overlap survivor sets only decode the NEW row groups. Load
-    /// survivors {2,3} (cells rg2,rg3), then {1,2,3}: rg2+rg3 hit, only rg1 is
-    /// freshly decoded. Proves RG-scoping reuses per-RG cells across overlapping
-    /// survivor sets rather than re-decoding the whole set.
+    /// Any survivor set hits the same column entry — one decode, universally
+    /// reusable. This replaces the old "partial-overlap" test which proved per-RG
+    /// reuse; now the whole column is the unit of caching.
     #[tokio::test]
-    async fn overlapping_survivor_sets_decode_only_new_rgs() {
+    async fn any_survivor_set_reuses_column_entry() {
         let _g = CACHE_TEST_GUARD.lock().unwrap();
         clear_scoped_cache_for_test();
         let (bytes, schema) = four_rg_parquet();
@@ -1376,14 +1389,14 @@ mod tests {
         let cols = resolve_predicate_parquet_columns(&schema, &fo, &["id".to_string()]);
 
         let _ = load_scoped_page_index_rgs(&store, &loc, &fo, &cols, &[2, 3]).await.unwrap();
-        assert_eq!((ci().hits, ci().misses, ci().entries), (0, 2, 2), "cells (id,rg2)+(id,rg3)");
+        assert_eq!((ci().hits, ci().misses, ci().entries), (0, 1, 1), "column (id) decoded once");
 
-        // {1,2,3}: rg2 & rg3 are cached (2 hits); only rg1 is new (1 miss).
+        // {1,2,3}: same column → hit.
         let _ = load_scoped_page_index_rgs(&store, &loc, &fo, &cols, &[1, 2, 3]).await.unwrap();
         assert_eq!(
             (ci().hits, ci().misses, ci().entries),
-            (2, 3, 3),
-            "rg2+rg3 reused (2 hits); only rg1 freshly decoded"
+            (1, 1, 1),
+            "same column reused regardless of survivor set"
         );
         clear_scoped_cache_for_test();
     }
@@ -1555,8 +1568,8 @@ mod tests {
         let c = aug.column_index().unwrap();
         assert!(matches!(c[0][0], ColumnIndexMetaData::NONE), "RG0 pruned → NONE CI");
         assert!(!matches!(c[2][0], ColumnIndexMetaData::NONE), "RG2 survivor → real CI");
-        // CI cells (id,rg2)+(id,rg3) = 2; OI cells (col0)+(col1) = 2.
-        assert_eq!(ci().entries, 2);
+        // CI entry (id) = 1; OI entries (col0)+(col1) = 2.
+        assert_eq!(ci().entries, 1);
         assert_eq!(oi().entries, 2);
         clear_scoped_cache_for_test();
     }
