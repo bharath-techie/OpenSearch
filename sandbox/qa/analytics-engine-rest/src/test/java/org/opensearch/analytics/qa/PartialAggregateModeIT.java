@@ -76,9 +76,7 @@ public class PartialAggregateModeIT extends AnalyticsRestTestCase {
 
     @SuppressWarnings("unchecked")
     private void assertShardPlanPartialOnly(String ppl) throws IOException {
-        Request request = new Request("POST", "/_analytics/ppl/_explain");
-        request.setJsonEntity("{\"query\": \"" + escapeJson(ppl) + "\"}");
-        Map<String, Object> result = assertOkAndParse(client().performRequest(request), "EXPLAIN: " + ppl);
+        Map<String, Object> result = executePplWithProfile(ppl);
         Map<String, Object> profile = (Map<String, Object>) result.get("profile");
         assertNotNull("profile present", profile);
         List<Map<String, Object>> stages = (List<Map<String, Object>>) profile.get("stages");
@@ -124,6 +122,8 @@ public class PartialAggregateModeIT extends AnalyticsRestTestCase {
     }
 
     private void setConcurrentSearchMode(String mode, int sliceCount) throws IOException {
+        // Managed domains forbid PUT /_cluster/settings; this whole test needs that, so skip there.
+        assumeNotExternalCluster("requires PUT /_cluster/settings (concurrent-search mode)");
         String body = sliceCount > 0
             ? "{\"transient\":{\"search.concurrent_segment_search.mode\":\"" + mode
                 + "\",\"search.concurrent.max_slice_count\":" + sliceCount + "}}"

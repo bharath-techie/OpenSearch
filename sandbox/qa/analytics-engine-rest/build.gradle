@@ -324,6 +324,10 @@ testClusters.integTestYmlOversampling {
 // Run against an external cluster (no testClusters lifecycle):
 //   ./gradlew :sandbox:qa:analytics-engine-rest:restTest
 //   ./gradlew :sandbox:qa:analytics-engine-rest:restTest -PrestCluster=host:port
+// For a secured managed domain (https + basic auth):
+//   ./gradlew :sandbox:qa:analytics-engine-rest:restTest -PrestCluster=<host>:443 \
+//     -Dtests.rest.protocol=https \
+//     -Dtests.rest.cluster.username=<user> -Dtests.rest.cluster.password=<pass>
 tasks.register('restTest', Test) {
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
@@ -337,4 +341,24 @@ tasks.register('restTest', Test) {
     systemProperty 'tests.rest.load_packaged', 'false'
     // Inherit OpenSearch test base properties
     systemProperty 'tests.artifact', 'analytics-engine-rest'
+
+    // All IT classes target the ONE external cluster and many provision indices under
+    // shared names (app_logs, security_logs, performance_metrics, ...). Parallel forks
+    // would provision concurrently and race on create/delete (resource_already_exists,
+    // transient "table not found"). Pin to a single fork so classes run serially against
+    // the shared cluster. (The default integTest task has the same single-fork rationale.)
+    maxParallelForks = 1
+
+    // Forward the external-domain connection properties (https, basic auth, cert trust)
+    // through to the test JVM so AnalyticsRestTestCase's external-domain client picks them up.
+    for (String key : [
+        'tests.rest.protocol',
+        'tests.rest.cluster.username',
+        'tests.rest.cluster.password',
+        'tests.rest.trust_all_certs'
+    ]) {
+        if (System.getProperty(key) != null) {
+            systemProperty key, System.getProperty(key)
+        }
+    }
 }

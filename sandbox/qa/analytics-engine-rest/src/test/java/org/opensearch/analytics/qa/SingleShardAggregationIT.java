@@ -142,9 +142,7 @@ public class SingleShardAggregationIT extends AnalyticsRestTestCase {
     @SuppressWarnings("unchecked")
     private void assertNoCoordinatorReduce(String ppl) throws IOException {
         setConcurrentSearchMode("all", 4);
-        Request request = new Request("POST", "/_analytics/ppl/_explain");
-        request.setJsonEntity("{\"query\": \"" + escapeJson(ppl) + "\"}");
-        Map<String, Object> result = assertOkAndParse(client().performRequest(request), "EXPLAIN: " + ppl);
+        Map<String, Object> result = executePplWithProfile(ppl);
 
         Map<String, Object> profile = (Map<String, Object>) result.get("profile");
         assertNotNull("profile present", profile);
@@ -189,6 +187,8 @@ public class SingleShardAggregationIT extends AnalyticsRestTestCase {
     }
 
     private void setConcurrentSearchMode(String mode, int sliceCount) throws IOException {
+        // Managed domains forbid PUT /_cluster/settings; this whole test needs that, so skip there.
+        assumeNotExternalCluster("requires PUT /_cluster/settings (concurrent-search mode)");
         String body = sliceCount > 0
             ? "{\"transient\":{\"search.concurrent_segment_search.mode\":\"" + mode
                 + "\",\"search.concurrent.max_slice_count\":" + sliceCount + "}}"

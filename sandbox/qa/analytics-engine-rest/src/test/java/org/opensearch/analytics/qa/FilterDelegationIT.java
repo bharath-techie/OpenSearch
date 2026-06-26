@@ -373,6 +373,8 @@ public class FilterDelegationIT extends AnalyticsRestTestCase {
     }
 
     private void setPreferMetadataDriver(boolean value) throws Exception {
+        // Managed domains forbid PUT /_cluster/settings; tests that toggle this are skipped there.
+        assumeNotExternalCluster("requires PUT /_cluster/settings (prefer_metadata_driver)");
         Request req = new Request("PUT", "/_cluster/settings");
         req.setJsonEntity("{\"persistent\":{\"analytics.planner.prefer_metadata_driver\": " + value + "}}");
         client().performRequest(req);

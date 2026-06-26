@@ -358,10 +358,9 @@ public class CountFastPathIT extends AnalyticsRestTestCase {
     // ── Explain helpers ─────────────────────────────────────────────────────
 
     private Map<String, Object> executeExplain(String ppl) throws IOException {
-        Request request = new Request("POST", "/_analytics/ppl/_explain");
-        request.setJsonEntity("{\"query\": \"" + escapeJson(ppl) + "\"}");
-        Response response = client().performRequest(request);
-        return assertOkAndParse(response, "EXPLAIN: " + ppl);
+        // Real /_plugins/_ppl with profile=true (not the shim's _explain), so the backend-choice
+        // assertions on profile.stages run against any cluster, including managed domains.
+        return executePplWithProfile(ppl);
     }
 
     /** Asserts the SHARD_FRAGMENT stage in {@code explain.profile.stages} chose the given backend. */
@@ -524,10 +523,9 @@ public class CountFastPathIT extends AnalyticsRestTestCase {
     // ── PPL helpers ─────────────────────────────────────────────────────────
 
     private Map<String, Object> executePPL(String ppl) throws IOException {
-        Request req = new Request("POST", "/_analytics/ppl");
-        req.setJsonEntity("{\"query\": \"" + escapeJson(ppl) + "\"}");
-        Response response = client().performRequest(req);
-        return assertOkAndParse(response, "PPL: " + ppl);
+        // Real /_plugins/_ppl (not the shim); executePplWithProfile mirrors datarows->rows for the
+        // result assertions below, and works against any cluster including managed domains.
+        return executePplWithProfile(ppl);
     }
 
     private long countOf(String pplSuffix) throws IOException {

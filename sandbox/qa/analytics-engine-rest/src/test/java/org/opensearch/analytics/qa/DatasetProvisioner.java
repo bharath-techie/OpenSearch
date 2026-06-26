@@ -61,12 +61,10 @@ public final class DatasetProvisioner {
      * coverage of planner paths (exchange insertion, sort split, etc.).
      */
     private static void provisionIndex(RestClient client, Dataset dataset, String indexName, int numberOfShards) throws IOException {
-        // Delete if exists
-        try {
-            client.performRequest(new Request("DELETE", "/" + indexName));
-        } catch (Exception e) {
-            // index may not exist — ignore
-        }
+        // Delete if exists. On a persistent multi-node cluster (e.g. a managed domain reused
+        // across test classes) the DELETE acknowledgement can race the recreate, so confirm the
+        // index is actually gone before proceeding rather than firing PUT immediately.
+        deleteIndexAndWait(client, indexName);
 
         // Load mapping, inject parquet settings, create index
         String mappingPath = dataset.indexNames.size() == 1
@@ -79,7 +77,21 @@ public final class DatasetProvisioner {
         }
         Request createIndex = new Request("PUT", "/" + indexName);
         createIndex.setJsonEntity(indexBody);
-        client.performRequest(createIndex);
+        try {
+            client.performRequest(createIndex);
+        } catch (org.opensearch.client.ResponseException e) {
+            // A concurrent/leftover copy can still report as existing right after delete on a
+            // persistent cluster — delete once more (waiting for it to clear) and retry the create.
+            if (e.getResponse().getStatusLine().getStatusCode() == 400
+                && e.getMessage() != null
+                && e.getMessage().contains("resource_already_exists_exception")) {
+                logger.info("Index [{}] still existed on create; deleting and retrying", indexName);
+                deleteIndexAndWait(client, indexName);
+                client.performRequest(createIndex);
+            } else {
+                throw e;
+            }
+        }
 
         // Bulk ingest
         String bulkPath = dataset.indexNames.size() == 1
@@ -117,6 +129,40 @@ public final class DatasetProvisioner {
         client.performRequest(healthRequest);
 
         logger.info("Dataset [{}] provisioned into index [{}]", dataset.name, indexName);
+    }
+
+    /**
+     * Delete an index if it exists and block until {@code HEAD /<index>} reports 404, so a
+     * subsequent create can't collide with a not-yet-removed copy. No-op if the index is absent.
+     */
+    private static void deleteIndexAndWait(RestClient client, String indexName) throws IOException {
+        try {
+            client.performRequest(new Request("DELETE", "/" + indexName));
+        } catch (org.opensearch.client.ResponseException e) {
+            if (e.getResponse().getStatusLine().getStatusCode() == 404) {
+                return; // already absent
+            }
+            // Any other delete error is unexpected — surface it.
+            throw e;
+        }
+        for (int attempt = 0; attempt < 50; attempt++) { // ~10s max
+            try {
+                client.performRequest(new Request("HEAD", "/" + indexName));
+                // 2xx → index still present; fall through to sleep and retry.
+            } catch (org.opensearch.client.ResponseException e) {
+                if (e.getResponse().getStatusLine().getStatusCode() == 404) {
+                    return; // confirmed gone
+                }
+                throw e;
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted waiting for index [" + indexName + "] deletion", ie);
+            }
+        }
+        logger.warn("Index [{}] still present after delete wait; proceeding anyway", indexName);
     }
 
     /**

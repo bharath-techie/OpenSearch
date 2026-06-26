@@ -160,8 +160,9 @@ public class SortPushdownIT extends AnalyticsRestTestCase {
     }
 
     private Map<String, Object> executeExplain(String ppl) throws Exception {
-        Request request = new Request("POST", "/_analytics/ppl/_explain");
-        request.setJsonEntity("{\"query\": \"" + escapeJson(ppl) + "\"}");
-        return assertOkAndParse(client().performRequest(request), "EXPLAIN: " + ppl);
+        // Use the real /_plugins/_ppl endpoint with profile=true (not the shim's _explain) so the
+        // plan-shape assertions run against any cluster, including managed domains. The profile
+        // block carries the same full_plan/stages structure this test reads.
+        return executePplWithProfile(ppl);
     }
 }
