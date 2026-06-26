@@ -150,7 +150,9 @@ async fn get_or_build_column_index(
         for &col in predicate_cols {
             let key = CiCellKey { path: path.clone(), col, rg };
             match COLUMN_INDEX_CACHE.get(&key) {
-                Some(cell) => col_index_matrix[rg][col] = cell,
+                // `get` is an `Arc` refcount bump; clone the inner cell into arrow's
+                // owned `[rg][col]` matrix (it can't take the `Arc` directly).
+                Some(cell) => col_index_matrix[rg][col] = (*cell).clone(),
                 None => missing_col_rg_matrix.push((col, rg)),
             }
         }
@@ -163,29 +165,23 @@ async fn get_or_build_column_index(
     if !missing_col_rg_matrix.is_empty() {
         let built = build_column_index_cells(store, location, footer_meta, &missing_col_rg_matrix).await?;
 
-        let batch = built.iter().map(|cell| {
+        // Wrap each decoded cell in an `Arc` once: shared into the cache (refcount)
+        // and cloned once into the matrix below.
+        let mut batch = Vec::with_capacity(built.len());
+        for cell in built {
             debug_assert!(
                 cell.rg < col_index_matrix.len() && cell.col < col_index_matrix[cell.rg].len(),
                 "cell ({}, {}) out of matrix bounds ({num_rgs} rgs, {num_cols} cols)",
                 cell.col, cell.rg,
             );
-            (CiCellKey { path: path.clone(), col: cell.col, rg: cell.rg }, cell.data.clone(), cell.size)
-        });
-        COLUMN_INDEX_CACHE.insert_batch(batch);
-
-        for cell in built {
-            col_index_matrix[cell.rg][cell.col] = cell.data;
+            let data = Arc::new(cell.data);
+            col_index_matrix[cell.rg][cell.col] = (*data).clone();
+            batch.push((CiCellKey { path: path.clone(), col: cell.col, rg: cell.rg }, data, cell.size));
         }
+        COLUMN_INDEX_CACHE.insert_batch(batch);
     }
 
     Some(col_index_matrix)
-}
-
-struct RgPlan {
-    rg: usize,
-    cols: Vec<usize>,
-    chunks: Vec<ColumnChunkMetaData>,
-    range_start: u64,
 }
 
 struct CiCell {
@@ -201,48 +197,39 @@ struct OiCell {
     size: usize,
 }
 
-/// Range-read + decode the requested `(col, rg)` ColumnIndex cells, grouping by
-/// row group so each RG's columns share one vectored fetch + decode. `None` if
-/// any requested column lacks a column-index range (→ footer-only fallback).
+/// Range-read + decode the requested `(col, rg)` ColumnIndex cells. The fetch
+/// strategy (wide whole-region vs narrow per-RG) is chosen by [`fetch_rg_readers`];
+/// the decode here is always scoped to the requested cells. `None` if the file has
+/// no ColumnIndex region (→ footer-only fallback).
 async fn build_column_index_cells(
     store: &Arc<dyn ObjectStore>,
     location: &object_store::path::Path,
     footer_meta: &Arc<ParquetMetaData>,
     col_rg_matrix: &[(usize, usize)],
 ) -> Option<Vec<CiCell>> {
+    // Decode units: scoped columns grouped by RG.
     let mut by_rg: HashMap<usize, Vec<usize>> = HashMap::new();
     for &(col, rg) in col_rg_matrix {
         by_rg.entry(rg).or_default().push(col);
     }
+    let plan: Vec<(usize, Vec<usize>)> = by_rg.into_iter().collect();
 
-    let mut plans: Vec<RgPlan> = Vec::with_capacity(by_rg.len());
-    let mut fetch_ranges: Vec<Range<u64>> = Vec::with_capacity(by_rg.len());
-    for (rg, cols) in by_rg {
-        let rgm = footer_meta.row_group(rg);
-        let chunks: Vec<ColumnChunkMetaData> = cols.iter().map(|&i| rgm.column(i).clone()).collect();
-        let range = column_index_union(&chunks)?;
-        plans.push(RgPlan { rg, cols, chunks, range_start: range.start });
-        fetch_ranges.push(range);
-    }
+    let readers = fetch_rg_readers(store, location, footer_meta, &plan, ci_extent).await?;
 
-    let buffers = store.get_ranges(location, &fetch_ranges).await.ok()?;
-    if buffers.len() != fetch_ranges.len() {
-        return None;
-    }
-
+    // Decode only the scoped cells (each RG's columns share one `read_columns_indexes`).
     let mut out: Vec<CiCell> = Vec::with_capacity(col_rg_matrix.len());
-    for (plan, buf) in plans.iter().zip(buffers.iter()) {
-        let reader = BufferChunkReader { base: plan.range_start, bytes: buf.clone() };
+    for ((rg, cols), reader) in plan.iter().zip(readers.iter()) {
+        let rgm = footer_meta.row_group(*rg);
+        let chunks: Vec<ColumnChunkMetaData> = cols.iter().map(|&i| rgm.column(i).clone()).collect();
         // Deprecated but the only PUBLIC column-subset decoder (arrow-rs#8643).
         #[allow(deprecated)]
-        let decoded = read_columns_indexes(&reader, &plan.chunks).ok()??;
-        if decoded.len() != plan.cols.len() {
+        let decoded = read_columns_indexes(reader, &chunks).ok()??;
+        if decoded.len() != cols.len() {
             return None;
         }
-        let rgm = footer_meta.row_group(plan.rg);
-        for (entry, &col) in decoded.into_iter().zip(plan.cols.iter()) {
+        for (entry, &col) in decoded.into_iter().zip(cols.iter()) {
             let size = rgm.column(col).column_index_length().unwrap_or(0).max(0) as usize;
-            out.push(CiCell { col, rg: plan.rg, data: entry, size });
+            out.push(CiCell { col, rg: *rg, data: entry, size });
         }
     }
     Some(out)
@@ -335,14 +322,41 @@ async fn get_or_build_offset_index(
         b.build()
     };
     // Each column chunk has its OWN byte offset, so the placeholder is per-(rg, col):
-    // unlike the earlier (0, 0) placeholder it cannot be shared across columns. The
-    // scoped columns get their real OffsetIndex scattered in afterward, overwriting
-    // these placeholders.
+    // unlike the earlier (0, 0) placeholder it cannot be shared across columns.
+    //
+    // Skip the (non-trivial) placeholder build for the `off_cols` columns: every RG
+    // of each off_col is overwritten by `scatter_offset_column` below (the OI cache
+    // stores all-RG columns, and decoded columns span all RGs), so a real placeholder
+    // there is pure waste — building `num_rgs × num_cols` placeholders then discarding
+    // `num_rgs × off_cols.len()` of them. They get a cheap empty default that scatter
+    // replaces. Only the columns NOT in `off_cols` keep their real one-page placeholder
+    // (those are dereferenced by consumers and must be safe — see above).
+    let mut is_off_col = vec![false; num_cols];
+    for &c in &off_cols {
+        if c < num_cols {
+            is_off_col[c] = true;
+        }
+    }
     let mut matrix: ParquetOffsetIndex = (0..num_rgs)
-        .map(|rg| (0..num_cols).map(|col| placeholder_for(rg, col)).collect())
+        .map(|rg| {
+            (0..num_cols)
+                .map(|col| {
+                    if is_off_col[col] {
+                        // Overwritten by scatter; default is never read.
+                        OffsetIndexBuilder::new().build()
+                    } else {
+                        placeholder_for(rg, col)
+                    }
+                })
+                .collect()
+        })
         .collect();
 
     // Phase 1: serve cached columns; collect misses.
+    // `OFFSET_INDEX_CACHE.get` returns an `Arc<OiColumn>` — a refcount bump, not a
+    // deep copy of the column's per-RG `Vec<PageLocation>`s (the dominant cost of
+    // warm scoped assembly on wide schemas). We then clone only the per-RG entries
+    // we actually scatter into arrow's owned `[rg][col]` matrix.
     let mut missing: Vec<usize> = Vec::new();
     for &col in &off_cols {
         let key = OiCellKey { path: path.clone(), col };
@@ -358,20 +372,25 @@ async fn get_or_build_offset_index(
     if !missing.is_empty() {
         let built = build_offset_index_columns(store, location, footer_meta, &missing, num_rgs).await?;
 
-        let batch = built.iter().map(|cell| {
-            (OiCellKey { path: path.clone(), col: cell.col }, cell.data.clone(), cell.size)
-        });
-        OFFSET_INDEX_CACHE.insert_batch(batch);
-
+        // Wrap each built column in an `Arc` once: the same `Arc` is shared into the
+        // cache (refcount) and scattered into the matrix (per-RG clone), so the
+        // column's page-location vectors are allocated once.
+        let mut batch = Vec::with_capacity(built.len());
         for cell in built {
-            scatter_offset_column_owned(&mut matrix, cell.col, cell.data);
+            let data = Arc::new(cell.data);
+            scatter_offset_column(&mut matrix, cell.col, &data);
+            batch.push((OiCellKey { path: path.clone(), col: cell.col }, data, cell.size));
         }
+        OFFSET_INDEX_CACHE.insert_batch(batch);
     }
 
     Some(matrix)
 }
 
 /// Place a column's all-RG OffsetIndex (indexed by RG) into the matrix at `col`.
+/// Clones each per-RG entry — arrow's `ParquetOffsetIndex` matrix owns its
+/// `OffsetIndexMetaData` values, so the cached column (shared via `Arc`) can't be
+/// moved out.
 fn scatter_offset_column(matrix: &mut ParquetOffsetIndex, col: usize, column: &OiColumn) {
     for (rg, entry) in column.iter().enumerate() {
         if rg < matrix.len() {
@@ -380,19 +399,12 @@ fn scatter_offset_column(matrix: &mut ParquetOffsetIndex, col: usize, column: &O
     }
 }
 
-/// Consuming version of [`scatter_offset_column`] — used after inserting into
-/// the cache so we move rather than clone the per-RG entries.
-fn scatter_offset_column_owned(matrix: &mut ParquetOffsetIndex, col: usize, column: OiColumn) {
-    for (rg, entry) in column.into_iter().enumerate() {
-        if rg < matrix.len() {
-            matrix[rg][col] = entry;
-        }
-    }
-}
-
 /// Range-read + decode the OffsetIndex for each requested column across **every**
-/// row group (read-time safety — see [`OiCellKey`]). `None` if any column lacks
-/// an offset-index range (→ footer-only fallback).
+/// row group (read-time safety — see [`OiCellKey`]).
+///
+/// The fetch strategy (wide whole-region vs narrow per-RG) is chosen by
+/// [`fetch_rg_readers`]; the decode here is always scoped to `cols`. `None` if any
+/// requested column lacks an offset-index range (→ footer-only fallback).
 async fn build_offset_index_columns(
     store: &Arc<dyn ObjectStore>,
     location: &object_store::path::Path,
@@ -400,31 +412,18 @@ async fn build_offset_index_columns(
     cols: &[usize],
     num_rgs: usize,
 ) -> Option<Vec<OiCell>> {
-    struct RgPlan {
-        chunks: Vec<ColumnChunkMetaData>,
-        range_start: u64,
-    }
-    let mut plans: Vec<RgPlan> = Vec::with_capacity(num_rgs);
-    let mut fetch_ranges: Vec<Range<u64>> = Vec::with_capacity(num_rgs);
-    for rg_idx in 0..num_rgs {
-        let rg = footer_meta.row_group(rg_idx);
-        let chunks: Vec<ColumnChunkMetaData> = cols.iter().map(|&i| rg.column(i).clone()).collect();
-        let range = offset_index_union(&chunks)?;
-        plans.push(RgPlan { chunks, range_start: range.start });
-        fetch_ranges.push(range);
-    }
-
-    let buffers = store.get_ranges(location, &fetch_ranges).await.ok()?;
-    if buffers.len() != fetch_ranges.len() {
-        return None;
-    }
+    // The OffsetIndex is read for the same `cols` on every RG (read-time safety).
+    let plan: Vec<(usize, Vec<usize>)> = (0..num_rgs).map(|rg| (rg, cols.to_vec())).collect();
+    let readers = fetch_rg_readers(store, location, footer_meta, &plan, oi_extent).await?;
 
     // Per-column accumulator: one OiColumn slot per requested col, filled RG by RG.
+    // Decode only the scoped `cols` against each RG's buffer.
     let mut columns: Vec<OiColumn> = cols.iter().map(|_| Vec::with_capacity(num_rgs)).collect();
-    for (plan, buf) in plans.iter().zip(buffers.iter()) {
-        let reader = BufferChunkReader { base: plan.range_start, bytes: buf.clone() };
+    for (rg_idx, reader) in readers.iter().enumerate() {
+        let rg = footer_meta.row_group(rg_idx);
+        let chunks: Vec<ColumnChunkMetaData> = cols.iter().map(|&i| rg.column(i).clone()).collect();
         #[allow(deprecated)]
-        let decoded = read_offset_indexes(&reader, &plan.chunks).ok()??;
+        let decoded = read_offset_indexes(reader, &chunks).ok()??;
         if decoded.len() != cols.len() {
             return None;
         }
@@ -445,39 +444,137 @@ async fn build_offset_index_columns(
     Some(out)
 }
 
-/// Union of `column_index` byte ranges across the given column chunks. `None` if
-/// any chunk lacks a column index (we require all predicate columns to have one,
-/// else fall back to footer-only).
-fn column_index_union(chunks: &[ColumnChunkMetaData]) -> Option<Range<u64>> {
-    range_union(chunks, |c| {
-        let off = u64::try_from(c.column_index_offset()?).ok()?;
-        let len = u64::try_from(c.column_index_length()?).ok()?;
-        Some(off..off + len)
-    })
+/// The page-index extent (byte offset + length) of one column chunk, for one of the
+/// two index kinds. `ci_extent` reads the ColumnIndex extent, `oi_extent` the
+/// OffsetIndex extent — the only thing that differs between the two builders' IO.
+type ChunkExtent = fn(&ColumnChunkMetaData) -> Option<Range<u64>>;
+
+fn ci_extent(c: &ColumnChunkMetaData) -> Option<Range<u64>> {
+    let off = u64::try_from(c.column_index_offset()?).ok()?;
+    let len = u64::try_from(c.column_index_length()?).ok()?;
+    Some(off..off + len)
 }
 
-/// Union of `offset_index` byte ranges across the given column chunks.
-fn offset_index_union(chunks: &[ColumnChunkMetaData]) -> Option<Range<u64>> {
-    range_union(chunks, |c| {
-        let off = u64::try_from(c.offset_index_offset()?).ok()?;
-        let len = u64::try_from(c.offset_index_length()?).ok()?;
-        Some(off..off + len)
-    })
+fn oi_extent(c: &ColumnChunkMetaData) -> Option<Range<u64>> {
+    let off = u64::try_from(c.offset_index_offset()?).ok()?;
+    let len = u64::try_from(c.offset_index_length()?).ok()?;
+    Some(off..off + len)
 }
 
-fn range_union(
-    chunks: &[ColumnChunkMetaData],
-    f: impl Fn(&ColumnChunkMetaData) -> Option<Range<u64>>,
+/// Fetch the page-index bytes for a decode plan and return one [`BufferChunkReader`]
+/// per plan entry, ready to decode against. This is the single place the WIDE vs
+/// NARROW fetch strategy is decided — both index builders share it.
+///
+/// `plan` is a list of `(row_group, scoped_columns)` decode units (the columns this
+/// query actually needs in that RG). `extent` extracts the relevant index kind's
+/// byte range from a column chunk.
+///
+/// - **Remote stores (S3 / Foyer warm tier)** — ONE wide `get_ranges` over the
+///   file's entire index region (all columns, all RGs; lenient `min..max`, missing
+///   columns skipped). The warm tier is a point-lookup KV store keyed by the exact
+///   byte-range string: eager shard-init writes this whole-region range, so a
+///   narrower per-column fetch would compute a DIFFERENT key and miss even though the
+///   bytes are physically present. The whole-region fetch makes the query's key
+///   byte-identical to what warming wrote → a warm hit instead of remote IO. Every
+///   returned reader shares the one buffer (`base` = region start); absolute chunk
+///   offsets resolve into it, and only the scoped columns are ever decoded out, so
+///   the heap cost is unchanged — only the bytes fetched widen.
+/// - **Local / in-memory stores** — the NARROW per-entry fetch of just the scoped
+///   columns' extents. No warm tier to hit and no remote IO to save, so fewer bytes
+///   is strictly better. Each reader gets its own scoped buffer.
+///
+/// Remote-ness is classified via `ObjectStore`'s `Display` (guaranteed by the
+/// trait): local backends render as `LocalFileSystem(..)` / `InMemory`; anything
+/// else (`AmazonS3(..)` or a warm-tier wrapper) is treated as remote.
+///
+/// `None` (→ footer-only fallback) if the file has no such index region, or — on the
+/// narrow path — if any scoped column lacks an extent.
+async fn fetch_rg_readers(
+    store: &Arc<dyn ObjectStore>,
+    location: &object_store::path::Path,
+    footer_meta: &Arc<ParquetMetaData>,
+    plan: &[(usize, Vec<usize>)],
+    extent: ChunkExtent,
+) -> Option<Vec<BufferChunkReader>> {
+    let is_remote = {
+        let name = store.to_string();
+        !(name.starts_with("LocalFileSystem") || name.starts_with("InMemory"))
+    };
+
+    if is_remote {
+        // Wide: the whole index region, fetched once and shared by every entry.
+        let num_rgs = footer_meta.num_row_groups();
+        let num_cols = footer_meta.file_metadata().schema_descr().num_columns();
+        let region = index_region_all(footer_meta, num_rgs, num_cols, extent)?;
+        let buffers = store.get_ranges(location, std::slice::from_ref(&region)).await.ok()?;
+        let buf = buffers.first()?.clone();
+        Some(
+            plan.iter()
+                .map(|_| BufferChunkReader { base: region.start, bytes: buf.clone() })
+                .collect(),
+        )
+    } else {
+        // Narrow: one scoped fetch per entry (union of just that entry's columns).
+        let mut fetch_ranges: Vec<Range<u64>> = Vec::with_capacity(plan.len());
+        for (rg, cols) in plan {
+            let rgm = footer_meta.row_group(*rg);
+            let chunks: Vec<ColumnChunkMetaData> = cols.iter().map(|&i| rgm.column(i).clone()).collect();
+            fetch_ranges.push(chunk_set_union(&chunks, extent)?);
+        }
+        let buffers = store.get_ranges(location, &fetch_ranges).await.ok()?;
+        if buffers.len() != fetch_ranges.len() {
+            return None;
+        }
+        Some(
+            fetch_ranges
+                .iter()
+                .zip(buffers.iter())
+                .map(|(range, buf)| BufferChunkReader { base: range.start, bytes: buf.clone() })
+                .collect(),
+        )
+    }
+}
+
+/// `min(start)..max(end)` over every `(col, rg)` chunk whose `extent` resolves,
+/// skipping chunks without one. The whole-file index region for the WIDE fetch.
+///
+/// This is the single source of truth for the wide range key. The eager warm-
+/// population path MUST compute the range the same way so the query's fetch key is
+/// byte-identical to what was warmed. `None` only when no chunk anywhere has the
+/// index (genuine footer-only file → caller falls back).
+fn index_region_all(
+    footer_meta: &Arc<ParquetMetaData>,
+    num_rgs: usize,
+    num_cols: usize,
+    extent: ChunkExtent,
 ) -> Option<Range<u64>> {
     let mut acc: Option<Range<u64>> = None;
-    for c in chunks {
-        let r = f(c)?; // any missing range → bail (caller falls back)
-        acc = Some(match acc {
-            None => r,
-            Some(a) => a.start.min(r.start)..a.end.max(r.end),
-        });
+    for rg in 0..num_rgs {
+        let rgm = footer_meta.row_group(rg);
+        for col in 0..num_cols {
+            if let Some(r) = extent(rgm.column(col)) {
+                acc = Some(merge_range(acc, r));
+            }
+        }
     }
     acc
+}
+
+/// Union of `extent` across the given chunks for the NARROW fetch. `None` if any
+/// chunk lacks the extent (all requested columns must have one, else footer-only).
+fn chunk_set_union(chunks: &[ColumnChunkMetaData], extent: ChunkExtent) -> Option<Range<u64>> {
+    let mut acc: Option<Range<u64>> = None;
+    for c in chunks {
+        acc = Some(merge_range(acc, extent(c)?)); // missing → bail (caller falls back)
+    }
+    acc
+}
+
+fn merge_range(acc: Option<Range<u64>>, r: Range<u64>) -> Range<u64> {
+    match acc {
+        None => r,
+        Some(a) => a.start.min(r.start)..a.end.max(r.end),
+    }
 }
 
 /// A [`ChunkReader`] over an in-memory byte buffer representing the file region
@@ -559,6 +656,78 @@ mod tests {
     use object_store::{ObjectStoreExt, PutPayload};
 
     use super::super::SCOPED_CACHE_TEST_GUARD as CACHE_TEST_GUARD;
+
+    // ── "remote" store wrapper: delegates to an inner store but reports a
+    //    non-local Display name (so `use_full_region_fetch` picks the WIDE path)
+    //    and records every `get_ranges` request so tests can assert the fetch shape.
+    use std::sync::Mutex as StdMutex;
+    use futures::stream::BoxStream;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+        ObjectStore as OsTrait, PutMultipartOpts, PutOptions, PutResult, Result as OsResult,
+    };
+
+    #[derive(Debug)]
+    struct RecordingRemoteStore {
+        inner: Arc<dyn ObjectStore>,
+        ranges: Arc<StdMutex<Vec<Vec<Range<u64>>>>>,
+    }
+
+    impl RecordingRemoteStore {
+        fn new(inner: Arc<dyn ObjectStore>) -> Self {
+            Self { inner, ranges: Arc::new(StdMutex::new(Vec::new())) }
+        }
+    }
+
+    impl std::fmt::Display for RecordingRemoteStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            // Anything that is NOT LocalFileSystem/InMemory → classified remote.
+            write!(f, "AmazonS3(test-bucket)")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl OsTrait for RecordingRemoteStore {
+        async fn get_ranges(&self, location: &ObjPath, ranges: &[Range<u64>]) -> OsResult<Vec<Bytes>> {
+            self.ranges.lock().unwrap().push(ranges.to_vec());
+            self.inner.get_ranges(location, ranges).await
+        }
+        async fn put_opts(&self, l: &ObjPath, p: PutPayload, o: PutOptions) -> OsResult<PutResult> {
+            self.inner.put_opts(l, p, o).await
+        }
+        async fn put_multipart_opts(&self, l: &ObjPath, o: PutMultipartOpts) -> OsResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(l, o).await
+        }
+        async fn get_opts(&self, l: &ObjPath, o: GetOptions) -> OsResult<GetResult> {
+            self.inner.get_opts(l, o).await
+        }
+        fn list(&self, prefix: Option<&ObjPath>) -> BoxStream<'static, OsResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, OsResult<ObjPath>>,
+        ) -> BoxStream<'static, OsResult<ObjPath>> {
+            self.inner.delete_stream(locations)
+        }
+        async fn list_with_delimiter(&self, prefix: Option<&ObjPath>) -> OsResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(&self, from: &ObjPath, to: &ObjPath, o: CopyOptions) -> OsResult<()> {
+            self.inner.copy_opts(from, to, o).await
+        }
+    }
+
+    /// Stage the bytes in an InMemory store wrapped so it classifies as remote.
+    /// Returns the wrapped store and the recorder of `get_ranges` requests.
+    async fn stage_remote(bytes: Bytes) -> (Arc<dyn ObjectStore>, ObjPath, Arc<StdMutex<Vec<Vec<Range<u64>>>>>) {
+        let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let loc = ObjPath::from("data.parquet");
+        inner.put(&loc, PutPayload::from_bytes(bytes)).await.unwrap();
+        let rec = RecordingRemoteStore::new(inner);
+        let ranges = rec.ranges.clone();
+        (Arc::new(rec), loc, ranges)
+    }
 
     // ── fixtures + expr helpers ──────────────────────────────────────────
 
@@ -1390,6 +1559,50 @@ mod tests {
         clear_scoped_cache_for_test();
     }
 
+    /// Regression guard for the placeholder-skip optimization in
+    /// `get_or_build_offset_index`: scoped (`off_cols`) columns are NOT given a real
+    /// one-page placeholder during matrix construction (they'd be overwritten by
+    /// `scatter_offset_column` anyway). This test verifies that across a MULTI-row-group
+    /// file every RG of every scoped OffsetIndex column ends up with REAL page
+    /// locations — i.e. scatter fully covers all RGs and never leaves the cheap empty
+    /// default behind. A bug here (scatter under-filling) would surface as an empty
+    /// `page_locations`, which downstream readers dereference and panic on.
+    #[tokio::test]
+    async fn scoped_offset_index_columns_are_real_on_every_row_group() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        // 4 row groups, columns `id` (0) and `v` (1).
+        let (bytes, schema) = four_rg_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let num_rgs = fo.num_row_groups();
+        assert_eq!(num_rgs, 4, "fixture must have 4 RGs to exercise multi-RG scatter");
+
+        // Predicate on `id` (col 0), project `v` (col 1). off_cols = {0, 1} (predicate
+        // ∪ projection ∪ {0}). With the placeholder-skip, BOTH columns are scoped and
+        // must be scattered real on all 4 RGs.
+        let pred_cols = resolve_predicate_parquet_columns(&schema, &fo, &["id".to_string()]);
+        let proj_cols = resolve_predicate_parquet_columns(&schema, &fo, &["v".to_string()]);
+        assert_eq!(pred_cols, vec![0]);
+        assert_eq!(proj_cols, vec![1]);
+
+        let aug = load_scoped_page_index_cols(&store, &loc, &fo, &pred_cols, &proj_cols)
+            .await
+            .unwrap();
+        let oi = aug.offset_index().expect("augmented metadata has offset index");
+        assert_eq!(oi.len(), num_rgs, "offset index has one row per RG");
+        for rg in 0..num_rgs {
+            for &col in &[0usize, 1usize] {
+                assert!(
+                    !oi[rg][col].page_locations().is_empty(),
+                    "scoped OffsetIndex col {col} on RG {rg} must have real page locations, \
+                     not the empty placeholder-skip default"
+                );
+            }
+        }
+        clear_scoped_cache_for_test();
+    }
+
     // ── Eviction on file deletion ─────────────────────────────────────────────
 
     /// Evicting a file removes ALL its CI and OI cells from the caches —
@@ -1453,6 +1666,94 @@ mod tests {
         let _ = load_scoped_page_index_cols(&store_a, &loc_b, &fo, &cols, &[0, 1]).await.unwrap();
         assert_eq!(ci().hits, hits_before + 1, "file_b CI cell must still be cached");
 
+        clear_scoped_cache_for_test();
+    }
+
+    // ── Wide whole-region fetch on remote stores ──────────────────────────────
+
+    /// On a remote store, the CI/OI fetch is a SINGLE whole-region `get_ranges` per
+    /// index kind — NOT a per-column/per-RG scoped fetch. This is what makes the
+    /// query's range key match eager warm-population. We assert the fetch SHAPE via
+    /// the recording wrapper: exactly one range per `get_ranges` call, and that range
+    /// equals the whole CI / OI region (a strict SUPERSET of the scoped columns'
+    /// extents).
+    #[tokio::test]
+    async fn remote_store_fetches_whole_region_not_scoped_ranges() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = wide4_parquet(); // n0,n1,s0,s1 — 1 RG, multi-page
+        let (store, loc, recorded) = stage_remote(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+
+        // Whole-region byte ranges (the keys warming writes) computed from the footer.
+        let num_cols = fo.file_metadata().schema_descr().num_columns();
+        let ci_region = index_region_all(&fo, fo.num_row_groups(), num_cols, ci_extent).unwrap();
+        let oi_region = index_region_all(&fo, fo.num_row_groups(), num_cols, oi_extent).unwrap();
+
+        // Scope to n1 (pred) + project s0 — a strict subset of all 4 columns.
+        let pred_cols = resolve_predicate_parquet_columns(&schema, &fo, &["n1".to_string()]);
+        let _ = load_scoped_page_index_cols(&store, &loc, &fo, &pred_cols, &[2]).await.unwrap();
+
+        // Every recorded get_ranges issued exactly ONE range. The set of those ranges
+        // is exactly {ci_region, oi_region} — the wide whole-region fetches.
+        let calls = recorded.lock().unwrap().clone();
+        assert!(!calls.is_empty(), "fetch must have happened");
+        let mut fetched: Vec<Range<u64>> = Vec::new();
+        for call in &calls {
+            assert_eq!(call.len(), 1, "remote fetch must be a single whole-region range, got {call:?}");
+            fetched.push(call[0].clone());
+        }
+        assert!(fetched.contains(&ci_region), "must fetch the whole CI region {ci_region:?}, got {fetched:?}");
+        assert!(fetched.contains(&oi_region), "must fetch the whole OI region {oi_region:?}, got {fetched:?}");
+        clear_scoped_cache_for_test();
+    }
+
+    /// The wide fetch must produce IDENTICAL decoded results to the narrow path: the
+    /// grafted page index from a remote (wide) load prunes exactly like the full
+    /// index. Fetch-wide/decode-narrow changes only the bytes read, never the data.
+    #[tokio::test]
+    async fn remote_wide_fetch_pruning_matches_full_index() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = two_col_parquet();
+        let (store, loc, _rec) = stage_remote(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let cols = resolve_predicate_parquet_columns(&schema, &fo, &["price".to_string()]);
+
+        let aug = load_scoped_page_index_cols(&store, &loc, &fo, &cols, &[]).await.unwrap();
+        let full = full_index(&bytes);
+        let pp = build_pruning_predicate(&pred("price", 0, Operator::GtEq, 20), schema.clone()).unwrap();
+        let s = PagePruner::new(&schema, Arc::clone(&aug)).prune_rg(&pp, 0, None);
+        let f = PagePruner::new(&schema, full).prune_rg(&pp, 0, None);
+        assert_eq!(s.as_ref().map(kept), f.as_ref().map(kept));
+        assert_eq!(s.as_ref().map(kept), Some(16));
+        clear_scoped_cache_for_test();
+    }
+
+    /// Multi-RG remote load: the CI fetch is still a single whole-region range (one
+    /// `get_ranges` covering all RGs), and the decoded CI is real for the predicate
+    /// column on every RG — same result the narrow per-RG fetch produced.
+    #[tokio::test]
+    async fn remote_wide_fetch_multi_rg_decodes_all_rgs() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = four_rg_parquet(); // id, v — 4 RGs
+        let (store, loc, recorded) = stage_remote(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let cols = resolve_predicate_parquet_columns(&schema, &fo, &["id".to_string()]);
+
+        let aug = load_scoped_page_index_cols(&store, &loc, &fo, &cols, &[]).await.unwrap();
+
+        // Single whole-region range despite 4 RGs.
+        for call in recorded.lock().unwrap().iter() {
+            assert_eq!(call.len(), 1, "multi-RG remote fetch is still one whole-region range");
+        }
+        // Predicate col real on every RG; cached as one CI cell per (col, rg) = 4.
+        let c = aug.column_index().unwrap();
+        for rg in 0..4 {
+            assert!(!matches!(c[rg][0], ColumnIndexMetaData::NONE), "RG{rg} predicate CI real");
+        }
+        assert_eq!(ci().entries, 4, "4 RGs × 1 pred col → 4 CI cells (decode stays scoped)");
         clear_scoped_cache_for_test();
     }
 

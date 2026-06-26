@@ -83,6 +83,7 @@ use cache_keys::{CiCellKey, OiCellKey, OiColumn};
 
 use datafusion::parquet::file::page_index::column_index::ColumnIndexMetaData;
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Process-global kill-switch for the scoped page-index feature.
@@ -110,10 +111,14 @@ pub use column_schema_resolver::{
 
 // Process-global caches
 
-pub(crate) static COLUMN_INDEX_CACHE: Lazy<BoundedCache<CiCellKey, ColumnIndexMetaData>> =
+// Cache values are `Arc`-wrapped so a `get` hit is a refcount bump, not a deep
+// copy of the (potentially large) per-page index data. The decoded cell is
+// immutable once cached; readers `Arc::clone` it, then clone only the per-RG
+// entries they actually scatter into arrow's owned `[rg][col]` matrix.
+pub(crate) static COLUMN_INDEX_CACHE: Lazy<BoundedCache<CiCellKey, Arc<ColumnIndexMetaData>>> =
     Lazy::new(|| BoundedCache::with_named_policy(DEFAULT_SCOPED_CACHE_LIMIT, CacheEvictionPolicy::Fifo));
 
-pub(crate) static OFFSET_INDEX_CACHE: Lazy<BoundedCache<OiCellKey, OiColumn>> =
+pub(crate) static OFFSET_INDEX_CACHE: Lazy<BoundedCache<OiCellKey, Arc<OiColumn>>> =
     Lazy::new(|| BoundedCache::with_named_policy(DEFAULT_SCOPED_CACHE_LIMIT, CacheEvictionPolicy::Fifo));
 
 /// Set the ColumnIndex cache's byte budget. Called from startup wiring with the

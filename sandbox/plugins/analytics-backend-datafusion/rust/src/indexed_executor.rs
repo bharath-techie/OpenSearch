@@ -747,6 +747,12 @@ mod tests {
 /// TODO: extract shared logic with `execute_indexed_query` to avoid duplication.
 /// For now this delegates to the existing function by reconstructing the needed args
 /// from the handle.
+#[tracing::instrument(
+    name = "execute_indexed",
+    level = "info",
+    skip_all,
+    fields(context_id = tracing::field::Empty)
+)]
 pub async unsafe fn execute_indexed_with_context(
     session_ctx_ptr: i64,
     substrait_bytes: Vec<u8>,
@@ -755,6 +761,7 @@ pub async unsafe fn execute_indexed_with_context(
 ) -> Result<i64, DataFusionError> {
     let handle = *Box::from_raw(session_ctx_ptr as *mut crate::session_context::SessionContextHandle);
     let context_id = handle.query_context.context_id();
+    tracing::Span::current().record("context_id", context_id);
     let token = crate::query_tracker::get_cancellation_token(context_id);
 
     let query_future = execute_indexed_with_context_inner(handle, substrait_bytes, cpu_executor, permit);

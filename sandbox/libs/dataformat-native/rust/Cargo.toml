@@ -96,3 +96,26 @@ codegen-units = 16
 incremental = true
 debug = "full"
 strip = false
+
+# The fork's single commit changes only parquet/src/file/metadata/{mod,writer}.rs
+# to store ParquetMetaData.row_groups behind an Arc for cheap clone.
+# All arrow-* crates must be patched together because parquet depends on them
+# from the same repo — mixing the fork's parquet with stock arrow-* causes
+# type mismatches at the API boundary.
+# Fork: https://github.com/bharath-techie/arrow-rs  branch: opensearch-fixes
+#[patch.crates-io]
+#arrow         = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-arith   = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-array   = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-buffer  = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-cast    = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-csv     = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-data    = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-ipc     = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-json    = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-ord     = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-row     = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-schema  = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-select  = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#arrow-string  = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }
+#parquet       = { git = "https://github.com/bharath-techie/arrow-rs.git", branch = "opensearch-fixes" }

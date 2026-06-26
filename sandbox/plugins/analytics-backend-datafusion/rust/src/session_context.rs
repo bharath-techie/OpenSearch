@@ -229,6 +229,20 @@ pub async unsafe fn create_session_context(
         ));
     }
 
+    // datafusion-tracing: register the operator-instrumentation rule LAST so it
+    // wraps the fully-optimized plan and every operator emits a span (with native
+    // metrics) nested under the active execute_query/execute_indexed span. Only
+    // compiled in under `tracing-otel`; zero cost otherwise.
+    #[cfg(feature = "tracing-otel")]
+    let state_builder = {
+        use datafusion_tracing::{instrument_with_info_spans, InstrumentationOptions};
+        let opts = InstrumentationOptions::builder()
+            .record_metrics(true)
+            .build();
+        let rule = instrument_with_info_spans!(options: opts,);
+        state_builder.with_physical_optimizer_rule(rule)
+    };
+
     let state = state_builder.build();
 
     let ctx = SessionContext::new_with_state(state);

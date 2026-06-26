@@ -40,6 +40,12 @@ use crate::session_context::SessionContextHandle;
 /// `execute_with_context` path (via `api::execute_query`).
 /// TODO: Remove this function and migrate benchmarks to the decomposed path.
 /// Retained only for benchmarks. TODO: migrate benchmarks and remove.
+#[tracing::instrument(
+    name = "execute_query",
+    level = "info",
+    skip_all,
+    fields(context_id = context_id, table = %table_name, num_files = object_metas.len())
+)]
 pub async fn execute_query(
     table_path: ListingTableUrl,
     object_metas: Arc<Vec<ObjectMeta>>,

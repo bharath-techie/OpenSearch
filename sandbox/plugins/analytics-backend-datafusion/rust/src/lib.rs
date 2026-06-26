@@ -26,6 +26,7 @@ pub mod cache;
 pub mod cancellation;
 pub mod cross_rt_stream;
 pub mod datafusion_query_config;
+pub mod dial9_support;
 pub mod executor;
 pub mod ffm;
 pub mod helper;

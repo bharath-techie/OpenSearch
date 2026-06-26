@@ -171,6 +171,18 @@ pub fn build_query_session_context(
         // combine-partial-final physical optimizer pass.
         builder = builder.with_physical_optimizer_rules(physical_optimizer_rules_without_combine());
     }
+
+    // datafusion-tracing: register the operator-instrumentation rule LAST so it
+    // wraps the fully-optimized plan and every physical operator (scan/filter/
+    // aggregate/repartition) emits a span with native metrics, nested under the
+    // active execute_query/execute_indexed span. Only compiled under `tracing-otel`.
+    #[cfg(feature = "tracing-otel")]
+    {
+        use datafusion_tracing::{instrument_with_info_spans, InstrumentationOptions};
+        let opts = InstrumentationOptions::builder().record_metrics(true).build();
+        builder = builder.with_physical_optimizer_rule(instrument_with_info_spans!(options: opts,));
+    }
+
     let state = builder.build();
 
     let ctx = SessionContext::new_with_state(state);

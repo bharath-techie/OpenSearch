@@ -270,11 +270,16 @@ impl DedicatedExecutor {
             .name(format!("{name} driver"))
             .spawn(move || {
                 register_io_runtime(io_handle.clone());
-                let mut runtime_builder = runtime_builder;
-                let runtime = runtime_builder
-                    .on_thread_start(move || register_io_runtime(io_handle.clone()))
-                    .build()
-                    .expect("Creating tokio runtime");
+                // CPU runtime: every worker thread must register the IO runtime
+                // thread-local so DataFusion CPU work can dispatch IO. Pass that
+                // as the on_start hook; dial9 (when active) composes it AFTER its
+                // own hooks rather than clobbering on_thread_start.
+                let io_handle_for_workers = io_handle.clone();
+                let runtime = crate::dial9_support::build_runtime(
+                    "cpu",
+                    runtime_builder,
+                    move || register_io_runtime(io_handle_for_workers.clone()),
+                );
 
                 runtime.block_on(async move {
                     let shutdown = notify_shutdown_captured.notified();

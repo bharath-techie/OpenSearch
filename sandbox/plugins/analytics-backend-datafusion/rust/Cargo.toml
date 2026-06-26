@@ -50,6 +50,34 @@ chrono-tz = "=0.10.4"
 
 tokio-metrics = { workspace = true }
 
+# tokio-console support — OFF by default. Build with
+#   RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console
+# (console-subscriber needs the tokio_unstable cfg). When enabled,
+# RuntimeManager::new() starts the console gRPC server (default 127.0.0.1:6669)
+# so `tokio-console` can attach and show per-task poll/scheduled/idle durations.
+# `tracing` is a base dependency (already in the graph via datafusion/object_store)
+# so operator-level spans (#[tracing::instrument]) can live in the hot path
+# unconditionally. Spans are near-zero-cost when no subscriber is installed
+# (the default build installs none). The OTLP/console subscribers below are what
+# actually collect and export them, and those stay feature-gated.
+tracing = "0.1"
+console-subscriber = { version = "0.5", optional = true }
+tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
+
+# tracing-otel: export tracing spans over OTLP/gRPC to Jaeger for a browser
+# span-waterfall UI. OFF by default; enable with `--features tracing-otel`.
+# Run Jaeger (UI http://localhost:16686, OTLP intake :4317); the exporter
+# endpoint is configurable via OTEL_EXPORTER_OTLP_ENDPOINT.
+# datafusion-tracing: auto-instruments every physical operator (scan/filter/agg/
+# repartition) with tracing spans carrying native metrics (output rows, elapsed
+# compute). Version tracks datafusion 1:1 -> 54.0.0 for datafusion 54. Spans nest
+# under our execute_query span, giving the per-operator Jaeger waterfall.
+datafusion-tracing = { version = "54.0.0", optional = true }
+tracing-opentelemetry = { version = "0.31", optional = true }
+opentelemetry = { version = "0.30", optional = true }
+opentelemetry_sdk = { version = "0.30", optional = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.30", optional = true, features = ["grpc-tonic"] }
+
 # serde_json `preserve_order` — backs `Map<String,Value>` with `IndexMap`
 # instead of `BTreeMap` so json_keys / mutation UDFs see object keys in
 # insertion order (parity with legacy SQL-plugin's LinkedHashMap; required by
@@ -93,6 +121,22 @@ crc32fast = { workspace = true }
 # rewrite. STANDARD alphabet matches the OpenSearch `binary` field wire contract.
 base64 = "0.22"
 
+[features]
+# Enable the tokio-console gRPC server in RuntimeManager. Requires building with
+# RUSTFLAGS="--cfg tokio_unstable". Off by default — zero impact on normal builds.
+tokio-console = ["dep:console-subscriber", "dep:tracing-subscriber"]
+tracing-otel = [
+    "dep:tracing-subscriber",
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:datafusion-tracing",
+]
+# dial9 is Linux-only (cpu-profiling). On non-Linux the feature still toggles but
+# the optional dep is absent, so the code is additionally #[cfg(target_os="linux")]-gated.
+dial9 = ["dep:dial9-tokio-telemetry"]
+
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }
@@ -118,3 +162,13 @@ harness = false
 [[bench]]
 name = "row_id_bench"
 harness = false
+
+# dial9: post-hoc tokio telemetry — records per-poll/park/wake events + CPU
+# flamegraphs + schedule profiling to a self-describing trace file, viewed in a
+# browser via `dial9 serve`. OFF by default; LINUX-ONLY (cpu-profiling). Enable
+# with `--features dial9` and build with
+# RUSTFLAGS="--cfg tokio_unstable -C force-frame-pointers=yes".
+# Placed in a target table (not the main [dependencies]) so the crate is only
+# pulled on Linux; the code is additionally #[cfg(target_os = "linux")]-gated.
+[target.'cfg(target_os = "linux")'.dependencies]
+dial9-tokio-telemetry = { version = "0.3", optional = true, features = ["cpu-profiling"] }
