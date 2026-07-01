@@ -354,6 +354,19 @@ pub unsafe extern "C" fn df_execute_query(
     // (bridging the synchronous FFM call to the async spawn handle); only
     // the plan construction and stream wrapping hop to CPU.
     timed_block_on(&mgr.io_runtime, "execute_query", async move {
+        let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
+        // Watchdog: if the CPU spawn never completes (gate over-subscription / CPU workers
+        // pinned), this logs [WATCHDOG-STUCK] with the gate snapshot from the ticker thread.
+        // The gate counters are captured lazily in the label at registration time.
+        let _wd = native_bridge_common::watchdog::watch(
+            format!(
+                "[execute-query] context_id={} tid={:?} gate_at_start: active={}/{} pending_batches={} pending_permits={}",
+                context_id, std::thread::current().id(),
+                gate.active_permits(), gate.max_permits(),
+                gate.pending_acquire_batches(), gate.pending_acquire_permits(),
+            ),
+            std::time::Duration::from_secs(5),
+        );
         let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
             api::execute_query(
                 shard_view_ptr,
@@ -450,8 +463,16 @@ pub unsafe extern "C" fn df_stream_get_schema(stream_ptr: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn df_stream_next(stream_ptr: i64) -> i64 {
     let mgr = get_rt_manager()?;
-    timed_block_on(&mgr.io_runtime, "stream_next", crate::task_monitors::stream_next_monitor().instrument(api::stream_next(stream_ptr)))
-        .map_err(|e| e.to_string())
+    let tid = std::thread::current().id();
+    // Watchdog fires from an independent OS thread if this block_on never returns — the
+    // deadlock signature. The old post-hoc `elapsed > 5s` check could not catch a permanent
+    // wedge (the call never returns, so the marker never logs). Guard drops on return = silent.
+    let _wd = native_bridge_common::watchdog::watch(
+        format!("[stream-next] tid={:?} stream_ptr=0x{:x} — CPU not producing batches?", tid, stream_ptr),
+        std::time::Duration::from_secs(5),
+    );
+    let result = timed_block_on(&mgr.io_runtime, "stream_next", crate::task_monitors::stream_next_monitor().instrument(api::stream_next(stream_ptr)));
+    result.map_err(|e| e.to_string())
 }
 
 #[no_mangle]
@@ -1135,6 +1156,8 @@ pub unsafe extern "C" fn df_execute_with_context(
         .windows(crate::ROW_ID_COLUMN_NAME.len())
         .any(|w| w == crate::ROW_ID_COLUMN_NAME.as_bytes());
     let use_indexed = session_handle.indexed_config.is_some() || has_row_id;
+    // Extract context_id before session_handle is consumed for log correlation.
+    let ctx_id_for_log = session_handle.query_context.context_id();
     if use_indexed {
         // Extract target_partitions BEFORE boxing into raw pointer (session_handle is consumed).
         let partition_weight = session_handle.query_config.target_partitions.max(1) as u32;
@@ -1147,6 +1170,7 @@ pub unsafe extern "C" fn df_execute_with_context(
                 // creating backpressure at the Java threadpool level when the gate is full.
                 let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
                 let max_p = gate.max_permits();
+                // Stuck-acquire detection lives in ConcurrencyGate::acquire_many via the watchdog.
                 let permit = gate.acquire_many(partition_weight.min(max_p)).await;
 
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
@@ -1175,6 +1199,7 @@ pub unsafe extern "C" fn df_execute_with_context(
                 // creating backpressure at the Java threadpool level when the gate is full.
                 let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
                 let max_p = gate.max_permits();
+                // Stuck-acquire detection lives in ConcurrencyGate::acquire_many via the watchdog.
                 let permit = gate.acquire_many(partition_weight.min(max_p)).await;
 
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {

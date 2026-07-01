@@ -774,6 +774,10 @@ async unsafe fn execute_indexed_with_context_inner(
     // spawning on the CPU runtime, so the Java search thread blocks at the
     // gate when it is full — creating backpressure at the Java threadpool level.
 
+    // [cpu-task-start] per-query ERROR marker removed: it was pure per-query chatter (this
+    // flood is what fed the log4j classloader convoy) with no stuck-detection value — the
+    // execute-query watchdog already reports if the CPU task never completes.
+
     // Empty shard: skip build_segments (errors on zero files) and emit an
     // empty stream. Mirrors the guard in query_executor::execute_with_context.
     if handle.object_metas.is_empty() {

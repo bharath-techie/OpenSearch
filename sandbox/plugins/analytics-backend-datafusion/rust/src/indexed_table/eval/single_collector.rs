@@ -311,6 +311,18 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         // the RuntimeManager to drive the async object-store read.
         if let (Some(bloom), Some(pp)) = (&self.bloom_config, &self.pruning_predicate) {
             let _timer = bloom.bloom_filter_eval_time.as_ref().map(|t| t.timer());
+            // Watchdog: this is a CPU worker doing block_on against the IO runtime — a classic
+            // cross-runtime stall point. If the IO read never completes (object-store hang /
+            // IO runtime starved), block_on never returns and the old post-hoc elapsed check
+            // never fired. The watchdog reports it from its own thread while still blocked.
+            // Fires at 5s (not the old 100ms per-rg chatter) so normal reads stay silent.
+            let _wd = native_bridge_common::watchdog::watch(
+                format!(
+                    "[bloom-block-on] context_id={} tid={:?} rg={} path={} — CPU worker blocked on IO runtime",
+                    self.context_id, std::thread::current().id(), rg.index, bloom.object_path,
+                ),
+                std::time::Duration::from_secs(5),
+            );
             let pruned = bloom.io_handle.block_on(
                 crate::indexed_table::bloom_pruner::bloom_prune_rg(
                     &*bloom.store,
@@ -321,6 +333,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                     pp.as_ref(),
                 )
             );
+            drop(_wd);
             if pruned {
                 if let Some(ref c) = bloom.rg_bloom_pruned {
                     c.add(1);
@@ -352,6 +365,9 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 // Call collector for each range, merge into one RG-relative bitmap.
                 let mut bm = RoaringBitmap::new();
                 for (r_min, r_max) in &call_ranges {
+                    // Synchronous FFM upcall into Java — always returns (no permanent-wedge
+                    // risk), so no watchdog. Per-range slow-logging was dropped as hot-path
+                    // noise; the ffm_collector_calls metric below still counts every call.
                     let bitset = collector
                         .collect_packed_u64_bitset(*r_min, *r_max)
                         .map_err(|e| {

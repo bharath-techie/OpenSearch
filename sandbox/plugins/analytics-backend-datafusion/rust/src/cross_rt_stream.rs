@@ -109,11 +109,23 @@ impl CrossRtStream {
                     Some(r) => r,
                     None => break,
                 };
+                // Watchdog: if the producer's send blocks forever (consumer gone / stream_next
+                // never called again — the other half of the cross-runtime wedge), the post-hoc
+                // elapsed check below never runs because the send never returns. The watchdog
+                // reports [WATCHDOG-STUCK] from its own thread while the send is still blocked.
+                let wd = native_bridge_common::watchdog::watch(
+                    format!(
+                        "[cross-rt-send] tid={:?} — producer blocked on channel send: consumer not draining (stream_next not called?)",
+                        std::thread::current().id(),
+                    ),
+                    std::time::Duration::from_secs(5),
+                );
                 let sent = tokio::select! {
                     biased;
                     _ = async { match &cancel_token { Some(t) => t.cancelled().await, None => std::future::pending::<()>().await } } => break,
                     r = tx_captured.send(res) => r,
                 };
+                drop(wd);
                 if sent.is_err() {
                     break;
                 }

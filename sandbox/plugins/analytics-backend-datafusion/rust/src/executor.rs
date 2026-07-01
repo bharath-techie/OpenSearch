@@ -87,7 +87,20 @@ impl ConcurrencyGate {
         self.pending_acquire_permits.fetch_add(n as u64, Ordering::Relaxed);
         self.pending_acquire_batches.fetch_add(1, Ordering::Relaxed);
         let start = Instant::now();
+        // Watchdog: a permit acquire that never returns (gate exhausted, no permit ever freed —
+        // the over-subscription deadlock) is invisible to a post-hoc elapsed check, which the
+        // stuck acquire never reaches. The watchdog reports it from its own thread while blocked.
+        let wd = native_bridge_common::watchdog::watch(
+            format!(
+                "[gate-acquire] {} permits | at_start active={}/{} pending_batches={} pending_permits={}",
+                n, self.active_permits(), self.max_permits(),
+                self.pending_acquire_batches.load(Ordering::Relaxed),
+                self.pending_acquire_permits.load(Ordering::Relaxed),
+            ),
+            Duration::from_secs(5),
+        );
         let result = self.semaphore.clone().acquire_many_owned(n).await;
+        drop(wd);
         self.pending_acquire_permits.fetch_sub(n as u64, Ordering::Relaxed);
         self.pending_acquire_batches.fetch_sub(1, Ordering::Relaxed);
         let permit = result.expect("concurrency gate semaphore closed");

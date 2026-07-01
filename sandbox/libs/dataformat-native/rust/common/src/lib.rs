@@ -10,6 +10,7 @@
 
 pub mod error;
 pub mod logger;
+pub mod watchdog;
 pub mod allocator;
 pub mod memory_pool;
 

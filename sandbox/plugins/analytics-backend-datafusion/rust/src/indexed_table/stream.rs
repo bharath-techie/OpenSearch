@@ -202,7 +202,11 @@ impl IndexReader {
                 return Ok(PrefetchOutcome::Empty);
             }
         }
-        match evaluator.prefetch_rg(&rg, min_doc, max_doc)? {
+        // No per-rg slow-logging here: the only permanent-wedge risk inside prefetch_rg is the
+        // bloom block_on, which now carries its own [bloom-block-on] watchdog. This was a
+        // redundant post-hoc detector on the hot path.
+        let result = evaluator.prefetch_rg(&rg, min_doc, max_doc);
+        match result? {
             None => Ok(PrefetchOutcome::Empty),
             Some(prefetched) => Ok(PrefetchOutcome::Fetched(PrefetchedRowGroup { rg, prefetched })),
         }
