@@ -78,6 +78,7 @@ proptest = "=1.4.0"
 # Liquid Cache for byte-level caching
 liquid-cache-datafusion-local = { git = "https://github.com/cocosz/liquid-cache", branch = "lc-opensearch-df54-v2", package = "liquid-cache-datafusion-local" }
 liquid-cache-datafusion = { git = "https://github.com/cocosz/liquid-cache", branch = "lc-opensearch-df54-v2", package = "liquid-cache-datafusion" }
+liquid-cache = { git = "https://github.com/cocosz/liquid-cache", branch = "lc-opensearch-df54-v2", package = "liquid-cache" }
 
 # Internal
 native-bridge-common = { path = "common" }
