@@ -34,6 +34,7 @@
 //! codec's decode path is unchanged.
 
 use std::collections::HashMap;
+use std::future::IntoFuture;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -138,5 +139,6 @@ pub fn put_page(eid: EntryID, longs: &[i64], presence: &[bool]) {
         .collect();
     let array_ref: ArrayRef = Arc::new(array);
     // Best-effort: a CacheFull error just means this page is not cached this time.
-    let _ = runtime().block_on(cache().insert(eid, array_ref));
+    // `insert`/`get` return builder types that implement `IntoFuture`, so convert before block_on.
+    let _ = runtime().block_on(cache().insert(eid, array_ref).into_future());
 }
