@@ -78,12 +78,23 @@ impl ConcurrencyGate {
     }
 
     /// Acquire a permit. Held for the entire query stream lifetime.
+    ///
+    /// `context_id == 0` when the caller has no query id to attribute (tests,
+    /// benchmark paths); production entry points pass the real query id so the
+    /// watchdog label can be correlated with the holder that is starving this
+    /// acquire.
     pub async fn acquire(&self) -> OwnedSemaphorePermit {
-        self.acquire_many(1).await
+        self.acquire_many(1, 0).await
     }
 
     /// Acquire N permits (partition-weighted). Held for the entire query stream lifetime.
-    pub async fn acquire_many(&self, n: u32) -> OwnedSemaphorePermit {
+    ///
+    /// `context_id` is the query id (`AnalyticsQueryTask.getId()` on the Java side,
+    /// the same key `cancel_query` uses). It is stamped into the watchdog label so a
+    /// stuck `[gate-acquire]` line names which query is blocked waiting for permits —
+    /// pair it with the oldest `[stream-next]`/`[execute-with-context]` in the same
+    /// `[WATCHDOG-SNAPSHOT]` to see who is holding the permits it is waiting on.
+    pub async fn acquire_many(&self, n: u32, context_id: i64) -> OwnedSemaphorePermit {
         self.pending_acquire_permits.fetch_add(n as u64, Ordering::Relaxed);
         self.pending_acquire_batches.fetch_add(1, Ordering::Relaxed);
         let start = Instant::now();
@@ -92,8 +103,8 @@ impl ConcurrencyGate {
         // stuck acquire never reaches. The watchdog reports it from its own thread while blocked.
         let wd = native_bridge_common::watchdog::watch(
             format!(
-                "[gate-acquire] {} permits | at_start active={}/{} pending_batches={} pending_permits={}",
-                n, self.active_permits(), self.max_permits(),
+                "[gate-acquire] ctx={} {} permits | at_start active={}/{} pending_batches={} pending_permits={}",
+                context_id, n, self.active_permits(), self.max_permits(),
                 self.pending_acquire_batches.load(Ordering::Relaxed),
                 self.pending_acquire_permits.load(Ordering::Relaxed),
             ),
@@ -819,6 +830,114 @@ mod tests {
         // After the spawned task completes, counters should be 0
         assert_eq!(gate.pending_acquire_permits(), 0);
         assert_eq!(gate.pending_acquire_batches(), 0);
+    }
+
+    // ─── Deadlock simulation: query-id-tagged watchdog snapshot ─────────────────
+
+    /// Simulate the production wedge topology at the gate — the exact choke point
+    /// where holder-vs-waiter matters — and assert the watchdog can attribute each
+    /// blocked op to its query id, with holders sorted above waiters.
+    ///
+    /// Setup mirrors an om-class node: a gate with `max=1` permit (stands in for the
+    /// saturated 2-worker CPU runtime). One query (`ctx=1001`, the HOLDER) takes the
+    /// permit and never releases it (models a producer stuck in spill-sort / a
+    /// lost-wakeup, so its `stream_next` consumer parks forever). Two more queries
+    /// (`ctx=2001`, `ctx=2002`, the WAITERS) then call `acquire_many(1, ctx)` and
+    /// block forever because the permit is never freed.
+    ///
+    /// The watchdog fires from its own OS thread (not tokio), so it observes all
+    /// three even though the tokio workers are "wedged". We assert the live snapshot:
+    ///   - names all three query ids,
+    ///   - tags the two blocked acquires as `[gate-acquire]` waiters,
+    ///   - and (because the holder registers its op first / oldest) sorts a
+    ///     holder-style op above the fresh waiters.
+    #[tokio::test]
+    async fn deadlock_simulation_watchdog_attributes_holder_and_waiters() {
+        use native_bridge_common::watchdog;
+
+        let gate = Arc::new(ConcurrencyGate::new(1));
+
+        // HOLDER: query 1001 takes the only permit and never releases it. Also
+        // register a watchdog op that looks like the stuck consumer/producer so the
+        // snapshot has a holder line that is OLDER than the waiters below.
+        let _holder_permit = gate.acquire_many(1, 1001).await;
+        let _holder_wd = watchdog::watch(
+            "[stream-next] ctx=1001 — CPU not producing batches? (simulated wedge holder)",
+            Duration::from_secs(5),
+        );
+
+        // Let the holder op age a touch so it sorts above the waiters deterministically.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // WAITERS: queries 2001 and 2002 block forever on acquire_many — each
+        // registers a [gate-acquire] watchdog op tagged with its query id.
+        let waiter_ctx_ids = [2001_i64, 2002_i64];
+        let mut waiters = Vec::new();
+        for ctx in waiter_ctx_ids {
+            let g = Arc::clone(&gate);
+            waiters.push(tokio::spawn(async move { g.acquire_many(1, ctx).await }));
+        }
+
+        // Give the spawned waiters a chance to register their watchdog ops and park.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        // Poll the gate's own counter (independent of the watchdog) until both
+        // waiters are actually blocking, so the snapshot assertion is not racy.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while gate.pending_acquire_batches() < 2 && Instant::now() < deadline {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            gate.pending_acquire_batches(),
+            2,
+            "both waiter queries should be blocked at the gate"
+        );
+
+        // Read the live watchdog snapshot: who is waiting on what.
+        let snap = watchdog::snapshot();
+        let labels: Vec<&str> = snap.iter().map(|(_, l)| l.as_str()).collect();
+        let joined = labels.join("\n");
+
+        // All three query ids are attributable.
+        assert!(joined.contains("ctx=1001"), "holder query id missing:\n{joined}");
+        assert!(joined.contains("ctx=2001"), "waiter 2001 missing:\n{joined}");
+        assert!(joined.contains("ctx=2002"), "waiter 2002 missing:\n{joined}");
+
+        // Both waiters are gate-acquire ops (the starving side).
+        let gate_acquire_ctxs: Vec<&&str> = labels
+            .iter()
+            .filter(|l| l.contains("[gate-acquire]"))
+            .collect();
+        assert!(
+            gate_acquire_ctxs.iter().any(|l| l.contains("ctx=2001"))
+                && gate_acquire_ctxs.iter().any(|l| l.contains("ctx=2002")),
+            "both waiters should appear as [gate-acquire]:\n{joined}"
+        );
+
+        // The holder op (registered first / oldest) sorts above the fresh waiters.
+        let holder_pos = joined.find("ctx=1001").unwrap();
+        let waiter_pos = joined.find("ctx=2001").unwrap().min(joined.find("ctx=2002").unwrap());
+        assert!(
+            holder_pos < waiter_pos,
+            "holder should sort above waiters in the oldest-first snapshot:\n{joined}"
+        );
+
+        // Unwedge: dropping the holder's permit lets exactly one waiter proceed.
+        drop(_holder_permit);
+        drop(_holder_wd);
+        let first = tokio::time::timeout(Duration::from_secs(5), async {
+            for w in waiters {
+                // At least one waiter must now complete; the other may still block
+                // on the single freed permit until this one's permit drops.
+                if let Ok(Ok(_permit)) = tokio::time::timeout(Duration::from_millis(500), w).await {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .expect("unwedge must not itself hang");
+        assert!(first, "freeing the holder's permit must release a waiter");
     }
 
     /// **Validates: Requirements 2.5**

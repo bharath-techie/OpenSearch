@@ -85,6 +85,11 @@ pub(crate) fn try_get_rt_manager() -> Option<Arc<RuntimeManager>> {
 pub extern "C" fn df_init_runtime_manager(cpu_threads: i32, datanode_multiplier: f64, coordinator_multiplier: f64) {
     let mut guard = TOKIO_RUNTIME_MANAGER.write();
     *guard = Some(Arc::new(RuntimeManager::new(cpu_threads as usize, datanode_multiplier, coordinator_multiplier)));
+    // Install the watchdog auto-dump hook: when any FFM op stays stuck past the wedge
+    // threshold (120s), the df-watchdog thread fires this to capture the parked `.await`
+    // backtrace of every task (the definitive lost-wakeup locator). Installed here to
+    // avoid a circular dep between the watchdog crate and this plugin.
+    native_bridge_common::watchdog::set_dump_hook(watchdog_taskdump_hook);
 }
 
 #[no_mangle]
@@ -464,15 +469,98 @@ pub unsafe extern "C" fn df_stream_get_schema(stream_ptr: i64) -> i64 {
 pub unsafe extern "C" fn df_stream_next(stream_ptr: i64) -> i64 {
     let mgr = get_rt_manager()?;
     let tid = std::thread::current().id();
+    // Read the query id off the handle so a stuck consumer names its query in the
+    // watchdog snapshot (pair it with the [gate-acquire] waiters starving on the
+    // permit this stream is holding). `stream_ptr` is non-zero and live for the
+    // duration of this synchronous downcall (the Java caller holds it).
+    let context_id = if stream_ptr != 0 {
+        (*(stream_ptr as *const crate::api::QueryStreamHandle)).context_id()
+    } else {
+        0
+    };
+    let cpu_handle = mgr.cpu_executor().handle();
+
     // Watchdog fires from an independent OS thread if this block_on never returns — the
     // deadlock signature. The old post-hoc `elapsed > 5s` check could not catch a permanent
     // wedge (the call never returns, so the marker never logs). Guard drops on return = silent.
     let _wd = native_bridge_common::watchdog::watch(
-        format!("[stream-next] tid={:?} stream_ptr=0x{:x} — CPU not producing batches?", tid, stream_ptr),
+        format!("[stream-next] ctx={} tid={:?} stream_ptr=0x{:x} — CPU not producing batches?", context_id, tid, stream_ptr),
         std::time::Duration::from_secs(5),
     );
     let result = timed_block_on(&mgr.io_runtime, "stream_next", crate::task_monitors::stream_next_monitor().instrument(api::stream_next(stream_ptr)));
     result.map_err(|e| e.to_string())
+}
+
+fn dump_runtime_tasks_to(path: &str) -> Result<usize, String> {
+    use std::io::Write;
+    let mgr = get_rt_manager()?;
+    let cpu_handle = mgr.cpu_executor().handle();
+    let io_handle = mgr.io_runtime.handle().clone();
+
+    let rendered = mgr.io_runtime.block_on(async move {
+        let mut out = String::new();
+        if let Some(h) = cpu_handle {
+            match tokio::time::timeout(std::time::Duration::from_secs(20), h.dump()).await {
+                Ok(dump) => {
+                    out.push_str("==== CPU RUNTIME TASK DUMP ====\n");
+                    for (i, task) in dump.tasks().iter().enumerate() {
+                        out.push_str(&format!("--- cpu task[{}] id={:?} ---\n{}\n", i, task.id(), task.trace()));
+                    }
+                }
+                Err(_) => out.push_str("==== CPU RUNTIME TASK DUMP: TIMED OUT (runtime wedged) ====\n"),
+            }
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(20), io_handle.dump()).await {
+            Ok(dump) => {
+                out.push_str("==== IO RUNTIME TASK DUMP ====\n");
+                for (i, task) in dump.tasks().iter().enumerate() {
+                    out.push_str(&format!("--- io task[{}] id={:?} ---\n{}\n", i, task.id(), task.trace()));
+                }
+            }
+            Err(_) => out.push_str("==== IO RUNTIME TASK DUMP: TIMED OUT ====\n"),
+        }
+        out
+    });
+
+    std::fs::File::create(path)
+        .and_then(|mut f| f.write_all(rendered.as_bytes()))
+        .map(|_| rendered.len())
+        .map_err(|e| format!("write {}: {}", path, e))
+}
+
+/// Watchdog auto-dump hook: called by the df-watchdog OS thread when an FFM op has been
+/// stuck past the wedge threshold. Writes the CPU+IO runtime task dumps to a timestamped
+/// file under `/tmp` (a plain fs write, independent of the HeapProfiler dump-dir allowlist).
+/// Installed via `set_dump_hook` in `df_init_runtime_manager`.
+fn watchdog_taskdump_hook(reason: &str) {
+    let path = format!(
+        "/tmp/WATCHDOG_TASKDUMP_{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    match dump_runtime_tasks_to(&path) {
+        Ok(n) => native_bridge_common::log_error!(
+            "[WATCHDOG-TASKDUMP] wrote {} bytes to {} ({})",
+            n,
+            path,
+            reason
+        ),
+        Err(e) => native_bridge_common::log_error!("[WATCHDOG-TASKDUMP] failed: {}", e),
+    }
+}
+
+/// Manual trigger for the CPU+IO runtime task dump (Java: `NativeBridge.dumpCpuTasks(path)`,
+/// also callable from the wedge cron). Renders each live task's parked `.await` chain to
+/// `path`. Returns bytes written, or a negative FFM error code on failure.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn df_dump_cpu_tasks(path_ptr: *const u8, path_len: i64) -> i64 {
+    let path = str_from_raw(path_ptr, path_len).map_err(|e| format!("df_dump_cpu_tasks: {}", e))?;
+    dump_runtime_tasks_to(path)
+        .map(|n| n as i64)
+        .map_err(|e| format!("df_dump_cpu_tasks: {}", e))
 }
 
 #[no_mangle]
@@ -1158,6 +1246,18 @@ pub unsafe extern "C" fn df_execute_with_context(
     let use_indexed = session_handle.indexed_config.is_some() || has_row_id;
     // Extract context_id before session_handle is consumed for log correlation.
     let ctx_id_for_log = session_handle.query_context.context_id();
+    // Watchdog over the whole synchronous downcall: this is the production entry the
+    // Java search thread blocks in, and it can wedge either at the gate acquire (gate
+    // full, no permit ever freed) or inside plan setup on the CPU runtime. The inner
+    // gate-acquire has its own finer-grained watchdog; this outer one guarantees a
+    // [WATCHDOG-STUCK] even if the block never reaches (or returns from) that point.
+    let _wd_exec = native_bridge_common::watchdog::watch(
+        format!(
+            "[execute-with-context] ctx={} tid={:?} use_indexed={} — Java search thread blocked in FFM downcall",
+            ctx_id_for_log, std::thread::current().id(), use_indexed,
+        ),
+        std::time::Duration::from_secs(5),
+    );
     if use_indexed {
         // Extract target_partitions BEFORE boxing into raw pointer (session_handle is consumed).
         let partition_weight = session_handle.query_config.target_partitions.max(1) as u32;
@@ -1171,7 +1271,8 @@ pub unsafe extern "C" fn df_execute_with_context(
                 let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
                 let max_p = gate.max_permits();
                 // Stuck-acquire detection lives in ConcurrencyGate::acquire_many via the watchdog.
-                let permit = gate.acquire_many(partition_weight.min(max_p)).await;
+                // Pass the query id so a stuck acquire is attributable to a specific query.
+                let permit = gate.acquire_many(partition_weight.min(max_p), ctx_id_for_log).await;
 
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
                     crate::indexed_executor::execute_indexed_with_context(
@@ -1200,7 +1301,8 @@ pub unsafe extern "C" fn df_execute_with_context(
                 let gate = mgr_for_spawn.cpu_executor().concurrency_gate().clone();
                 let max_p = gate.max_permits();
                 // Stuck-acquire detection lives in ConcurrencyGate::acquire_many via the watchdog.
-                let permit = gate.acquire_many(partition_weight.min(max_p)).await;
+                // Pass the query id so a stuck acquire is attributable to a specific query.
+                let permit = gate.acquire_many(partition_weight.min(max_p), ctx_id_for_log).await;
 
                 let inner_fut = crate::task_monitors::query_execution_monitor().instrument(async move {
                     crate::query_executor::execute_with_context(

@@ -33,6 +33,10 @@ datafusion-physical-expr = "=54.0.0"
 datafusion-substrait = "=54.0.0"
 
 # Async
+# Base tokio (all platforms). The `taskdump` feature — needed for the watchdog's
+# `Handle::dump()` lost-wakeup capture — is ONLY supported on Linux aarch64/x86_64,
+# so it is enabled per-target below rather than here (keeps local macOS dev builds
+# working; the production/CI build is Linux and gets taskdump).
 tokio = { version = "=1.52.3", features = ["full"] }
 tokio-util = "=0.7.18"
 futures = "=0.3.32"

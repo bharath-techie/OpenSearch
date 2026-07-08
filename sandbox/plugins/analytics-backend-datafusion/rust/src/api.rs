@@ -184,6 +184,14 @@ impl QueryStreamHandle {
         }
     }
 
+    /// The query id (`AnalyticsQueryTask.getId()` on the Java side) this stream
+    /// belongs to, or 0 when tracking is disabled. Used to stamp the query id
+    /// into the `[stream-next]` watchdog label so a stuck consumer is
+    /// attributable to a specific query in the `[WATCHDOG-SNAPSHOT]` dump.
+    pub fn context_id(&self) -> i64 {
+        self._query_tracking_context.context_id()
+    }
+
     /// Returns execution metrics from ALL operators in the physical plan tree as JSON bytes.
     /// Walks the tree recursively, collecting metrics from every node.
     pub fn get_metrics_json(&self) -> Option<Vec<u8>> {
@@ -1822,7 +1830,7 @@ pub async unsafe fn execute_local_plan(
     // task can be aborted mid-execution when cancel_query fires.
     let cpu_exec = manager.cpu_executor();
     let (cross_rt_stream, _abort_handle, task_done) =
-        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_exec.clone(), token.clone());
+        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_exec.clone(), token.clone(), context_id);
     // Reduce path: cancel via the token only, do NOT register the abort handle — an abort() mid-send
     // would skip the cross_rt drop+drain cleanup and leak the aggregate's in-flight GroupValues.
     if let Some(rt) = cpu_exec.handle() {
@@ -1870,7 +1878,7 @@ pub unsafe fn execute_local_prepared_plan(
 
     let cpu_exec = manager.cpu_executor();
     let (cross_rt_stream, _abort_handle, task_done) =
-        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_exec.clone(), token.clone());
+        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_exec.clone(), token.clone(), context_id);
     // Prepared-reduce path: same as execute_local_plan — token-only cancel, no abort handle.
     if let Some(rt) = cpu_exec.handle() {
         query_tracker::set_cpu_runtime_handle(context_id, rt);

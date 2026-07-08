@@ -142,7 +142,7 @@ pub async fn execute_indexed_query(
     let partition_weight = num_partitions.max(1) as u32;
     let gate = cpu_executor.concurrency_gate().clone();
     let max_p = gate.max_permits();
-    let permit = gate.acquire_many(partition_weight.min(max_p)).await;
+    let permit = gate.acquire_many(partition_weight.min(max_p), context_id).await;
 
     unsafe { execute_indexed_with_context(ptr, substrait_bytes, cpu_executor, permit).await }
 }
@@ -798,7 +798,7 @@ async unsafe fn execute_indexed_with_context_inner(
         let empty_exec = EmptyExec::new(Arc::clone(&plan_schema));
         let df_stream = empty_exec.execute(0, handle.ctx.task_ctx())?;
         let (cross_rt_stream, abort_handle, _task_done) =
-            CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_executor.clone(), None);
+            CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_executor.clone(), None, context_id_early);
         if let Some(h) = abort_handle {
             crate::query_tracker::set_abort_handle(context_id_early, h);
         }
@@ -1323,7 +1323,7 @@ async unsafe fn execute_indexed_with_context_inner(
         .map_err(|e| DataFusionError::Execution(format!("execute_stream: {}", e)))?;
 
     let (cross_rt_stream, abort_handle, _task_done) =
-        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_executor.clone(), None);
+        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_executor.clone(), None, context_id);
 
     if let Some(h) = abort_handle {
         crate::query_tracker::set_abort_handle(context_id, h);

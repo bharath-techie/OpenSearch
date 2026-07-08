@@ -73,7 +73,7 @@ impl CrossRtStream {
         stream: SendableRecordBatchStream,
         exec: DedicatedExecutor,
     ) -> Self {
-        let (cross_rt, _abort_handle, _done_rx) = Self::new_with_df_error_stream_cancellable(stream, exec, None);
+        let (cross_rt, _abort_handle, _done_rx) = Self::new_with_df_error_stream_cancellable(stream, exec, None, 0);
         cross_rt
     }
 
@@ -84,10 +84,16 @@ impl CrossRtStream {
     /// When `cancel_token` is supplied, cancel is cooperative: the producer breaks on the token and
     /// runs the drop(stream)+drain cleanup, instead of an abort() mid-send that skips it. Callers
     /// that pass `None` are unchanged.
+    ///
+    /// `context_id` is the query id stamped into the `[cross-rt-send]` watchdog label so a producer
+    /// blocked forever on the channel send (consumer gone / `stream_next` never called again — the
+    /// other half of the cross-runtime wedge) names its query in the `[WATCHDOG-SNAPSHOT]`. Pass 0
+    /// when no query id is available (tests / benchmarks).
     pub fn new_with_df_error_stream_cancellable(
         stream: SendableRecordBatchStream,
         exec: DedicatedExecutor,
         cancel_token: Option<CancellationToken>,
+        context_id: i64,
     ) -> (Self, Option<AbortHandle>, oneshot::Receiver<()>) {
         let schema = stream.schema();
         let (tx, rx) = channel(1);
@@ -115,8 +121,8 @@ impl CrossRtStream {
                 // reports [WATCHDOG-STUCK] from its own thread while the send is still blocked.
                 let wd = native_bridge_common::watchdog::watch(
                     format!(
-                        "[cross-rt-send] tid={:?} — producer blocked on channel send: consumer not draining (stream_next not called?)",
-                        std::thread::current().id(),
+                        "[cross-rt-send] ctx={} tid={:?} — producer blocked on channel send: consumer not draining (stream_next not called?)",
+                        context_id, std::thread::current().id(),
                     ),
                     std::time::Duration::from_secs(5),
                 );
@@ -334,7 +340,7 @@ mod tests {
             stream::iter(vec![Ok(test_batch(&[1, 2, 3]))]),
         ));
 
-        let (cross, _abort, done_rx) = CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), None);
+        let (cross, _abort, done_rx) = CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), None, 0);
         let wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
         tokio::pin!(wrapped);
         while wrapped.next().await.is_some() {}
@@ -353,7 +359,7 @@ mod tests {
             stream::pending::<Result<RecordBatch, DataFusionError>>(),
         ));
 
-        let (cross, abort, done_rx) = CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), None);
+        let (cross, abort, done_rx) = CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), None, 0);
         // Hold the stream so the abort, not a drop, is what ends the task.
         let _wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
 
@@ -378,7 +384,7 @@ mod tests {
 
         let token = CancellationToken::new();
         let (cross, _abort, done_rx) =
-            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), Some(token.clone()));
+            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), Some(token.clone()), 0);
         // Hold the stream so a consumer-side drop is NOT what ends the task — the token is.
         let _wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
 
@@ -401,7 +407,7 @@ mod tests {
 
         let token = CancellationToken::new(); // never cancelled
         let (cross, _abort, done_rx) =
-            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), Some(token));
+            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), Some(token), 0);
         let wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
         tokio::pin!(wrapped);
 
@@ -411,6 +417,117 @@ mod tests {
         }
         assert_eq!(total_rows, 5, "all rows delivered when the token is never fired");
         assert!(done_rx.await.is_ok(), "done_rx fires on normal drain even with a token present");
+        exec.join_blocking();
+    }
+
+    // ─── Faithful cross-runtime wedge simulations ──────────────────────────────
+    //
+    // These drive the REAL CrossRtStream (not a faked holder) to reproduce the two
+    // halves of the cross-runtime wedge from the handoff, and assert the watchdog
+    // attributes each to its query id (context_id) so "who is waiting on what" is
+    // answerable from logs alone.
+
+    /// Poll `watchdog::snapshot()` until a label containing `needle` appears, or the
+    /// timeout elapses. Returns true if found. Filtering on a unique per-test
+    /// context_id keeps this robust against ops other parallel tests register.
+    async fn await_watchdog_label(needle: &str) -> bool {
+        use native_bridge_common::watchdog;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if watchdog::snapshot().iter().any(|(_, l)| l.contains(needle)) {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// WEDGE HALF 1 — producer-stall / lost-wakeup (the dump3 permanent wedge).
+    ///
+    /// A real CrossRtStream wraps a producer that never emits a batch and never
+    /// completes (`stream::pending`). A real consumer then polls it and parks
+    /// forever — exactly the search thread stuck in `df_stream_next`. We mirror
+    /// what `ffm.rs::df_stream_next` does (register a `[stream-next] ctx=..`
+    /// watchdog around the poll) and assert:
+    ///   - the consumer never yields a batch (it is genuinely parked), and
+    ///   - the `[stream-next]` watchdog op is in-flight, tagged with the query id.
+    #[tokio::test]
+    async fn wedge_producer_never_emits_parks_consumer_in_stream_next() {
+        use native_bridge_common::watchdog;
+        const CTX: i64 = 5001;
+
+        let exec = test_exec();
+        // Producer that yields nothing and never finishes → consumer can only park.
+        let inner = Box::pin(RecordBatchStreamAdapter::new(
+            test_schema(),
+            stream::pending::<Result<RecordBatch, DataFusionError>>(),
+        ));
+        let (cross, abort, _done) =
+            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), None, CTX);
+        let wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
+        tokio::pin!(wrapped);
+
+        // Simulate the FFM consumer: hold the same watchdog df_stream_next registers,
+        // then poll. The poll must never resolve (producer never emits).
+        let _wd = watchdog::watch(
+            format!("[stream-next] ctx={} — CPU not producing batches? (faithful sim)", CTX),
+            std::time::Duration::from_secs(5),
+        );
+        let parked = tokio::time::timeout(std::time::Duration::from_millis(300), wrapped.next()).await;
+        assert!(parked.is_err(), "consumer must park: producer never emits a batch");
+
+        // The stuck consumer is attributable to its query id in the live snapshot.
+        let found = watchdog::snapshot()
+            .iter()
+            .any(|(_, l)| l.contains(&format!("[stream-next] ctx={}", CTX)));
+        assert!(found, "[stream-next] watchdog op must be in-flight, tagged with the query id");
+
+        // Cleanup: abort the never-ending producer so shutdown doesn't wait it out.
+        drop(_wd);
+        if let Some(a) = abort {
+            a.abort();
+        }
+        exec.join_blocking();
+    }
+
+    /// WEDGE HALF 2 — producer blocked on send, consumer not draining.
+    ///
+    /// A real CrossRtStream wraps a producer that yields several batches, but the
+    /// consumer is never polled. The internal `channel(1)` fills after the first
+    /// batch, so the producer blocks on its second `send` — the exact
+    /// `[cross-rt-send]` watchdog path inside CrossRtStream. Assert that op appears
+    /// in the live snapshot tagged with the query id, then unwedge by dropping the
+    /// stream (receiver drop → send errors → producer loop breaks cleanly).
+    #[tokio::test]
+    async fn wedge_producer_blocks_on_send_when_consumer_not_draining() {
+        const CTX: i64 = 6001;
+
+        let exec = test_exec();
+        // Several batches so the producer must send more than the channel(1) can hold.
+        let batches: Vec<Result<RecordBatch, DataFusionError>> =
+            (0..5).map(|i| Ok(test_batch(&[i]))).collect();
+        let inner = Box::pin(RecordBatchStreamAdapter::new(
+            test_schema(),
+            stream::iter(batches),
+        ));
+        // Producer is spawned immediately; we deliberately never poll `cross`.
+        let (cross, abort, _done) =
+            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), None, CTX);
+
+        let found = await_watchdog_label(&format!("[cross-rt-send] ctx={}", CTX)).await;
+        assert!(
+            found,
+            "[cross-rt-send] watchdog op must be in-flight (producer blocked on send), tagged with the query id"
+        );
+
+        // Unwedge: dropping the stream drops the receiver → the blocked send errors →
+        // the producer loop breaks and the task completes cleanly.
+        drop(cross);
+        if let Some(a) = abort {
+            a.abort();
+        }
         exec.join_blocking();
     }
 
@@ -428,7 +545,7 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel(); // already cancelled before the task runs
         let (cross, _abort, done_rx) =
-            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), Some(token));
+            CrossRtStream::new_with_df_error_stream_cancellable(inner, exec.clone(), Some(token), 0);
         let _wrapped = RecordBatchStreamAdapter::new(cross.schema(), cross);
 
         let fired = tokio::time::timeout(std::time::Duration::from_secs(5), done_rx).await;

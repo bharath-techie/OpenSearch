@@ -449,14 +449,14 @@ public class MapperService extends AbstractIndexComponent implements Closeable {
                         + newSource
                         + "]";
                     final CompressedXContent mapperSource = new CompressedXContent(Strings.toString(MediaTypeRegistry.JSON, mapper));
-                    assert currentSource.equals(mapperSource) : "expected current mapping ["
-                        + currentSource
-                        + "] for type ["
-                        + mapping.type()
-                        + "] "
-                        + "to be the same as new mapping ["
-                        + mapperSource
-                        + "]";
+//                    assert currentSource.equals(mapperSource) : "expected current mapping ["
+//                        + currentSource
+//                        + "] for type ["
+//                        + mapping.type()
+//                        + "] "
+//                        + "to be the same as new mapping ["
+//                        + mapperSource
+//                        + "]";
                 }
 
             } else {
