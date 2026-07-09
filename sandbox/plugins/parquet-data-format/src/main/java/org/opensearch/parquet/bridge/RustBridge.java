@@ -321,7 +321,13 @@ public class RustBridge {
         );
         LIQUID_CACHE_SET_ENABLED = linker.downcallHandle(
             lib.find("parquet_liquid_cache_set_enabled").orElseThrow(),
-            FunctionDescriptor.ofVoid(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG,   // status (< 0 error pointer)
+                ValueLayout.JAVA_INT,    // enabled
+                ValueLayout.JAVA_LONG,   // max_memory_bytes
+                ValueLayout.ADDRESS,     // cache_dir ptr
+                ValueLayout.JAVA_LONG    // cache_dir len
+            )
         );
         READ_VALUE_AT_ROW = linker.downcallHandle(
             lib.find("parquet_read_value_at_row").orElseThrow(),
@@ -863,8 +869,11 @@ public class RustBridge {
      * consults the cache and the decode path is unchanged. A {@code maxMemoryBytes} of 0 leaves the
      * native default budget.
      */
-    public static void liquidCacheSetEnabled(boolean enabled, long maxMemoryBytes) {
-        NativeCall.invokeVoid(LIQUID_CACHE_SET_ENABLED, enabled ? 1 : 0, maxMemoryBytes);
+    public static void liquidCacheSetEnabled(boolean enabled, long maxMemoryBytes, String cacheDir) {
+        try (var call = new NativeCall()) {
+            var dir = call.str(cacheDir);
+            call.invoke(LIQUID_CACHE_SET_ENABLED, enabled ? 1 : 0, maxMemoryBytes, dir.segment(), dir.len());
+        }
     }
 
     /**

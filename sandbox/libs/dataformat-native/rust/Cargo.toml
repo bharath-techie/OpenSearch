@@ -79,6 +79,8 @@ proptest = "=1.4.0"
 liquid-cache-datafusion-local = { git = "https://github.com/cocosz/liquid-cache", branch = "lc-opensearch-df54-v2", package = "liquid-cache-datafusion-local" }
 liquid-cache-datafusion = { git = "https://github.com/cocosz/liquid-cache", branch = "lc-opensearch-df54-v2", package = "liquid-cache-datafusion" }
 liquid-cache = { git = "https://github.com/cocosz/liquid-cache", branch = "lc-opensearch-df54-v2", package = "liquid-cache" }
+# t4 store backing the codec-owned liquid cache (same version liquid-cache core uses).
+t4 = "=0.1.7"
 
 # Internal
 native-bridge-common = { path = "common" }

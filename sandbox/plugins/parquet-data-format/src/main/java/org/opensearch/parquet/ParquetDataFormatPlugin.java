@@ -65,6 +65,7 @@ import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
 
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -142,7 +143,14 @@ public class ParquetDataFormatPlugin extends Plugin implements DataFormatPlugin,
         boolean liquidCacheEnabled = ParquetSettings.LIQUID_CACHE_ENABLED.get(this.settings);
         if (liquidCacheEnabled) {
             long liquidCacheMaxBytes = ParquetSettings.LIQUID_CACHE_MAX_BYTES.get(this.settings).getBytes();
-            RustBridge.liquidCacheSetEnabled(true, liquidCacheMaxBytes);
+            // Mount the liquid t4 store under the node's data directory (real disk, always writable —
+            // never tmpfs), so the cache does not depend on TMPDIR/-Djava.io.tmpdir pointing at a
+            // suitable filesystem. Falls back to java.io.tmpdir only if no data path is configured.
+            Path[] dataPaths = nodeEnvironment.nodeDataPaths();
+            Path liquidCacheDir = (dataPaths != null && dataPaths.length > 0)
+                ? dataPaths[0].resolve("parquet_liquid_cache")
+                : environment.tmpDir();
+            RustBridge.liquidCacheSetEnabled(true, liquidCacheMaxBytes, liquidCacheDir.toString());
         }
 
         // Register virtual pools if allocator is available (arrow-base loaded)

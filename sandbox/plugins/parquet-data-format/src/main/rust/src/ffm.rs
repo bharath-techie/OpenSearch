@@ -1212,14 +1212,26 @@ pub unsafe extern "C" fn parquet_open_column_reader_count() -> i64 {
     }
 }
 
-/// Enable/disable the cross-query decoded-page cache and set its memory budget (bytes).
-/// Called by Java at plugin init when the `parquet_liquid_cache` feature flag is on. When
+/// Enable/disable the cross-query decoded-page cache and set its memory budget (bytes) + store
+/// directory. Called by Java at plugin init when the `parquet_liquid_cache` feature flag is on. When
 /// disabled (the default), `parquet_decode_page_at_row` never consults the cache and the decode
-/// path is unchanged. A `max_memory_bytes` of 0 leaves the liquid-cache default budget.
+/// path is unchanged. A `max_memory_bytes` of 0 leaves the liquid-cache default budget. `cache_dir`
+/// must point to a writable directory on real disk (Java passes a path under the node data dir); the
+/// `t4` store is mounted inside it. If the store can't be built the cache silently disables itself.
+#[ffm_safe]
 #[no_mangle]
-pub unsafe extern "C" fn parquet_liquid_cache_set_enabled(enabled: i32, max_memory_bytes: i64) {
+pub unsafe extern "C" fn parquet_liquid_cache_set_enabled(
+    enabled: i32,
+    max_memory_bytes: i64,
+    cache_dir_ptr: *const u8,
+    cache_dir_len: i64,
+) -> i64 {
     let bytes = if max_memory_bytes > 0 { max_memory_bytes as usize } else { 0 };
-    crate::liquid_page_cache::set_enabled(enabled != 0, bytes);
+    let cache_dir = str_from_raw(cache_dir_ptr, cache_dir_len)
+        .map_err(|e| format!("parquet_liquid_cache_set_enabled cache_dir: {}", e))?
+        .to_string();
+    crate::liquid_page_cache::set_enabled(enabled != 0, bytes, &cache_dir);
+    Ok(0)
 }
 
 /// Slow-path single-value read at `row`.
