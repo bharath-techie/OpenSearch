@@ -164,6 +164,11 @@ pub fn entry_id(file_id: u32, column_id: u32, page_idx: u32) -> EntryID {
 
 /// Look up a cached decoded page. Returns `(longs, presence)` in the exact form the decode arms
 /// produce (`longs[i]` valid iff `presence[i]`), or `None` on a miss.
+///
+/// Retained alongside the faster [`get_page_into_outbuf`] so the two hit paths can be A/B profiled
+/// (this one materializes a `Vec<i64>` + `Vec<bool>`; the other writes straight to the FFM buffers).
+/// Not on the live hot path — `parquet_decode_page_at_row` calls `get_page_into_outbuf`.
+#[allow(dead_code)]
 pub fn get_page(eid: EntryID) -> Option<(Vec<i64>, Vec<bool>)> {
     let cache = cache()?;
     let array: ArrayRef = runtime().block_on(cache.get(&eid).read())?;
@@ -181,6 +186,110 @@ pub fn get_page(eid: EntryID) -> Option<(Vec<i64>, Vec<bool>)> {
         }
     }
     Some((longs, presence))
+}
+
+/// Look up a cached decoded page and write it **straight into the caller's FFM out-buffers**,
+/// skipping the intermediate `Vec<i64>` + `Vec<bool>` rebuild that [`get_page`] does. This is the
+/// hot-path variant: on a warm aggregation the cached `Int64Array` already stores the data in the
+/// exact layout Java reads, so a hit is two `memcpy`s (values + validity) instead of an
+/// element-by-element loop that is then recopied by `write_primitive_page`.
+///
+/// Buffer contract mirrors `write_primitive_page` exactly:
+/// - writes `out_value_actual_len = len * 8` up front,
+/// - returns `Some(RC_OVERFLOW)` if either out-buffer is too small (caller sizes buffers and
+///   retries — the actual length is already populated),
+/// - returns `Some(RC_OK)` after copying, or
+/// - returns `None` on a cache miss (caller then decodes normally).
+///
+/// Layout equivalences that make this a raw copy (little-endian target, which the codec value
+/// buffer already assumes):
+/// - `Int64Array::values()` derefs to `&[i64]` in native-endian order — identical to the FFM value
+///   buffer Java reads as a `long[]`.
+/// - Arrow's validity bitmap is LSB-first packed bytes with `1 == valid == present`; the codec
+///   presence bitset is a little-endian `long[]` with bit `i` == row `i` present. On little-endian
+///   the byte layouts coincide, so a byte copy of the validity buffer reproduces
+///   `write_presence_bitset`. Null value slots hold 0 and are never read by Java (every read is
+///   gated on `isPresent`), so copying them verbatim is behavior-preserving.
+///
+/// # Safety
+/// The out pointers must be valid for writes of their stated capacities (`out_value_buf_cap` bytes;
+/// `out_presence_bits_cap` `i64` words), matching the `parquet_decode_page_at_row` FFM contract.
+pub unsafe fn get_page_into_outbuf(
+    eid: EntryID,
+    out_value_buf: *mut u8,
+    out_value_buf_cap: i64,
+    out_value_actual_len: *mut i64,
+    out_presence_bitset: *mut i64,
+    out_presence_bits_cap: i64,
+) -> Option<i64> {
+    let cache = cache()?;
+    let array: ArrayRef = runtime().block_on(cache.get(&eid).read())?;
+    let int_array = array.as_any().downcast_ref::<Int64Array>()?;
+    let len = int_array.len();
+
+    let value_bytes = (len * 8) as i64;
+    if !out_value_actual_len.is_null() {
+        *out_value_actual_len = value_bytes;
+    }
+    let presence_words = ((len + 63) / 64) as i64;
+    if value_bytes > out_value_buf_cap
+        || out_value_buf.is_null()
+        || presence_words > out_presence_bits_cap
+        || out_presence_bitset.is_null()
+    {
+        return Some(crate::ffm::RC_OVERFLOW);
+    }
+    if len == 0 {
+        return Some(crate::ffm::RC_OK);
+    }
+
+    // Zero the whole presence word region first so any trailing bits past `len` are clean; only the
+    // low `len` bits are ever read by Java, but this keeps the buffer well-defined.
+    let presence_bytes = (presence_words as usize) * 8;
+    std::ptr::write_bytes(out_presence_bitset as *mut u8, 0, presence_bytes);
+    let presence_dst = out_presence_bitset as *mut u8;
+
+    // Cached arrays are always freshly built (offset 0) in `put_page`, so the fast raw-copy path is
+    // the norm. Guard on the array/validity offsets anyway and fall back to element-wise if a sliced
+    // array ever reaches here, so correctness never depends on the layout assumption.
+    let arr_offset = int_array.offset();
+    let nulls = int_array.nulls();
+    let nulls_unaligned = nulls.map(|n| n.inner().offset() != 0).unwrap_or(false);
+
+    if arr_offset == 0 && !nulls_unaligned {
+        // Values: one memcpy of the native-endian i64 words.
+        std::ptr::copy_nonoverlapping(int_array.values().as_ptr() as *const u8, out_value_buf, len * 8);
+        // Presence: byte copy of the validity bitmap, or all-ones when the column has no nulls.
+        match nulls {
+            None => {
+                let full = len / 8;
+                std::ptr::write_bytes(presence_dst, 0xFF, full);
+                let rem = len % 8;
+                if rem > 0 {
+                    *presence_dst.add(full) = ((1u16 << rem) - 1) as u8;
+                }
+            }
+            Some(nb) => {
+                let validity: &[u8] = nb.inner().values();
+                let n = validity.len().min(presence_bytes);
+                std::ptr::copy_nonoverlapping(validity.as_ptr(), presence_dst, n);
+            }
+        }
+    } else {
+        // Rare fallback: sliced array. Copy element by element into the out-buffers. Write values
+        // as raw bytes (out_value_buf has no guaranteed 8-byte alignment, so an aligned i64 store
+        // would be UB — mirrors write_primitive_page).
+        for i in 0..len {
+            let word: i64 = if int_array.is_null(i) {
+                0
+            } else {
+                *presence_dst.add(i / 8) |= 1u8 << (i % 8);
+                int_array.value(i)
+            };
+            std::ptr::copy_nonoverlapping(&word as *const i64 as *const u8, out_value_buf.add(i * 8), 8);
+        }
+    }
+    Some(crate::ffm::RC_OK)
 }
 
 /// Cache a decoded primitive page. `longs[i]` is meaningful only where `presence[i]` is true;

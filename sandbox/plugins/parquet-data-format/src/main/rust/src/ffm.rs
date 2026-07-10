@@ -820,10 +820,10 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::file::serialized_reader::ReadOptionsBuilder;
 
 /// Read succeeded; value(s) written to the caller buffers.
-const RC_OK: i64 = 0;
+pub(crate) const RC_OK: i64 = 0;
 /// A caller buffer was too small. Required sizes were written to the
 /// out-parameters; the caller should grow its buffers and retry once.
-const RC_OVERFLOW: i64 = 1;
+pub(crate) const RC_OVERFLOW: i64 = 1;
 
 /// `expected_type` discriminants exchanged with Java
 /// (matches `ParquetPhysicalType` on the Java side).
@@ -1770,11 +1770,13 @@ pub unsafe extern "C" fn parquet_decode_page_at_row(
         None
     };
     if let Some(eid) = lc_eid {
-        if let Some((longs, presence)) = crate::liquid_page_cache::get_page(eid) {
-            return write_primitive_page(
-                &longs, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
-                out_presence_bitset, out_presence_bits_cap,
-            );
+        // Serve a cache hit straight into the caller's out-buffers (two memcpys), bypassing the
+        // Vec<i64>+Vec<bool> rebuild that get_page does and its recopy through write_primitive_page.
+        if let Some(rc) = crate::liquid_page_cache::get_page_into_outbuf(
+            eid, out_value_buf, out_value_buf_cap, out_value_actual_len,
+            out_presence_bitset, out_presence_bits_cap,
+        ) {
+            return Ok(rc);
         }
     }
 
