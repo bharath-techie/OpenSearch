@@ -310,3 +310,47 @@ pub fn put_page(eid: EntryID, longs: &[i64], presence: &[bool]) {
     // `insert`/`get` return builder types that implement `IntoFuture`, so convert before block_on.
     let _ = runtime().block_on(cache.insert(eid, array_ref).into_future());
 }
+
+/// Cache a decoded primitive page directly from the FFM out-buffers. Reads the already-written
+/// value buffer (native-endian `i64` words, one per row) and the packed presence bitset to build
+/// the Arrow `Int64Array` for liquid cache insertion. Avoids re-scanning the source data.
+///
+/// # Safety
+/// `value_buf` must point to `num_rows * 8` valid bytes. `presence_bits` must point to
+/// `ceil(num_rows/64)` valid `i64` words — both written by the preceding decode step.
+pub unsafe fn put_page_from_outbuf(
+    eid: EntryID,
+    value_buf: *const u8,
+    presence_bits: *const i64,
+    num_rows: usize,
+) {
+    let cache = match cache() {
+        Some(c) => c,
+        None => return,
+    };
+
+    // Build the Arrow Int64Array from the raw out-buffers. The value buffer is already in
+    // native-endian i64 layout (null slots hold 0); the presence bitset is already LSB-packed
+    // matching Arrow's validity bitmap byte layout on little-endian.
+    let values_slice = std::slice::from_raw_parts(value_buf as *const i64, num_rows);
+    let presence_words = (num_rows + 63) / 64;
+    let presence_bytes = presence_words * 8;
+
+    // Arrow NullBuffer is LSB-packed bytes. On little-endian our i64 packed bitset has the same
+    // byte representation, so we can copy the raw bytes.
+    let validity_bytes = std::slice::from_raw_parts(presence_bits as *const u8, presence_bytes);
+
+    use arrow::buffer::{Buffer, NullBuffer};
+    use arrow::datatypes::Int64Type;
+    use arrow::array::PrimitiveArray;
+
+    let values_buf = Buffer::from_slice_ref(values_slice);
+    let null_buf = NullBuffer::new(arrow::buffer::BooleanBuffer::new(
+        Buffer::from_slice_ref(validity_bytes),
+        0,
+        num_rows,
+    ));
+    let array = PrimitiveArray::<Int64Type>::new(values_buf.into(), Some(null_buf));
+    let array_ref: ArrayRef = Arc::new(array);
+    let _ = runtime().block_on(cache.insert(eid, array_ref).into_future());
+}
