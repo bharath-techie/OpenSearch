@@ -862,6 +862,58 @@ struct ColumnReaderState {
     /// Codec-local file id (path→id) for the cross-query decoded-page cache key. See
     /// `crate::liquid_page_cache`.
     liquid_file_id: u32,
+    /// Sequential-decode cursor retained by `parquet_decode_page_at_row` across
+    /// calls. `None` until the first page decode and whenever it has been
+    /// invalidated (row-group change, backwards seek, or a decode error). The
+    /// random-access slow paths (`parquet_read_value_at_row`,
+    /// `parquet_read_repeated_at_row`) never touch it.
+    cursor: Option<CursorState>,
+    /// Pre-allocated scratch buffers for page decoding, reused across calls to
+    /// `parquet_decode_page_at_row` to eliminate per-call heap allocations.
+    /// Vecs keep their capacity across `.clear()` so after the first cold miss
+    /// all subsequent decodes are allocation-free on the steady-state path.
+    scratch: DecodeScratch,
+}
+
+/// Retained cursor for `parquet_decode_page_at_row`. Keeps the typed column
+/// reader open across consecutive page decodes within the same row group so
+/// the hot ascending-doc-ID path skips forward from its current position
+/// instead of reopening the row group (re-reading row-group metadata and the
+/// dictionary page) for every page.
+struct CursorState {
+    /// The row group index this cursor was opened for.
+    rg_idx: usize,
+    /// The typed column reader, retained across pages within the same row group.
+    col_reader: ColumnReader,
+    /// Global row position: the next record read from this cursor would start at this row.
+    position: i64,
+}
+
+/// Pre-allocated scratch buffers for page decoding. Kept on `ColumnReaderState` and cleared (not
+/// reallocated) between calls, so steady-state decoding is allocation-free after the first miss.
+struct DecodeScratch {
+    /// Definition levels returned by `read_records`.
+    def_levels: Vec<i16>,
+    /// Dense non-null values read from the page (re-interpretable as any primitive via transmute).
+    /// Stored as raw bytes; capacity is in units of the largest primitive (i64 = 8 bytes).
+    values_i64: Vec<i64>,
+    values_i32: Vec<i32>,
+    values_f32: Vec<f32>,
+    values_f64: Vec<f64>,
+    values_bool: Vec<bool>,
+}
+
+impl DecodeScratch {
+    fn new() -> Self {
+        DecodeScratch {
+            def_levels: Vec::new(),
+            values_i64: Vec::new(),
+            values_i32: Vec::new(),
+            values_f32: Vec::new(),
+            values_f64: Vec::new(),
+            values_bool: Vec::new(),
+        }
+    }
 }
 
 /// One row-aligned page in the column (or one row group, in the no-page-index
@@ -955,6 +1007,8 @@ impl ColumnReaderState {
             rg_num_rows,
             pages,
             liquid_file_id,
+            cursor: None,
+            scratch: DecodeScratch::new(),
         })
     }
 
@@ -1618,6 +1672,32 @@ pub unsafe extern "C" fn parquet_get_column_page_index(
     Ok(RC_OK)
 }
 
+/// Decodes one primitive page through a (possibly retained) typed column reader and writes
+/// values + packed presence straight into the caller's out-buffers. `skip` is relative to the
+/// reader's current position, NOT the row group start — the retained-cursor caller computes it
+/// from the cursor position so a reused reader only skips forward the remaining distance.
+#[allow(clippy::too_many_arguments)]
+unsafe fn decode_primitive_page<T: ParquetDataType>(
+    r: &mut ColumnReaderImpl<T>,
+    skip: usize,
+    num_rows: usize,
+    max_def_level: i16,
+    effective_null_count: i64,
+    def_scratch: &mut Vec<i16>,
+    val_scratch: &mut Vec<T::T>,
+    to_bits: impl Fn(T::T) -> i64,
+    out_value_buf: *mut u8,
+    out_presence_bitset: *mut i64,
+) -> Result<(), String>
+where
+    T::T: Copy,
+{
+    decode_page_records(r, skip, num_rows, def_scratch, val_scratch)?;
+    pack_presence_from_def_levels(def_scratch, max_def_level, num_rows, out_presence_bitset);
+    expand_to_outbuf(val_scratch, to_bits, effective_null_count, num_rows, out_value_buf, out_presence_bitset as *const i64);
+    Ok(())
+}
+
 /// Decodes one page's worth of single-valued records, returning a per-row
 /// presence flag (`true` = value present) and the dense list of non-null values
 /// in row order. `skip` records are skipped first, then `num_rows` records are
@@ -1627,8 +1707,9 @@ fn decode_page_records<T: ParquetDataType>(
     r: &mut ColumnReaderImpl<T>,
     skip: usize,
     num_rows: usize,
-    max_def_level: i16,
-) -> Result<(Vec<bool>, Vec<T::T>), String> {
+    scratch_def: &mut Vec<i16>,
+    scratch_vals: &mut Vec<T::T>,
+) -> Result<(), String> {
     if skip > 0 {
         let skipped = r.skip_records(skip).map_err(|e| e.to_string())?;
         if skipped < skip {
@@ -1639,10 +1720,13 @@ fn decode_page_records<T: ParquetDataType>(
         }
     }
 
-    let mut def_levels: Vec<i16> = Vec::with_capacity(num_rows);
-    let mut values: Vec<T::T> = Vec::with_capacity(num_rows);
+    scratch_def.clear();
+    scratch_vals.clear();
+    scratch_def.reserve(num_rows.saturating_sub(scratch_def.capacity()));
+    scratch_vals.reserve(num_rows.saturating_sub(scratch_vals.capacity()));
+
     let (records_read, _values_read, _levels_read) = r
-        .read_records(num_rows, Some(&mut def_levels), None, &mut values)
+        .read_records(num_rows, Some(scratch_def), None, scratch_vals)
         .map_err(|e| e.to_string())?;
     if records_read < num_rows {
         return Err(format!(
@@ -1650,21 +1734,104 @@ fn decode_page_records<T: ParquetDataType>(
             num_rows, records_read
         ));
     }
+    Ok(())
+}
 
-    // Build the per-row presence vector. For required columns `read_records`
-    // ignores the def-level buffer and every row is present.
-    let presence = if max_def_level == 0 {
-        vec![true; num_rows]
+/// Packs definition levels directly into a little-endian `long[]` bitset in the
+/// caller's out-buffer, with bit `i` set when `def_levels[i] == max_def_level`.
+/// When `max_def_level == 0` (required column), all bits are set.
+///
+/// Uses a branchless comparison that auto-vectorizes (LLVM emits pcmpeqw + pack
+/// on x86 AVX2, cmeq on aarch64 NEON). Eliminates both the intermediate `Vec<bool>`
+/// and the per-bit branch of the old `write_presence_bitset`.
+///
+/// Returns the number of words written. Caller must ensure capacity is sufficient.
+#[inline]
+unsafe fn pack_presence_from_def_levels(
+    def_levels: &[i16],
+    max_def_level: i16,
+    num_rows: usize,
+    out: *mut i64,
+) {
+    let words = (num_rows + 63) / 64;
+    if max_def_level == 0 {
+        // Required column: every row is present → all-ones, mask tail.
+        for w in 0..words {
+            let remaining = num_rows - w * 64;
+            if remaining >= 64 {
+                *out.add(w) = -1i64; // all bits set
+            } else {
+                *out.add(w) = ((1u64 << remaining) - 1) as i64;
+            }
+        }
     } else {
-        def_levels.iter().take(num_rows).map(|d| *d == max_def_level).collect()
-    };
-    Ok((presence, values))
+        // Optional column: branchless pack. The inner loop auto-vectorizes because
+        // `(d == max_def_level) as u64` is a conditional-move / compare instruction.
+        for w in 0..words {
+            let mut bits: u64 = 0;
+            let base = w * 64;
+            let end = (base + 64).min(num_rows);
+            for b in base..end {
+                bits |= ((*def_levels.get_unchecked(b) == max_def_level) as u64) << (b - base);
+            }
+            *out.add(w) = bits as i64;
+        }
+    }
+}
+
+/// Expands dense non-null values directly into the caller's out-buffer as per-row
+/// raw i64 bits, using the packed presence bitset to scatter. Null slots are
+/// written as 0. Eliminates the intermediate `Vec<i64>` allocation.
+///
+/// The inner scatter loop is split by nullability: when `null_count == 0` the
+/// entire dense buffer can be converted with a tight widening loop that
+/// auto-vectorizes (LLVM emits vpmovsxdq / sshll). The nullable path reads the
+/// packed bits we just wrote and scatters accordingly.
+///
+/// # Safety
+/// `out` must be valid for `num_rows * 8` bytes. `presence_bits` must contain
+/// the packed bitset already written by `pack_presence_from_def_levels`.
+#[inline]
+unsafe fn expand_to_outbuf<T: Copy>(
+    dense: &[T],
+    to_bits: impl Fn(T) -> i64,
+    null_count: i64,
+    num_rows: usize,
+    out: *mut u8,
+    presence_bits: *const i64,
+) {
+    let out_i64 = out as *mut i64;
+    if null_count == 0 {
+        // All rows present — tight conversion loop, no branching, SIMD-friendly.
+        for i in 0..num_rows {
+            *out_i64.add(i) = to_bits(*dense.get_unchecked(i));
+        }
+    } else {
+        // Scatter using the packed presence bits. Read one word at a time and use
+        // trailing_zeros to jump to set bits (pop-and-scatter pattern).
+        // First zero-fill so null slots hold 0 without an explicit branch.
+        std::ptr::write_bytes(out, 0, num_rows * 8);
+        let mut di = 0usize;
+        let words = (num_rows + 63) / 64;
+        for w in 0..words {
+            let mut bits = *presence_bits.add(w) as u64;
+            while bits != 0 {
+                let b = bits.trailing_zeros() as usize;
+                let row = w * 64 + b;
+                *out_i64.add(row) = to_bits(*dense.get_unchecked(di));
+                di += 1;
+                bits &= bits - 1; // clear lowest set bit
+            }
+        }
+    }
 }
 
 /// Packs a per-row presence slice into a little-endian `long[]` bitset (bit i set
 /// when row i is present), writing into `out` (capacity `out_words`). Returns the
 /// number of words required; on capacity shortfall writes nothing and the caller
 /// treats the positive required count as an overflow signal.
+///
+/// Retained for the BYTE_ARRAY path which still uses `Vec<bool>` presence.
 unsafe fn write_presence_bitset(presence: &[bool], out: *mut i64, out_words: i64) -> i64 {
     let words_needed = ((presence.len() + 63) / 64) as i64;
     if words_needed > out_words || out.is_null() {
@@ -1780,80 +1947,148 @@ pub unsafe extern "C" fn parquet_decode_page_at_row(
         }
     }
 
-    let rg = state.reader.get_row_group(rg_idx).map_err(|e| e.to_string())?;
-    let col = rg.get_column_reader(state.leaf_idx).map_err(|e| e.to_string())?;
-    let skip = local_first as usize;
+    // Check capacity up front for primitive types so we can write directly into the out-buffers
+    // without needing an intermediate allocation. BYTE_ARRAY still uses the old path since its
+    // total byte length isn't known until after decode.
+    let is_primitive = physical_type != PhysicalType::BYTE_ARRAY
+        && physical_type != PhysicalType::FIXED_LEN_BYTE_ARRAY;
 
-    // Decode the page into per-row presence + raw-bit values (primitives) or a
-    // backing byte buffer + CSR offsets (BYTE_ARRAY), then validate caller
-    // capacities and either copy out or signal overflow.
+    if is_primitive {
+        let value_bytes = (num_rows_usize * 8) as i64;
+        if !out_value_actual_len.is_null() {
+            *out_value_actual_len = value_bytes;
+        }
+        let presence_words = ((num_rows_usize + 63) / 64) as i64;
+        if value_bytes > out_value_buf_cap
+            || out_value_buf.is_null()
+            || presence_words > out_presence_bits_cap
+            || out_presence_bitset.is_null()
+        {
+            return Ok(RC_OVERFLOW);
+        }
+    }
+
+    // Get the null_count from the page entry for the expand path (0 means all-present).
+    let page_null_count = state.pages[page_idx].null_count;
+    // If null_count is unknown (-1), treat as potentially nullable.
+    let effective_null_count = if page_null_count < 0 { 1 } else { page_null_count };
+
+    // Retained-cursor reader acquisition. A typed column reader can only move forward, so it
+    // is reusable exactly when the target page is in the same row group at-or-ahead of the
+    // cursor's position; then the skip is the remaining forward distance and — crucially —
+    // the dictionary page and row-group metadata are NOT re-read. Any backward jump or
+    // row-group change falls back to a fresh reader (dictionary re-decoded once).
+    // The cursor is take()n up front so a decode error leaves it invalidated; each arm
+    // re-installs it only after a successful decode.
+    let (col, skip) = match state.cursor.take() {
+        Some(c) if c.rg_idx == rg_idx && c.position <= first_global => {
+            (c.col_reader, (first_global - c.position) as usize)
+        }
+        _ => {
+            let rg = state.reader.get_row_group(rg_idx).map_err(|e| e.to_string())?;
+            let col = rg.get_column_reader(state.leaf_idx).map_err(|e| e.to_string())?;
+            (col, local_first as usize)
+        }
+    };
+    // Position of the reader after this page is consumed; stored on the re-installed cursor.
+    let next_position = first_global + num_rows;
+
+    // Decode and write directly to out-buffers. Primitive types use the optimized
+    // zero-alloc path (scratch buffers reused across calls, presence bits packed
+    // branchlessly from def_levels, values scattered directly to the out-buffer).
+    // BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY still use the prior path since their total
+    // value byte length is data-dependent and must be computed before overflow check.
     match col {
         ColumnReader::Int32ColumnReader(mut r) => {
-            let (presence, values) = decode_page_records(&mut r, skip, num_rows_usize, max_def_level)?;
-            let longs = expand_primitive(&presence, &values, |v| v as i64);
+            let scratch = &mut state.scratch;
+            decode_primitive_page(
+                &mut r, skip, num_rows_usize, max_def_level, effective_null_count,
+                &mut scratch.def_levels, &mut scratch.values_i32, |v| v as i64,
+                out_value_buf, out_presence_bitset,
+            )?;
+            state.cursor = Some(CursorState { rg_idx, col_reader: ColumnReader::Int32ColumnReader(r), position: next_position });
             if let Some(eid) = lc_eid {
-                crate::liquid_page_cache::put_page(eid, &longs, &presence);
+                crate::liquid_page_cache::put_page_from_outbuf(eid, out_value_buf, out_presence_bitset, num_rows_usize);
             }
-            return write_primitive_page(
-                &longs, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
-                out_presence_bitset, out_presence_bits_cap,
-            );
+            return Ok(RC_OK);
         }
         ColumnReader::Int64ColumnReader(mut r) => {
-            let (presence, values) = decode_page_records(&mut r, skip, num_rows_usize, max_def_level)?;
-            let longs = expand_primitive(&presence, &values, |v| v);
+            let scratch = &mut state.scratch;
+            decode_primitive_page(
+                &mut r, skip, num_rows_usize, max_def_level, effective_null_count,
+                &mut scratch.def_levels, &mut scratch.values_i64, |v| v,
+                out_value_buf, out_presence_bitset,
+            )?;
+            state.cursor = Some(CursorState { rg_idx, col_reader: ColumnReader::Int64ColumnReader(r), position: next_position });
             if let Some(eid) = lc_eid {
-                crate::liquid_page_cache::put_page(eid, &longs, &presence);
+                crate::liquid_page_cache::put_page_from_outbuf(eid, out_value_buf, out_presence_bitset, num_rows_usize);
             }
-            return write_primitive_page(
-                &longs, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
-                out_presence_bitset, out_presence_bits_cap,
-            );
+            return Ok(RC_OK);
         }
         ColumnReader::FloatColumnReader(mut r) => {
-            let (presence, values) = decode_page_records(&mut r, skip, num_rows_usize, max_def_level)?;
-            let longs = expand_primitive(&presence, &values, |v| v.to_bits() as i64);
+            let scratch = &mut state.scratch;
+            decode_primitive_page(
+                &mut r, skip, num_rows_usize, max_def_level, effective_null_count,
+                &mut scratch.def_levels, &mut scratch.values_f32, |v| v.to_bits() as i64,
+                out_value_buf, out_presence_bitset,
+            )?;
+            state.cursor = Some(CursorState { rg_idx, col_reader: ColumnReader::FloatColumnReader(r), position: next_position });
             if let Some(eid) = lc_eid {
-                crate::liquid_page_cache::put_page(eid, &longs, &presence);
+                crate::liquid_page_cache::put_page_from_outbuf(eid, out_value_buf, out_presence_bitset, num_rows_usize);
             }
-            return write_primitive_page(
-                &longs, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
-                out_presence_bitset, out_presence_bits_cap,
-            );
+            return Ok(RC_OK);
         }
         ColumnReader::DoubleColumnReader(mut r) => {
-            let (presence, values) = decode_page_records(&mut r, skip, num_rows_usize, max_def_level)?;
-            let longs = expand_primitive(&presence, &values, |v| v.to_bits() as i64);
+            let scratch = &mut state.scratch;
+            decode_primitive_page(
+                &mut r, skip, num_rows_usize, max_def_level, effective_null_count,
+                &mut scratch.def_levels, &mut scratch.values_f64, |v| v.to_bits() as i64,
+                out_value_buf, out_presence_bitset,
+            )?;
+            state.cursor = Some(CursorState { rg_idx, col_reader: ColumnReader::DoubleColumnReader(r), position: next_position });
             if let Some(eid) = lc_eid {
-                crate::liquid_page_cache::put_page(eid, &longs, &presence);
+                crate::liquid_page_cache::put_page_from_outbuf(eid, out_value_buf, out_presence_bitset, num_rows_usize);
             }
-            return write_primitive_page(
-                &longs, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
-                out_presence_bitset, out_presence_bits_cap,
-            );
+            return Ok(RC_OK);
         }
         ColumnReader::BoolColumnReader(mut r) => {
-            let (presence, values) = decode_page_records(&mut r, skip, num_rows_usize, max_def_level)?;
-            let longs = expand_primitive(&presence, &values, |v| if v { 1i64 } else { 0i64 });
+            let scratch = &mut state.scratch;
+            decode_primitive_page(
+                &mut r, skip, num_rows_usize, max_def_level, effective_null_count,
+                &mut scratch.def_levels, &mut scratch.values_bool, |v| if v { 1i64 } else { 0i64 },
+                out_value_buf, out_presence_bitset,
+            )?;
+            state.cursor = Some(CursorState { rg_idx, col_reader: ColumnReader::BoolColumnReader(r), position: next_position });
             if let Some(eid) = lc_eid {
-                crate::liquid_page_cache::put_page(eid, &longs, &presence);
+                crate::liquid_page_cache::put_page_from_outbuf(eid, out_value_buf, out_presence_bitset, num_rows_usize);
             }
-            return write_primitive_page(
-                &longs, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
-                out_presence_bitset, out_presence_bits_cap,
-            );
+            return Ok(RC_OK);
         }
         ColumnReader::ByteArrayColumnReader(mut r) => {
-            let (presence, values) = decode_page_records(&mut r, skip, num_rows_usize, max_def_level)?;
-            let slices = expand_bytes(&presence, &values);
+            let scratch = &mut state.scratch;
+            let mut byte_values: Vec<parquet::data_type::ByteArray> = Vec::new();
+            decode_page_records(&mut r, skip, num_rows_usize, &mut scratch.def_levels, &mut byte_values)?;
+            let presence: Vec<bool> = if max_def_level == 0 {
+                vec![true; num_rows_usize]
+            } else {
+                scratch.def_levels.iter().take(num_rows_usize).map(|d| *d == max_def_level).collect()
+            };
+            let slices = expand_bytes(&presence, &byte_values);
             return write_bytes_page(
                 &slices, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
                 out_byte_offsets, out_byte_offsets_cap, out_presence_bitset, out_presence_bits_cap,
             );
         }
         ColumnReader::FixedLenByteArrayColumnReader(mut r) => {
-            let (presence, values) = decode_page_records(&mut r, skip, num_rows_usize, max_def_level)?;
-            let slices = expand_flba(&presence, &values);
+            let scratch = &mut state.scratch;
+            let mut flba_values: Vec<parquet::data_type::FixedLenByteArray> = Vec::new();
+            decode_page_records(&mut r, skip, num_rows_usize, &mut scratch.def_levels, &mut flba_values)?;
+            let presence: Vec<bool> = if max_def_level == 0 {
+                vec![true; num_rows_usize]
+            } else {
+                scratch.def_levels.iter().take(num_rows_usize).map(|d| *d == max_def_level).collect()
+            };
+            let slices = expand_flba(&presence, &flba_values);
             return write_bytes_page(
                 &slices, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
                 out_byte_offsets, out_byte_offsets_cap, out_presence_bitset, out_presence_bits_cap,
@@ -1868,6 +2103,8 @@ pub unsafe extern "C" fn parquet_decode_page_at_row(
 
 /// Expands dense non-null primitive values into a per-row `i64` slot vector
 /// (null rows hold 0), applying `to_bits` to each present value.
+/// Retained for the `get_page` A/B path in liquid_page_cache; no longer on the hot decode path.
+#[allow(dead_code)]
 fn expand_primitive<T: Copy>(presence: &[bool], dense: &[T], to_bits: impl Fn(T) -> i64) -> Vec<i64> {
     let mut out = Vec::with_capacity(presence.len());
     let mut di = 0usize;
@@ -1919,6 +2156,9 @@ fn expand_flba<'a>(
 /// Writes a decoded primitive page (per-row raw bits + presence bitset) to the
 /// caller buffers, or returns `RC_OVERFLOW` after recording the required value
 /// byte length.
+/// Retained for reference / potential fallback use; the hot path now uses
+/// `expand_to_outbuf` + `pack_presence_from_def_levels` directly.
+#[allow(dead_code)]
 unsafe fn write_primitive_page(
     longs: &[i64],
     presence: &[bool],
