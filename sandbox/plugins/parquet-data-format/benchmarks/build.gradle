@@ -37,6 +37,12 @@ dependencies {
   // compileOnly (not exported), so the benchmark must declare it directly.
   compileOnly project(':plugins:arrow-base')
 
+  // dataformat-native provides ArrowExport/NativeLibraryLoader; plugin-stats-spi provides
+  // StatsRecorder (used by NativeParquetWriter). parquet-data-format declares both as
+  // implementation (not exported), so the benchmark must declare them directly.
+  api project(':sandbox:libs:dataformat-native')
+  api project(':sandbox:libs:plugin-stats-spi')
+
   // JMH dependencies
   api "org.openjdk.jmh:jmh-core:$versions.jmh"
   annotationProcessor "org.openjdk.jmh:jmh-generator-annprocess:$versions.jmh"
@@ -83,6 +89,10 @@ spotless {
 run.jvmArgs += [
   '--add-opens=java.base/java.nio=ALL-UNNAMED'
 ]
+
+// Point NativeLibraryLoader at the freshly built Rust cdylib (same wiring as the plugin's tests).
+run.systemProperty 'native.lib.path', project(':sandbox:libs:dataformat-native').ext.nativeLibPath.absolutePath
+run.dependsOn ':sandbox:libs:dataformat-native:buildRustLibrary'
 
 run.environment += [
   'RUST_BACKTRACE': 'full'
