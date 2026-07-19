@@ -182,10 +182,28 @@ public final class ParquetDocValuesProducer extends DocValuesProducer {
         return new ParquetSortedSetDocValues(table, maxDoc);
     }
 
-    /** No skip lists for Parquet-backed doc values. */
+    /**
+     * Serves a {@link DocValuesSkipper} backed by the column's Parquet ColumnIndex (per-page
+     * min/max/null-count), letting Lucene's range machinery skip whole pages whose stats
+     * exclude the query range — no decode, no FFM crossing for skipped pages.
+     *
+     * <p>Integer-shaped columns only (INT32/INT64/BOOL physical): their raw-bits order is
+     * numeric order. Float/double doc values are IEEE-754 raw bits whose order diverges from
+     * numeric order for negative values, so page min/max computed on bits would be wrong for
+     * them; they get no skipper. BYTE_ARRAY min/max is not exchanged as i64 at all.
+     */
     @Override
     public DocValuesSkipper getSkipper(FieldInfo field) throws IOException {
-        return null;
+        ensureOpen();
+        ParquetPhysicalType phys = physicalType(field);
+        if (phys != ParquetPhysicalType.INT32 && phys != ParquetPhysicalType.INT64 && phys != ParquetPhysicalType.BOOL) {
+            return null;
+        }
+        // Match the repeated flag the field's DV accessor will use — readerFor caches by field
+        // name, so opening here with a mismatched flag would poison the cache for the accessor.
+        boolean repeated = field.getDocValuesType() == DocValuesType.SORTED_NUMERIC;
+        ParquetColumnReader reader = readerFor(field, repeated);
+        return new ParquetDocValuesSkipper(reader.pageIndex(), maxDoc);
     }
 
     /**

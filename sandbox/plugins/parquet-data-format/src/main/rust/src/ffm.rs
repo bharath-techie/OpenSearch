@@ -1082,7 +1082,7 @@ fn build_page_layout(
                     let null_count = ci.and_then(|c| c.null_count(p)).unwrap_or(-1);
                     let (min_long, max_long) = ci
                         .map(|c| page_min_max(c, p, phys))
-                        .unwrap_or((0, 0));
+                        .unwrap_or(MINMAX_UNKNOWN);
                     pages.push(PageEntry {
                         global_first_row: rg_first_row[rg] + local_first,
                         num_rows,
@@ -1111,8 +1111,8 @@ fn build_page_layout(
                     file_offset: cc.data_page_offset(),
                     compressed_size: compressed,
                     null_count,
-                    min_long: 0,
-                    max_long: 0,
+                    min_long: MINMAX_UNKNOWN.0,
+                    max_long: MINMAX_UNKNOWN.1,
                     rg_idx: rg,
                     local_first_row: 0,
                 });
@@ -1123,32 +1123,41 @@ fn build_page_layout(
     pages
 }
 
+/// Sentinel pair meaning "min/max unknown": the widest possible range, so a consumer making
+/// skip decisions (the DocValuesSkipper) can never wrongly exclude the page. Distinguishable
+/// from real data only in that real data spanning the full i64 range behaves identically —
+/// which is exactly the safe behavior.
+const MINMAX_UNKNOWN: (i64, i64) = (i64::MIN, i64::MAX);
+
 /// Extracts the per-page min/max as raw i64 bits from a typed ColumnIndex.
-/// Returns `(0, 0)` for byte-array/unsupported columns (binary min/max is not
-/// exchanged as i64; the Java side treats it as "unused").
+/// Returns [`MINMAX_UNKNOWN`] for byte-array/unsupported columns (binary min/max is not
+/// exchanged as i64) and for pages whose stats are absent.
 fn page_min_max(ci: &ColumnIndexMetaData, idx: usize, _phys: PhysicalType) -> (i64, i64) {
+    // A stat may be absent per page (stats disabled, or an all-null page). Report the unknown
+    // sentinel rather than 0 — 0 is indistinguishable from a real value and would let a
+    // skipper wrongly exclude pages.
     match ci {
-        ColumnIndexMetaData::INT32(p) => (
-            p.min_value(idx).map(|v| *v as i64).unwrap_or(0),
-            p.max_value(idx).map(|v| *v as i64).unwrap_or(0),
-        ),
-        ColumnIndexMetaData::INT64(p) => (
-            p.min_value(idx).copied().unwrap_or(0),
-            p.max_value(idx).copied().unwrap_or(0),
-        ),
-        ColumnIndexMetaData::FLOAT(p) => (
-            p.min_value(idx).map(|v| v.to_bits() as i64).unwrap_or(0),
-            p.max_value(idx).map(|v| v.to_bits() as i64).unwrap_or(0),
-        ),
-        ColumnIndexMetaData::DOUBLE(p) => (
-            p.min_value(idx).map(|v| v.to_bits() as i64).unwrap_or(0),
-            p.max_value(idx).map(|v| v.to_bits() as i64).unwrap_or(0),
-        ),
-        ColumnIndexMetaData::BOOLEAN(p) => (
-            p.min_value(idx).map(|v| if *v { 1 } else { 0 }).unwrap_or(0),
-            p.max_value(idx).map(|v| if *v { 1 } else { 0 }).unwrap_or(0),
-        ),
-        _ => (0, 0),
+        ColumnIndexMetaData::INT32(p) => match (p.min_value(idx), p.max_value(idx)) {
+            (Some(min), Some(max)) => (*min as i64, *max as i64),
+            _ => MINMAX_UNKNOWN,
+        },
+        ColumnIndexMetaData::INT64(p) => match (p.min_value(idx), p.max_value(idx)) {
+            (Some(min), Some(max)) => (*min, *max),
+            _ => MINMAX_UNKNOWN,
+        },
+        ColumnIndexMetaData::FLOAT(p) => match (p.min_value(idx), p.max_value(idx)) {
+            (Some(min), Some(max)) => (min.to_bits() as i64, max.to_bits() as i64),
+            _ => MINMAX_UNKNOWN,
+        },
+        ColumnIndexMetaData::DOUBLE(p) => match (p.min_value(idx), p.max_value(idx)) {
+            (Some(min), Some(max)) => (min.to_bits() as i64, max.to_bits() as i64),
+            _ => MINMAX_UNKNOWN,
+        },
+        ColumnIndexMetaData::BOOLEAN(p) => match (p.min_value(idx), p.max_value(idx)) {
+            (Some(min), Some(max)) => (if *min { 1 } else { 0 }, if *max { 1 } else { 0 }),
+            _ => MINMAX_UNKNOWN,
+        },
+        _ => MINMAX_UNKNOWN,
     }
 }
 
@@ -2083,10 +2092,15 @@ pub unsafe extern "C" fn parquet_decode_page_at_row(
                 scratch.def_levels.iter().take(num_rows_usize).map(|d| *d == max_def_level).collect()
             };
             let slices = expand_bytes(&presence, &byte_values);
-            return write_bytes_page(
+            let rc = write_bytes_page(
                 &slices, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
                 out_byte_offsets, out_byte_offsets_cap, out_presence_bitset, out_presence_bits_cap,
-            );
+            )?;
+            // The page was fully consumed even on RC_OVERFLOW, so the cursor position is
+            // next_position either way; the overflow retry of the same row then simply
+            // misses the cursor (position > first_global) and opens a fresh reader.
+            state.cursor = Some(CursorState { rg_idx, col_reader: ColumnReader::ByteArrayColumnReader(r), position: next_position });
+            return Ok(rc);
         }
         ColumnReader::FixedLenByteArrayColumnReader(mut r) => {
             let scratch = &mut state.scratch;
@@ -2098,10 +2112,13 @@ pub unsafe extern "C" fn parquet_decode_page_at_row(
                 scratch.def_levels.iter().take(num_rows_usize).map(|d| *d == max_def_level).collect()
             };
             let slices = expand_flba(&presence, &flba_values);
-            return write_bytes_page(
+            let rc = write_bytes_page(
                 &slices, &presence, out_value_buf, out_value_buf_cap, out_value_actual_len,
                 out_byte_offsets, out_byte_offsets_cap, out_presence_bitset, out_presence_bits_cap,
-            );
+            )?;
+            // See the ByteArray arm: page fully consumed even on RC_OVERFLOW.
+            state.cursor = Some(CursorState { rg_idx, col_reader: ColumnReader::FixedLenByteArrayColumnReader(r), position: next_position });
+            return Ok(rc);
         }
         ColumnReader::Int96ColumnReader(_) => {
             let _ = physical_type; // silence unused in this arm

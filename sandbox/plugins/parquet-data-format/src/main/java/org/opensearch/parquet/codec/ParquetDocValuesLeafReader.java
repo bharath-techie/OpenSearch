@@ -11,6 +11,7 @@ package org.opensearch.parquet.codec;
 import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.DocValuesSkipIndexType;
+import org.apache.lucene.index.DocValuesSkipper;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
@@ -155,7 +156,7 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
             }
             FieldTypeMapping.Mapping mapping = FieldTypeMapping.forType(mft.typeName());
             DocValuesType dvType = mapping.singleValued();
-            FieldInfo synthetic = newDocValuesFieldInfo(name, ++maxNumber, dvType);
+            FieldInfo synthetic = newDocValuesFieldInfo(name, ++maxNumber, dvType, skipIndexTypeFor(mapping));
             parquetFields.put(name, synthetic);
             // If a DV-less FieldInfo already exists for this field, replace it with the synthetic
             // one carrying the DV type; otherwise append.
@@ -174,8 +175,21 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
         return new ParquetDocValuesLeafReader(in, mapperService, state, parquetFields, mergedInfos, queryStats);
     }
 
+    /**
+     * Skip-index declaration for a synthetic field: RANGE for integer-shaped columns whose
+     * Parquet ColumnIndex min/max the producer can serve through a {@link DocValuesSkipper}
+     * (raw-bits order == numeric order), NONE otherwise. Must stay in sync with
+     * {@link ParquetDocValuesProducer#getSkipper}'s physical-type gate: declaring RANGE for a
+     * field whose getSkipper returns null would break consumers that trust the declaration.
+     */
+    private static DocValuesSkipIndexType skipIndexTypeFor(FieldTypeMapping.Mapping mapping) {
+        ParquetPhysicalType phys = mapping.physical();
+        boolean skippable = phys == ParquetPhysicalType.INT32 || phys == ParquetPhysicalType.INT64 || phys == ParquetPhysicalType.BOOL;
+        return skippable ? DocValuesSkipIndexType.RANGE : DocValuesSkipIndexType.NONE;
+    }
+
     /** Builds a synthetic doc-values {@link FieldInfo} carrying the given DV type. */
-    private static FieldInfo newDocValuesFieldInfo(String name, int number, DocValuesType dvType) {
+    private static FieldInfo newDocValuesFieldInfo(String name, int number, DocValuesType dvType, DocValuesSkipIndexType skipType) {
         return new FieldInfo(
             name,
             number,
@@ -184,7 +198,7 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
             false,                       // storePayloads
             IndexOptions.NONE,           // not indexed via this reader
             dvType,
-            DocValuesSkipIndexType.NONE,
+            skipType,
             -1,                          // dvGen
             new HashMap<>(),             // attributes (mutable, per FieldInfo contract)
             0,                           // pointDimensionCount
@@ -290,7 +304,7 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
             // newRowIdResolver(), maxDoc()) for those.
             FieldInfo asNumeric = fi.getDocValuesType() == DocValuesType.NUMERIC
                 ? fi
-                : newDocValuesFieldInfo(field, fi.number, DocValuesType.NUMERIC);
+                : newDocValuesFieldInfo(field, fi.number, DocValuesType.NUMERIC, fi.docValuesSkipIndexType());
             NumericDocValues numeric = producer().getNumeric(asNumeric);
             RowIdResolver resolver = newRowIdResolver();
             NumericDocValues remapped = resolver == RowIdResolver.IDENTITY
@@ -339,7 +353,7 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
             // producer().getSortedSet(asSortedSet), newRowIdResolver(), maxDoc()) for those.
             FieldInfo asSorted = fi.getDocValuesType() == DocValuesType.SORTED
                 ? fi
-                : newDocValuesFieldInfo(field, fi.number, DocValuesType.SORTED);
+                : newDocValuesFieldInfo(field, fi.number, DocValuesType.SORTED, fi.docValuesSkipIndexType());
             SortedDocValues sorted = producer().getSorted(asSorted);
             RowIdResolver resolver = newRowIdResolver();
             SortedDocValues remapped = resolver == RowIdResolver.IDENTITY
@@ -348,6 +362,20 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
             return DocValues.singleton(remapped);
         }
         return in.getSortedSetDocValues(field);
+    }
+
+    @Override
+    public DocValuesSkipper getDocValuesSkipper(String field) throws IOException {
+        FieldInfo fi = parquetFieldInfo(field);
+        if (fi != null) {
+            if (fi.docValuesSkipIndexType() == DocValuesSkipIndexType.NONE) {
+                return null;
+            }
+            // Doc IDs and Parquet rows coincide (IDENTITY resolver — see newRowIdResolver), so
+            // page row ranges are directly valid as skipper doc ID intervals.
+            return producer().getSkipper(fi);
+        }
+        return in.getDocValuesSkipper(field);
     }
 
     @Override
