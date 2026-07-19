@@ -31,7 +31,7 @@ import org.opensearch.parquet.codec.cache.ColumnPageIndex;
  * diverges for negatives, so the producer declines to build a skipper for them (see
  * {@link ParquetDocValuesProducer#getSkipper}).
  */
-final class ParquetDocValuesSkipper extends DocValuesSkipper {
+public final class ParquetDocValuesSkipper extends DocValuesSkipper {
 
     private final ColumnPageIndex pageIndex;
     private final int maxDoc;
@@ -42,7 +42,7 @@ final class ParquetDocValuesSkipper extends DocValuesSkipper {
     /** Current page index, -1 before the first advance, pageCount when exhausted. */
     private int page = -1;
 
-    ParquetDocValuesSkipper(ColumnPageIndex pageIndex, int maxDoc) {
+    public ParquetDocValuesSkipper(ColumnPageIndex pageIndex, int maxDoc) {
         this.pageIndex = pageIndex;
         this.maxDoc = maxDoc;
         long min = Long.MAX_VALUE;
