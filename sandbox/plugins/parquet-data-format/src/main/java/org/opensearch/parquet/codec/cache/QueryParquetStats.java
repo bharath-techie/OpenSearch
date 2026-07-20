@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * <p>One instance is created per search (by {@code ParquetDocValuesDirectoryReader}) and shared by
  * all the per-segment {@code ParquetColumnReader}s that search opens. Each column reader
  * {@link #register(CacheStats) registers} its {@link CacheStats} when it is opened; the values are
- * summed <b>live</b> at {@link #summary()} time. Registering at open (rather than merging at close)
+ * summed <b>live</b> at {@link #summary(long, long, long)} time. Registering at open (rather than merging at close)
  * means the roll-up does not depend on reader-close ordering — by the time the per-query summary is
  * produced (end of search), every registered reader has finished collecting, so the live sums are
  * final. The registry is a {@link ConcurrentLinkedQueue} so concurrent segment slices can register
@@ -38,7 +38,7 @@ public final class QueryParquetStats {
     private long liquidPutsBase = -1;
 
     /**
-     * Records the liquid counter baseline at query start so {@link #summary()} can report per-query
+     * Records the liquid counter baseline at query start so {@link #summary(long, long, long)} can report per-query
      * deltas. Call only when the summary will actually be emitted (this reads native counters over
      * FFM); skipping it leaves the liquid line out of the summary at zero cost.
      */
@@ -48,7 +48,7 @@ public final class QueryParquetStats {
         this.liquidPutsBase = puts;
     }
 
-    /** Registers a column reader's stats; its counters are summed live when {@link #summary()} runs. */
+    /** Registers a column reader's stats; its counters are summed live when {@link #summary(long, long, long)} runs. */
     public void register(CacheStats s) {
         if (s != null) {
             registered.add(s);
