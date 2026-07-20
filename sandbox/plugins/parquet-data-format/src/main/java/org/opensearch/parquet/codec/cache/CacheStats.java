@@ -35,6 +35,11 @@ public final class CacheStats {
     private long slowValueReads;    // parquet_read_value_at_row (single)
     private long slowRepeatedReads; // parquet_read_repeated_at_row
 
+    // Phase timers (nanos), accumulated only when the timing logger is at TRACE.
+    private long loadPageNanos;     // total time in loadPageContaining
+    private long decodePageNanos;   // total time in decodePage
+    private long ffmDecodeNanos;    // time spent in the parquet_decode_page_at_row FFM crossing(s)
+
     /** Records a Layer 3 jump-table lookup ({@code pageForRow}). */
     public void pageIndexLookup() {
         pageIndexLookups++;
@@ -83,6 +88,33 @@ public final class CacheStats {
     /** Total FFM boundary crossings across all access paths. */
     public long ffmCrossings() {
         return pageDecodes + slowValueReads + slowRepeatedReads;
+    }
+
+    /** Adds elapsed nanos spent in {@code loadPageContaining}. */
+    public void addLoadPageNanos(long n) {
+        loadPageNanos += n;
+    }
+
+    /** Adds elapsed nanos spent in {@code decodePage}. */
+    public void addDecodePageNanos(long n) {
+        decodePageNanos += n;
+    }
+
+    /** Adds elapsed nanos spent in the {@code parquet_decode_page_at_row} FFM crossing. */
+    public void addFfmDecodeNanos(long n) {
+        ffmDecodeNanos += n;
+    }
+
+    public long loadPageNanos() {
+        return loadPageNanos;
+    }
+
+    public long decodePageNanos() {
+        return decodePageNanos;
+    }
+
+    public long ffmDecodeNanos() {
+        return ffmDecodeNanos;
     }
 
     /** True when no access has been recorded (used to suppress empty summaries). */

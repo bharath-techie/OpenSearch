@@ -8,6 +8,8 @@
 
 package org.opensearch.parquet.bridge;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.parquet.codec.ParquetPhysicalType;
 import org.opensearch.parquet.codec.cache.BufferPool;
 import org.opensearch.parquet.codec.cache.CacheStats;
@@ -41,6 +43,10 @@ import java.nio.file.Path;
  * is retried exactly once.
  */
 public final class ParquetColumnReader implements Closeable {
+
+    // Dedicated timing channel — separate from the query-stats logger so timing (which takes
+    // nanoTime) can be toggled independently. When not at TRACE, no nanoTime is taken.
+    private static final Logger timingLog = LogManager.getLogger("org.opensearch.parquet.timing");
 
     /** Sentinel handle for a reader whose native handle has been released. */
     private static final long CLOSED_HANDLE = -1L;
@@ -297,25 +303,41 @@ public final class ParquetColumnReader implements Closeable {
      * and no decode happens. Single-valued columns only; repeated columns use the slow path.
      */
     public void loadPageContaining(long row) throws IOException {
-        ensureOpen();
-        // Layer 3 — OffsetIndex jump-table lookup (consulted on every page miss).
-        stats.pageIndexLookup();
-        int pageIdx = pageIndex.pageForRow(row);
-        if (pageIdx < 0) {
-            throw new IOException("loadPageContaining: row " + row + " out of range (rows " + pageIndex.totalRows() + ")");
+        boolean t = timingLog.isTraceEnabled();
+        long start = t ? System.nanoTime() : 0L;
+        try {
+            ensureOpen();
+            // Layer 3 — OffsetIndex jump-table lookup (consulted on every page miss).
+            stats.pageIndexLookup();
+            int pageIdx = pageIndex.pageForRow(row);
+            if (pageIdx < 0) {
+                throw new IOException("loadPageContaining: row " + row + " out of range (rows " + pageIndex.totalRows() + ")");
+            }
+            if (pageIndex.isAllNulls(pageIdx)) {
+                // Layer 4 — whole page is null, resolved with no decode.
+                stats.allNullPageSkip();
+                cache = null; // Layer 4 — whole page is null, no decode.
+                return;
+            }
+            // FFM — page decode crossing.
+            stats.pageDecode();
+            cache = decodePage(row);
+        } finally {
+            if (t) stats.addLoadPageNanos(System.nanoTime() - start);
         }
-        if (pageIndex.isAllNulls(pageIdx)) {
-            // Layer 4 — whole page is null, resolved with no decode.
-            stats.allNullPageSkip();
-            cache = null; // Layer 4 — whole page is null, no decode.
-            return;
-        }
-        // FFM — page decode crossing.
-        stats.pageDecode();
-        cache = decodePage(row);
     }
 
     private PageCache decodePage(long row) throws IOException {
+        boolean t = timingLog.isTraceEnabled();
+        long decodeStart = t ? System.nanoTime() : 0L;
+        try {
+            return decodePage0(row, t);
+        } finally {
+            if (t) stats.addDecodePageNanos(System.nanoTime() - decodeStart);
+        }
+    }
+
+    private PageCache decodePage0(long row, boolean t) throws IOException {
         MemorySegment firstRowOut = bufferPool.longOut("firstRow");
         MemorySegment lastRowOut = bufferPool.longOut("lastRow");
         MemorySegment valueLenOut = bufferPool.longOut("valueLen");
@@ -337,6 +359,7 @@ public final class ParquetColumnReader implements Closeable {
         MemorySegment offsets = type.isPrimitive() ? MemorySegment.NULL : bufferPool.ints(offsetsSlot, offsetsCap);
         MemorySegment presence = bufferPool.longs(presenceSlot, presenceWords);
 
+        long ffmStart = t ? System.nanoTime() : 0L;
         long rc = RustBridge.decodePageAtRow(
             handle,
             row,
@@ -350,6 +373,7 @@ public final class ParquetColumnReader implements Closeable {
             presence,
             presenceWords
         );
+        if (t) stats.addFfmDecodeNanos(System.nanoTime() - ffmStart);
 
         if (rc == RustBridge.RC_OVERFLOW) {
             // Re-size from the reported page range + value length and retry once.
@@ -365,6 +389,7 @@ public final class ParquetColumnReader implements Closeable {
             offsets = type.isPrimitive() ? MemorySegment.NULL : bufferPool.ints(offsetsSlot, offsetsCap);
             presence = bufferPool.longs(presenceSlot, actualPresenceWords);
 
+            long ffmRetryStart = t ? System.nanoTime() : 0L;
             rc = RustBridge.decodePageAtRow(
                 handle,
                 row,
@@ -378,6 +403,7 @@ public final class ParquetColumnReader implements Closeable {
                 presence,
                 actualPresenceWords
             );
+            if (t) stats.addFfmDecodeNanos(System.nanoTime() - ffmRetryStart);
             if (rc == RustBridge.RC_OVERFLOW) {
                 throw new IOException("decodePageAtRow: overflow persisted after retry at row " + row);
             }

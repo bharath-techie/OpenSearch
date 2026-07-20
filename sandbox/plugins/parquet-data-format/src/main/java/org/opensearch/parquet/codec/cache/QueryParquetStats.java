@@ -37,6 +37,13 @@ public final class QueryParquetStats {
     private long liquidMissesBase = -1;
     private long liquidPutsBase = -1;
 
+    // Native page-decode phase timers are process-wide and cumulative (nanos). Same baseline/delta
+    // treatment as the liquid counters above; -1 baseline means "not captured" so the rust portion
+    // of the timing line is suppressed.
+    private long getNanosBase = -1;
+    private long decodeNanosBase = -1;
+    private long putNanosBase = -1;
+
     /**
      * Records the liquid counter baseline at query start so {@link #summary(long, long, long)} can report per-query
      * deltas. Call only when the summary will actually be emitted (this reads native counters over
@@ -46,6 +53,17 @@ public final class QueryParquetStats {
         this.liquidHitsBase = hits;
         this.liquidMissesBase = misses;
         this.liquidPutsBase = puts;
+    }
+
+    /**
+     * Records the native phase-timer baseline (cumulative nanos) at query start so
+     * {@link #timingSummary(long, long, long)} can report the per-query rust delta. Call only when
+     * the timing summary will be emitted (this reads native timers over FFM).
+     */
+    public void captureTimingBaseline(long getNanos, long decodeNanos, long putNanos) {
+        this.getNanosBase = getNanos;
+        this.decodeNanosBase = decodeNanos;
+        this.putNanosBase = putNanos;
     }
 
     /** Registers a column reader's stats; its counters are summed live when {@link #summary(long, long, long)} runs. */
@@ -109,6 +127,44 @@ public final class QueryParquetStats {
             slowValueReads,
             slowRepeatedReads,
             liquidLine
+        );
+    }
+
+    /**
+     * A single-line, human-readable per-query timing summary (all values in milliseconds). The Java
+     * timers (loadPage/decodePage/ffmCrossing) are summed live from the registered {@link CacheStats};
+     * the {@code *Now} arguments are the current process-wide native phase timers (read by the caller
+     * over FFM) and are reported as a delta from the baseline captured at query start. The rust portion
+     * is suppressed when no baseline was captured.
+     */
+    public String timingSummary(long getNow, long decodeNow, long putNow) {
+        long loadPageNanos = 0, decodePageNanos = 0, ffmDecodeNanos = 0;
+        for (CacheStats s : registered) {
+            loadPageNanos += s.loadPageNanos();
+            decodePageNanos += s.decodePageNanos();
+            ffmDecodeNanos += s.ffmDecodeNanos();
+        }
+
+        String rustLine = "";
+        if (getNanosBase >= 0) {
+            long getD = getNow - getNanosBase;
+            long decodeD = decodeNow - decodeNanosBase;
+            long putD = putNow - putNanosBase;
+            rustLine = String.format(
+                Locale.ROOT,
+                " | rust: get=%.1fms decode=%.1fms put=%.1fms",
+                getD / 1e6,
+                decodeD / 1e6,
+                putD / 1e6
+            );
+        }
+        return String.format(
+            Locale.ROOT,
+            "loadPage=%.1fms decodePage=%.1fms ffmCrossing=%.1fms%s",
+            loadPageNanos / 1e6,
+            decodePageNanos / 1e6,
+            ffmDecodeNanos / 1e6,
+            rustLine
         );
     }
 }

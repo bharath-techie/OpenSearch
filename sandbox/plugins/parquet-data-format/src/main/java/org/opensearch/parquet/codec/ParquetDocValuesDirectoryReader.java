@@ -40,6 +40,10 @@ public final class ParquetDocValuesDirectoryReader extends FilterDirectoryReader
     // codec class's logging. Enabling it affects only this one diagnostic line.
     private static final Logger statsLogger = LogManager.getLogger("org.opensearch.parquet.stats.query");
 
+    // Parallel timing channel — toggled independently of statsLogger. When at TRACE, the native
+    // phase timers are enabled and baselined at query start, and per-query nanoTime is accumulated.
+    private static final Logger timingLog = LogManager.getLogger("org.opensearch.parquet.timing");
+
     private final MapperService mapperService;
     private final QueryParquetStats queryStats;
 
@@ -54,6 +58,13 @@ public final class ParquetDocValuesDirectoryReader extends FilterDirectoryReader
         if (statsLogger.isTraceEnabled()) {
             RustBridge.LiquidCacheStats base = RustBridge.liquidCacheStats();
             queryStats.captureLiquidBaseline(base.hits(), base.misses(), base.puts());
+        }
+        // Parallel timing path: enable native phase timers and baseline them so doClose() can report
+        // per-query deltas. Fully off (no native call, no nanoTime) when the timing channel is not at TRACE.
+        if (timingLog.isTraceEnabled()) {
+            RustBridge.timingSetEnabled(true);
+            RustBridge.TimingStats tbase = RustBridge.timingSnapshot();
+            queryStats.captureTimingBaseline(tbase.getNanos(), tbase.decodeNanos(), tbase.putNanos());
         }
     }
 
@@ -92,6 +103,10 @@ public final class ParquetDocValuesDirectoryReader extends FilterDirectoryReader
             if (queryStats != null && queryStats.isEmpty() == false && statsLogger.isTraceEnabled()) {
                 RustBridge.LiquidCacheStats now = RustBridge.liquidCacheStats();
                 statsLogger.trace("[PARQUET_DV_QUERY_STATS] {}", queryStats.summary(now.hits(), now.misses(), now.puts()));
+            }
+            if (queryStats != null && queryStats.isEmpty() == false && timingLog.isTraceEnabled()) {
+                RustBridge.TimingStats tnow = RustBridge.timingSnapshot();
+                timingLog.trace("[PARQUET_DV_TIMING] {}", queryStats.timingSummary(tnow.getNanos(), tnow.decodeNanos(), tnow.putNanos()));
             }
         }
     }

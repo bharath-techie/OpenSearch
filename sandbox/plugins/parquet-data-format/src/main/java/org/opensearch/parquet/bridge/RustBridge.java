@@ -58,6 +58,8 @@ public class RustBridge {
     private static final MethodHandle LIQUID_CACHE_SET_ENABLED;
     private static final MethodHandle LIQUID_CACHE_CLEAR;
     private static final MethodHandle LIQUID_CACHE_STATS;
+    private static final MethodHandle TIMING_SET_ENABLED;
+    private static final MethodHandle TIMING_SNAPSHOT;
     private static final MethodHandle READ_VALUE_AT_ROW;
     private static final MethodHandle READ_REPEATED_AT_ROW;
     private static final MethodHandle GET_COLUMN_NUM_PAGES;
@@ -342,6 +344,19 @@ public class RustBridge {
                 ValueLayout.ADDRESS,     // hits_out
                 ValueLayout.ADDRESS,     // misses_out
                 ValueLayout.ADDRESS      // puts_out
+            )
+        );
+        TIMING_SET_ENABLED = linker.downcallHandle(
+            lib.find("parquet_timing_set_enabled").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)   // status, enabled
+        );
+        TIMING_SNAPSHOT = linker.downcallHandle(
+            lib.find("parquet_timing_snapshot").orElseThrow(),
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG,   // status
+                ValueLayout.ADDRESS,     // get_out
+                ValueLayout.ADDRESS,     // decode_out
+                ValueLayout.ADDRESS      // put_out
             )
         );
         READ_VALUE_AT_ROW = linker.downcallHandle(
@@ -924,6 +939,29 @@ public class RustBridge {
                 hits.get(ValueLayout.JAVA_LONG, 0),
                 misses.get(ValueLayout.JAVA_LONG, 0),
                 puts.get(ValueLayout.JAVA_LONG, 0)
+            );
+        }
+    }
+
+    /** Cumulative page-decode phase timers (nanos since process start): get/decode/put. */
+    public record TimingStats(long getNanos, long decodeNanos, long putNanos) {}
+
+    /** Enables/disables native page-decode phase timing. Called when the timing logger toggles. */
+    public static void timingSetEnabled(boolean enabled) {
+        NativeCall.invokeStatic(TIMING_SET_ENABLED, enabled ? 1 : 0);
+    }
+
+    /** Snapshots the native get/decode/put phase timers (cumulative nanos). */
+    public static TimingStats timingSnapshot() {
+        try (var call = new NativeCall()) {
+            var g = call.longOut();
+            var d = call.longOut();
+            var p = call.longOut();
+            call.invoke(TIMING_SNAPSHOT, g, d, p);
+            return new TimingStats(
+                g.get(ValueLayout.JAVA_LONG, 0),
+                d.get(ValueLayout.JAVA_LONG, 0),
+                p.get(ValueLayout.JAVA_LONG, 0)
             );
         }
     }

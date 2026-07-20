@@ -367,6 +367,8 @@ pub unsafe fn put_page_from_outbuf(
     presence_bits: *const i64,
     num_rows: usize,
 ) {
+    // PUT_NANOS: build the Arrow array + insert into liquid. Timer gated by the ffm timing flag.
+    let put_timer = if crate::ffm::timing::on() { Some(std::time::Instant::now()) } else { None };
     let cache = match cache() {
         Some(c) => c,
         None => return,
@@ -397,4 +399,7 @@ pub unsafe fn put_page_from_outbuf(
     let array_ref: ArrayRef = Arc::new(array);
     let _ = runtime().block_on(cache.insert(eid, array_ref).into_future());
     LIQUID_PUTS.fetch_add(1, Ordering::Relaxed);
+    if let Some(t) = put_timer {
+        crate::ffm::timing::record(&crate::ffm::timing::PUT_NANOS, t);
+    }
 }

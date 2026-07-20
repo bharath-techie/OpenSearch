@@ -14,11 +14,41 @@
 use std::collections::HashMap;
 use std::slice;
 use std::str;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use lazy_static::lazy_static;
 use native_bridge_common::{ffm_safe, log_debug};
+
+/// Optional page-decode phase timing (T5/T6/T7), gated so it costs nothing when off.
+///
+/// `TIMING_ENABLED` is flipped by Java (`parquet_timing_set_enabled`) only while the
+/// `org.opensearch.parquet.timing` logger is at TRACE. When false, the decode path does a single
+/// relaxed atomic load per page and takes no `Instant::now()` — identical latency to no timing.
+/// When true, per-page elapsed nanos are accumulated into three counters, read back via
+/// `parquet_timing_snapshot`:
+///   - GET    : time in `get_page_into_outbuf` (liquid fetch + memcpy on a hit; cheap miss check)
+///   - DECODE : time in `decode_primitive_page` (the actual Parquet decode into the out-buffer)
+///   - PUT    : time in `put_page_from_outbuf` (build Arrow array + insert into liquid)
+pub(crate) mod timing {
+    use super::*;
+    pub(crate) static TIMING_ENABLED: AtomicBool = AtomicBool::new(false);
+    pub(crate) static GET_NANOS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static DECODE_NANOS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static PUT_NANOS: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub(crate) fn on() -> bool {
+        TIMING_ENABLED.load(Ordering::Relaxed)
+    }
+
+    /// Adds `start.elapsed()` nanos to `counter`. Only call when `on()` was already true.
+    #[inline]
+    pub(crate) fn record(counter: &AtomicU64, start: Instant) {
+        counter.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
 
 use crate::native_settings::NativeSettings;
 use crate::field_config::FieldConfig;
@@ -1330,6 +1360,38 @@ pub unsafe extern "C" fn parquet_liquid_cache_stats(
     Ok(0)
 }
 
+/// Enables/disables page-decode phase timing (get/decode/put). Java flips this on only while the
+/// `org.opensearch.parquet.timing` logger is at TRACE. When off, the decode path takes no
+/// `Instant::now()` (one relaxed atomic load per page). Returns 0.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn parquet_timing_set_enabled(enabled: i32) -> i64 {
+    timing::TIMING_ENABLED.store(enabled != 0, Ordering::Relaxed);
+    Ok(0)
+}
+
+/// Snapshots the page-decode phase timers (cumulative nanos since process start) into the three
+/// out-pointers: `get` (get_page_into_outbuf), `decode` (decode_primitive_page), `put`
+/// (put_page_from_outbuf). Caller computes per-query deltas by reading before and after. Returns 0.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn parquet_timing_snapshot(
+    get_out: *mut i64,
+    decode_out: *mut i64,
+    put_out: *mut i64,
+) -> i64 {
+    if !get_out.is_null() {
+        *get_out = timing::GET_NANOS.load(Ordering::Relaxed) as i64;
+    }
+    if !decode_out.is_null() {
+        *decode_out = timing::DECODE_NANOS.load(Ordering::Relaxed) as i64;
+    }
+    if !put_out.is_null() {
+        *put_out = timing::PUT_NANOS.load(Ordering::Relaxed) as i64;
+    }
+    Ok(0)
+}
+
 /// Slow-path single-value read at `row`.
 ///
 /// On success writes:
@@ -1734,9 +1796,14 @@ unsafe fn decode_primitive_page<T: ParquetDataType>(
 where
     T::T: Copy,
 {
+    // DECODE_NANOS: the actual Parquet decode (records + presence + expand into the out-buffer).
+    let decode_timer = if timing::on() { Some(Instant::now()) } else { None };
     decode_page_records(r, skip, num_rows, def_scratch, val_scratch)?;
     pack_presence_from_def_levels(def_scratch, max_def_level, num_rows, out_presence_bitset);
     expand_to_outbuf(val_scratch, to_bits, effective_null_count, num_rows, out_value_buf, out_presence_bitset as *const i64);
+    if let Some(t) = decode_timer {
+        timing::record(&timing::DECODE_NANOS, t);
+    }
     Ok(())
 }
 
@@ -1981,10 +2048,15 @@ pub unsafe extern "C" fn parquet_decode_page_at_row(
     if let Some(eid) = lc_eid {
         // Serve a cache hit straight into the caller's out-buffers (two memcpys), bypassing the
         // Vec<i64>+Vec<bool> rebuild that get_page does and its recopy through write_primitive_page.
-        if let Some(rc) = crate::liquid_page_cache::get_page_into_outbuf(
+        let get_timer = if timing::on() { Some(Instant::now()) } else { None };
+        let got = crate::liquid_page_cache::get_page_into_outbuf(
             eid, out_value_buf, out_value_buf_cap, out_value_actual_len,
             out_presence_bitset, out_presence_bits_cap,
-        ) {
+        );
+        if let Some(t) = get_timer {
+            timing::record(&timing::GET_NANOS, t);
+        }
+        if let Some(rc) = got {
             return Ok(rc);
         }
     }
