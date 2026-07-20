@@ -15,9 +15,6 @@ import org.opensearch.parquet.codec.cache.ColumnPageIndex;
 import org.opensearch.parquet.codec.cache.PageCache;
 import org.opensearch.parquet.codec.cache.QueryParquetStats;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
@@ -45,8 +42,6 @@ import java.nio.file.Path;
  */
 public final class ParquetColumnReader implements Closeable {
 
-    private static final Logger logger = LogManager.getLogger(ParquetColumnReader.class);
-
     /** Sentinel handle for a reader whose native handle has been released. */
     private static final long CLOSED_HANDLE = -1L;
 
@@ -72,9 +67,6 @@ public final class ParquetColumnReader implements Closeable {
     /** Optional per-query accumulator; this reader's {@link #stats} are folded in on {@link #close()}. */
     private QueryParquetStats queryStats;
 
-    /** Nanoseconds in the native {@code openColumnReader} FFM call; flushed when query stats attach. */
-    private long openNanos;
-
     private ParquetColumnReader(long handle, Path file, String column, ParquetPhysicalType type, boolean repeated, BufferPool bufferPool) {
         this.handle = handle;
         this.file = file;
@@ -94,15 +86,10 @@ public final class ParquetColumnReader implements Closeable {
      */
     public static ParquetColumnReader open(Path file, String column, ParquetPhysicalType expected, boolean repeated, BufferPool pool)
         throws IOException {
-        long openStart = System.nanoTime();
         long h = RustBridge.openColumnReader(file.toString(), column, expected.code());
-        long openElapsed = System.nanoTime() - openStart;
         ParquetColumnReader reader = new ParquetColumnReader(h, file, column, expected, repeated, pool);
-        reader.openNanos = openElapsed;
         try {
-            long indexStart = System.nanoTime();
             reader.pageIndex = reader.loadPageIndex();
-            reader.stats.addPageIndexLoadNanos(System.nanoTime() - indexStart);
         } catch (IOException | RuntimeException e) {
             // Never leak the native handle if page-index load fails after open.
             reader.close();
@@ -140,7 +127,6 @@ public final class ParquetColumnReader implements Closeable {
         this.queryStats = queryStats;
         if (queryStats != null) {
             queryStats.register(stats);
-            queryStats.addReaderOpenNanos(openNanos);
         }
     }
 
@@ -168,22 +154,17 @@ public final class ParquetColumnReader implements Closeable {
     public Value readValueAtRow(long row) throws IOException {
         ensureOpen();
         stats.slowValueRead();
-        long start = System.nanoTime();
-        try {
-            MemorySegment present = bufferPool.longOut("present");
-            MemorySegment longOut = bufferPool.longOut("long");
-            MemorySegment lenOut = bufferPool.longOut("len");
-            long rc = RustBridge.readValueAtRow(handle, row, present, longOut, MemorySegment.NULL, 0L, lenOut);
-            if (rc == RustBridge.RC_OVERFLOW) {
-                // Primitive reads never overflow (no byte payload); a BYTE_ARRAY column was
-                // queried through the primitive path.
-                throw new IOException("readValueAtRow: unexpected overflow for primitive read at row " + row);
-            }
-            boolean isPresent = present.get(ValueLayout.JAVA_LONG, 0) != 0L;
-            return isPresent ? new Value(true, longOut.get(ValueLayout.JAVA_LONG, 0)) : Value.ABSENT;
-        } finally {
-            stats.addSlowReadNanos(System.nanoTime() - start);
+        MemorySegment present = bufferPool.longOut("present");
+        MemorySegment longOut = bufferPool.longOut("long");
+        MemorySegment lenOut = bufferPool.longOut("len");
+        long rc = RustBridge.readValueAtRow(handle, row, present, longOut, MemorySegment.NULL, 0L, lenOut);
+        if (rc == RustBridge.RC_OVERFLOW) {
+            // Primitive reads never overflow (no byte payload); a BYTE_ARRAY column was
+            // queried through the primitive path.
+            throw new IOException("readValueAtRow: unexpected overflow for primitive read at row " + row);
         }
+        boolean isPresent = present.get(ValueLayout.JAVA_LONG, 0) != 0L;
+        return isPresent ? new Value(true, longOut.get(ValueLayout.JAVA_LONG, 0)) : Value.ABSENT;
     }
 
     /**
@@ -194,35 +175,30 @@ public final class ParquetColumnReader implements Closeable {
     public byte[] readBytesAtRow(long row) throws IOException {
         ensureOpen();
         stats.slowValueRead();
-        long start = System.nanoTime();
-        try {
-            MemorySegment present = bufferPool.longOut("present");
-            MemorySegment longOut = bufferPool.longOut("long");
-            MemorySegment lenOut = bufferPool.longOut("len");
+        MemorySegment present = bufferPool.longOut("present");
+        MemorySegment longOut = bufferPool.longOut("long");
+        MemorySegment lenOut = bufferPool.longOut("len");
 
-            long cap = 64;
-            MemorySegment buf = bufferPool.bytes("value", cap);
-            long rc = RustBridge.readValueAtRow(handle, row, present, longOut, buf, cap, lenOut);
+        long cap = 64;
+        MemorySegment buf = bufferPool.bytes("value", cap);
+        long rc = RustBridge.readValueAtRow(handle, row, present, longOut, buf, cap, lenOut);
+        if (rc == RustBridge.RC_OVERFLOW) {
+            long required = lenOut.get(ValueLayout.JAVA_LONG, 0);
+            buf = bufferPool.bytes("value", required);
+            cap = required;
+            rc = RustBridge.readValueAtRow(handle, row, present, longOut, buf, cap, lenOut);
             if (rc == RustBridge.RC_OVERFLOW) {
-                long required = lenOut.get(ValueLayout.JAVA_LONG, 0);
-                buf = bufferPool.bytes("value", required);
-                cap = required;
-                rc = RustBridge.readValueAtRow(handle, row, present, longOut, buf, cap, lenOut);
-                if (rc == RustBridge.RC_OVERFLOW) {
-                    throw new IOException("readBytesAtRow: overflow persisted after retry at row " + row);
-                }
+                throw new IOException("readBytesAtRow: overflow persisted after retry at row " + row);
             }
-            if (present.get(ValueLayout.JAVA_LONG, 0) == 0L) {
-                return null;
-            }
-            long len = lenOut.get(ValueLayout.JAVA_LONG, 0);
-            if (len < 0) {
-                return null;
-            }
-            return buf.asSlice(0, len).toArray(ValueLayout.JAVA_BYTE);
-        } finally {
-            stats.addSlowReadNanos(System.nanoTime() - start);
         }
+        if (present.get(ValueLayout.JAVA_LONG, 0) == 0L) {
+            return null;
+        }
+        long len = lenOut.get(ValueLayout.JAVA_LONG, 0);
+        if (len < 0) {
+            return null;
+        }
+        return buf.asSlice(0, len).toArray(ValueLayout.JAVA_BYTE);
     }
 
     /** Result of a repeated primitive read: the per-value raw {@code long} bits, in row order. */
@@ -242,31 +218,26 @@ public final class ParquetColumnReader implements Closeable {
     public RepeatedValues readRepeatedAtRow(long row) throws IOException {
         ensureOpen();
         stats.slowRepeatedRead();
-        long start = System.nanoTime();
-        try {
-            MemorySegment countOut = bufferPool.longOut("count");
+        MemorySegment countOut = bufferPool.longOut("count");
 
-            long cap = 8;
-            MemorySegment longs = bufferPool.longs("repeated", cap);
-            long rc = RustBridge.readRepeatedAtRow(handle, row, countOut, longs, cap, MemorySegment.NULL, MemorySegment.NULL, 0L);
+        long cap = 8;
+        MemorySegment longs = bufferPool.longs("repeated", cap);
+        long rc = RustBridge.readRepeatedAtRow(handle, row, countOut, longs, cap, MemorySegment.NULL, MemorySegment.NULL, 0L);
+        if (rc == RustBridge.RC_OVERFLOW) {
+            long required = countOut.get(ValueLayout.JAVA_LONG, 0);
+            longs = bufferPool.longs("repeated", required);
+            cap = required;
+            rc = RustBridge.readRepeatedAtRow(handle, row, countOut, longs, cap, MemorySegment.NULL, MemorySegment.NULL, 0L);
             if (rc == RustBridge.RC_OVERFLOW) {
-                long required = countOut.get(ValueLayout.JAVA_LONG, 0);
-                longs = bufferPool.longs("repeated", required);
-                cap = required;
-                rc = RustBridge.readRepeatedAtRow(handle, row, countOut, longs, cap, MemorySegment.NULL, MemorySegment.NULL, 0L);
-                if (rc == RustBridge.RC_OVERFLOW) {
-                    throw new IOException("readRepeatedAtRow: overflow persisted after retry at row " + row);
-                }
+                throw new IOException("readRepeatedAtRow: overflow persisted after retry at row " + row);
             }
-            int count = (int) countOut.get(ValueLayout.JAVA_LONG, 0);
-            if (count == 0) {
-                return RepeatedValues.EMPTY;
-            }
-            long[] out = longs.asSlice(0, (long) count * ValueLayout.JAVA_LONG.byteSize()).toArray(ValueLayout.JAVA_LONG);
-            return new RepeatedValues(out);
-        } finally {
-            stats.addSlowReadNanos(System.nanoTime() - start);
         }
+        int count = (int) countOut.get(ValueLayout.JAVA_LONG, 0);
+        if (count == 0) {
+            return RepeatedValues.EMPTY;
+        }
+        long[] out = longs.asSlice(0, (long) count * ValueLayout.JAVA_LONG.byteSize()).toArray(ValueLayout.JAVA_LONG);
+        return new RepeatedValues(out);
     }
 
     /**
@@ -278,49 +249,44 @@ public final class ParquetColumnReader implements Closeable {
     public byte[][] readRepeatedBytesAtRow(long row) throws IOException {
         ensureOpen();
         stats.slowRepeatedRead();
-        long startNanos = System.nanoTime();
-        try {
-            MemorySegment countOut = bufferPool.longOut("count");
+        MemorySegment countOut = bufferPool.longOut("count");
 
-            long countCap = 8;
-            long byteCap = 256;
-            MemorySegment offsets = bufferPool.longs("repeatedOffsets", countCap + 1);
-            MemorySegment byteBuf = bufferPool.bytes("repeatedBytes", byteCap);
+        long countCap = 8;
+        long byteCap = 256;
+        MemorySegment offsets = bufferPool.longs("repeatedOffsets", countCap + 1);
+        MemorySegment byteBuf = bufferPool.bytes("repeatedBytes", byteCap);
 
-            long rc = RustBridge.readRepeatedAtRow(handle, row, countOut, MemorySegment.NULL, countCap, byteBuf, offsets, byteCap);
+        long rc = RustBridge.readRepeatedAtRow(handle, row, countOut, MemorySegment.NULL, countCap, byteBuf, offsets, byteCap);
+        if (rc == RustBridge.RC_OVERFLOW) {
+            long requiredCount = countOut.get(ValueLayout.JAVA_LONG, 0);
+            countCap = Math.max(requiredCount, countCap);
+            offsets = bufferPool.longs("repeatedOffsets", countCap + 1);
+            // First retry establishes the offsets so we can learn the required byte size.
+            rc = RustBridge.readRepeatedAtRow(handle, row, countOut, MemorySegment.NULL, countCap, byteBuf, offsets, byteCap);
             if (rc == RustBridge.RC_OVERFLOW) {
-                long requiredCount = countOut.get(ValueLayout.JAVA_LONG, 0);
-                countCap = Math.max(requiredCount, countCap);
-                offsets = bufferPool.longs("repeatedOffsets", countCap + 1);
-                // First retry establishes the offsets so we can learn the required byte size.
+                // Byte buffer too small: offsets[count] reports the required total byte size.
+                int cnt = (int) countOut.get(ValueLayout.JAVA_LONG, 0);
+                long requiredBytes = offsets.getAtIndex(ValueLayout.JAVA_LONG, cnt);
+                byteCap = Math.max(requiredBytes, byteCap);
+                byteBuf = bufferPool.bytes("repeatedBytes", byteCap);
                 rc = RustBridge.readRepeatedAtRow(handle, row, countOut, MemorySegment.NULL, countCap, byteBuf, offsets, byteCap);
                 if (rc == RustBridge.RC_OVERFLOW) {
-                    // Byte buffer too small: offsets[count] reports the required total byte size.
-                    int cnt = (int) countOut.get(ValueLayout.JAVA_LONG, 0);
-                    long requiredBytes = offsets.getAtIndex(ValueLayout.JAVA_LONG, cnt);
-                    byteCap = Math.max(requiredBytes, byteCap);
-                    byteBuf = bufferPool.bytes("repeatedBytes", byteCap);
-                    rc = RustBridge.readRepeatedAtRow(handle, row, countOut, MemorySegment.NULL, countCap, byteBuf, offsets, byteCap);
-                    if (rc == RustBridge.RC_OVERFLOW) {
-                        throw new IOException("readRepeatedBytesAtRow: overflow persisted after retry at row " + row);
-                    }
+                    throw new IOException("readRepeatedBytesAtRow: overflow persisted after retry at row " + row);
                 }
             }
-
-            int count = (int) countOut.get(ValueLayout.JAVA_LONG, 0);
-            if (count == 0) {
-                return null;
-            }
-            byte[][] out = new byte[count][];
-            for (int i = 0; i < count; i++) {
-                int start = (int) offsets.getAtIndex(ValueLayout.JAVA_LONG, i);
-                int end = (int) offsets.getAtIndex(ValueLayout.JAVA_LONG, i + 1);
-                out[i] = byteBuf.asSlice(start, (long) (end - start)).toArray(ValueLayout.JAVA_BYTE);
-            }
-            return out;
-        } finally {
-            stats.addSlowReadNanos(System.nanoTime() - startNanos);
         }
+
+        int count = (int) countOut.get(ValueLayout.JAVA_LONG, 0);
+        if (count == 0) {
+            return null;
+        }
+        byte[][] out = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            int start = (int) offsets.getAtIndex(ValueLayout.JAVA_LONG, i);
+            int end = (int) offsets.getAtIndex(ValueLayout.JAVA_LONG, i + 1);
+            out[i] = byteBuf.asSlice(start, (long) (end - start)).toArray(ValueLayout.JAVA_BYTE);
+        }
+        return out;
     }
 
     // ── Page index + page decode (Layer 1-4 hot path) ──
@@ -519,18 +485,11 @@ public final class ParquetColumnReader implements Closeable {
         if (handle == CLOSED_HANDLE) {
             return;
         }
-        // Per-query roll-up is handled by registration at open (see setQueryStats); here we only emit
-        // the per-column detail at DEBUG for deep dives.
-        if (stats.isEmpty() == false && logger.isDebugEnabled()) {
-            logger.debug("[PARQUET_DV_CACHE_STATS] col='{}' file={} | {}", column, file, stats.summary());
-        }
+        // Per-query roll-up is handled by registration at open (see setQueryStats) and emitted once
+        // per query on the dedicated stats channel; no per-column detail line here.
         long h = handle;
         handle = CLOSED_HANDLE;
         cache = null;
-        long closeStart = System.nanoTime();
         RustBridge.closeColumnReader(h);
-        if (queryStats != null) {
-            queryStats.addReaderCloseNanos(System.nanoTime() - closeStart);
-        }
     }
 }

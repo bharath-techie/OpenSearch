@@ -32,7 +32,6 @@ import org.opensearch.index.engine.dataformat.DocumentInput;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.parquet.codec.cache.QueryParquetStats;
-import org.opensearch.parquet.codec.cache.RowIdStats;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -241,11 +240,6 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
         // Backed by an -ea assert that mirrors the writer's invariant; if a future write path ever
         // produced a non-identity segment, this trips in dev/test. (Costs nothing in prod.)
         assert assertRowIdsAreIdentity() : "non-identity __row_id__ segment reached read path; IDENTITY shortcut is unsafe here";
-        if (queryStats != null) {
-            RowIdStats rowIdStats = new RowIdStats();
-            rowIdStats.markIdentity();
-            queryStats.registerRowId(rowIdStats);
-        }
         return RowIdResolver.IDENTITY;
     }
 

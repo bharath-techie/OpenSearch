@@ -14,6 +14,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FilterDirectoryReader;
 import org.apache.lucene.index.LeafReader;
 import org.opensearch.index.mapper.MapperService;
+import org.opensearch.parquet.bridge.RustBridge;
 import org.opensearch.parquet.codec.cache.QueryParquetStats;
 
 import java.io.IOException;
@@ -34,7 +35,10 @@ import java.io.UncheckedIOException;
  */
 public final class ParquetDocValuesDirectoryReader extends FilterDirectoryReader {
 
-    private static final Logger logger = LogManager.getLogger(ParquetDocValuesDirectoryReader.class);
+    // Dedicated stats channel, NOT the class-named logger, so the per-query summary can be toggled
+    // in isolation (logger.org.opensearch.parquet.stats.query=TRACE) without turning on any other
+    // codec class's logging. Enabling it affects only this one diagnostic line.
+    private static final Logger statsLogger = LogManager.getLogger("org.opensearch.parquet.stats.query");
 
     private final MapperService mapperService;
     private final QueryParquetStats queryStats;
@@ -44,6 +48,13 @@ public final class ParquetDocValuesDirectoryReader extends FilterDirectoryReader
         super(in, new ParquetSubReaderWrapper(mapperService, queryStats));
         this.mapperService = mapperService;
         this.queryStats = queryStats;
+        // Baseline the process-wide liquid counters so doClose() can report per-query deltas. Only
+        // when the summary will actually be logged — the snapshot is an FFM crossing, so this keeps
+        // it fully off (no native call) on the raw-performance path where TRACE is disabled.
+        if (statsLogger.isTraceEnabled()) {
+            RustBridge.LiquidCacheStats base = RustBridge.liquidCacheStats();
+            queryStats.captureLiquidBaseline(base.hits(), base.misses(), base.puts());
+        }
     }
 
     /**
@@ -75,11 +86,12 @@ public final class ParquetDocValuesDirectoryReader extends FilterDirectoryReader
         try {
             super.doClose();
         } finally {
-            // Benchmarking: the per-query [PARQUET_DV_QUERY_STATS] summary was demoted from info to
-            // trace so it is NOT emitted during raw-performance runs. Counters are still accumulated;
-            // enable -Dlogger trace on this class to see the summary again.
-            if (queryStats != null && queryStats.isEmpty() == false && logger.isTraceEnabled()) {
-                logger.trace("[PARQUET_DV_QUERY_STATS] {}", queryStats.summary());
+            // The per-query [PARQUET_DV_QUERY_STATS] summary is TRACE-only so it is NOT emitted during
+            // raw-performance runs. Counters are always accumulated (cheap); to see the summary enable
+            // the dedicated stats channel: logger.org.opensearch.parquet.stats.query=TRACE.
+            if (queryStats != null && queryStats.isEmpty() == false && statsLogger.isTraceEnabled()) {
+                RustBridge.LiquidCacheStats now = RustBridge.liquidCacheStats();
+                statsLogger.trace("[PARQUET_DV_QUERY_STATS] {}", queryStats.summary(now.hits(), now.misses(), now.puts()));
             }
         }
     }

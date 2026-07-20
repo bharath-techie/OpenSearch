@@ -8,8 +8,6 @@
 
 package org.opensearch.parquet.codec.cache;
 
-import java.util.Locale;
-
 /**
  * Per-column hit/miss counters for the Parquet DocValues cache layers, used to measure how much
  * each caching layer contributes during a query. One instance is owned by each
@@ -18,8 +16,6 @@ import java.util.Locale;
  *
  * <p>Layer mapping (per the codec design):
  * <ul>
- *   <li><b>Layer 1/2</b> — page-resident value + presence cache. A <em>hit</em> is a row served from
- *       the currently resident {@link PageCache} with no FFM call; a <em>miss</em> triggers a page load.</li>
  *   <li><b>Layer 3</b> — OffsetIndex jump table ({@code pageForRow} binary search), consulted on every miss.</li>
  *   <li><b>Layer 4</b> — page-stat all-nulls skip; a miss resolved without decoding the page.</li>
  *   <li><b>FFM</b> — calls that cross the native boundary (page decodes and slow-path single/repeated
@@ -27,12 +23,6 @@ import java.util.Locale;
  * </ul>
  */
 public final class CacheStats {
-
-    // Layer 1/2 — page-resident value + presence cache.
-    private long pageCacheHits;
-    private long pageCacheMisses;
-    private long presentValues;   // rows that resolved to a non-null value (data, not caching)
-    private long absentValues;    // rows that resolved to null
 
     // Layer 3 — OffsetIndex jump-table lookups (one per miss).
     private long pageIndexLookups;
@@ -44,31 +34,6 @@ public final class CacheStats {
     private long pageDecodes;       // parquet_decode_page_at_row
     private long slowValueReads;    // parquet_read_value_at_row (single)
     private long slowRepeatedReads; // parquet_read_repeated_at_row
-
-    // Section timings (nanoseconds), to attribute query latency to a specific phase.
-    private long pageDecodeNanos;    // time inside the FFM page decode
-    private long pageIndexLoadNanos; // time building the Layer 3 ColumnPageIndex at reader open
-    private long slowReadNanos;      // time inside slow-path single/repeated FFM reads
-
-    /** Records a Layer 1/2 page-cache hit (row served from the resident page, no FFM). */
-    public void pageCacheHit() {
-        pageCacheHits++;
-    }
-
-    /** Records a Layer 1/2 page-cache miss (a page load is required). */
-    public void pageCacheMiss() {
-        pageCacheMisses++;
-    }
-
-    /** Records that a resolved row had a present (non-null) value. */
-    public void present() {
-        presentValues++;
-    }
-
-    /** Records that a resolved row was null/absent. */
-    public void absent() {
-        absentValues++;
-    }
 
     /** Records a Layer 3 jump-table lookup ({@code pageForRow}). */
     public void pageIndexLookup() {
@@ -95,29 +60,6 @@ public final class CacheStats {
         slowRepeatedReads++;
     }
 
-    /** Adds elapsed nanoseconds spent inside an FFM page decode. */
-    public void addPageDecodeNanos(long nanos) {
-        pageDecodeNanos += nanos;
-    }
-
-    /** Adds elapsed nanoseconds spent building the Layer 3 page index at reader open. */
-    public void addPageIndexLoadNanos(long nanos) {
-        pageIndexLoadNanos += nanos;
-    }
-
-    /** Adds elapsed nanoseconds spent inside a slow-path single/repeated FFM read. */
-    public void addSlowReadNanos(long nanos) {
-        slowReadNanos += nanos;
-    }
-
-    public long pageCacheHits() {
-        return pageCacheHits;
-    }
-
-    public long pageCacheMisses() {
-        return pageCacheMisses;
-    }
-
     public long pageDecodes() {
         return pageDecodes;
     }
@@ -130,43 +72,12 @@ public final class CacheStats {
         return pageIndexLookups;
     }
 
-    public long presentValues() {
-        return presentValues;
-    }
-
-    public long absentValues() {
-        return absentValues;
-    }
-
     public long slowValueReads() {
         return slowValueReads;
     }
 
     public long slowRepeatedReads() {
         return slowRepeatedReads;
-    }
-
-    public long pageDecodeNanos() {
-        return pageDecodeNanos;
-    }
-
-    public long pageIndexLoadNanos() {
-        return pageIndexLoadNanos;
-    }
-
-    public long slowReadNanos() {
-        return slowReadNanos;
-    }
-
-    /** Total page-cache lookups (hits + misses). */
-    public long pageCacheLookups() {
-        return pageCacheHits + pageCacheMisses;
-    }
-
-    /** Layer 1/2 hit rate in [0,1]; 0 when there were no lookups. */
-    public double pageCacheHitRate() {
-        long total = pageCacheLookups();
-        return total == 0 ? 0.0 : (double) pageCacheHits / total;
     }
 
     /** Total FFM boundary crossings across all access paths. */
@@ -176,31 +87,6 @@ public final class CacheStats {
 
     /** True when no access has been recorded (used to suppress empty summaries). */
     public boolean isEmpty() {
-        return pageCacheLookups() == 0 && slowValueReads == 0 && slowRepeatedReads == 0;
-    }
-
-    /** A single-line, human-readable summary suitable for an INFO log on reader close. */
-    public String summary() {
-        return String.format(
-            Locale.ROOT,
-            "L1/2 page-cache: hits=%d misses=%d (hitRate=%.2f%%) | L3 jumpTableLookups=%d | "
-                + "L4 allNullSkips=%d | FFM: pageDecodes=%d slowValueReads=%d slowRepeatedReads=%d (totalCrossings=%d) | "
-                + "timings(ms): pageDecode=%.1f pageIndexLoad=%.1f slowRead=%.1f | "
-                + "values: present=%d absent=%d",
-            pageCacheHits,
-            pageCacheMisses,
-            pageCacheHitRate() * 100.0,
-            pageIndexLookups,
-            allNullPageSkips,
-            pageDecodes,
-            slowValueReads,
-            slowRepeatedReads,
-            ffmCrossings(),
-            pageDecodeNanos / 1_000_000.0,
-            pageIndexLoadNanos / 1_000_000.0,
-            slowReadNanos / 1_000_000.0,
-            presentValues,
-            absentValues
-        );
+        return pageDecodes == 0 && pageIndexLookups == 0 && allNullPageSkips == 0 && slowValueReads == 0 && slowRepeatedReads == 0;
     }
 }

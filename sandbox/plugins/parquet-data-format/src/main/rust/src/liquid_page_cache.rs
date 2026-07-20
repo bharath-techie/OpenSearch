@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 use std::future::IntoFuture;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use arrow::array::{Array, ArrayRef, Int64Array};
@@ -54,6 +54,26 @@ static RT: OnceLock<Runtime> = OnceLock::new();
 /// Master on/off switch, set by Java at init. Off by default → the codec decode path is untouched.
 /// May be flipped back off internally if the cache fails to build (see `cache`).
 static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Process-wide liquid-cache event counters (monotonic, Relaxed). A single `long[]`-worth of
+/// atomics incremented on the cache get/put paths; readers snapshot them via
+/// `parquet_liquid_cache_stats`. Cost is one relaxed atomic add per page-boundary event (never
+/// per-doc), so they stay on unconditionally without measurable latency.
+///   - HITS   : a `get_page*` served the page from liquid (no Parquet decode)
+///   - MISSES : a `get_page*` found nothing → the caller decodes from Parquet
+///   - PUTS   : a decoded page was inserted into liquid (`put_page`)
+static LIQUID_HITS: AtomicU64 = AtomicU64::new(0);
+static LIQUID_MISSES: AtomicU64 = AtomicU64::new(0);
+static LIQUID_PUTS: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot of the liquid event counters: `(hits, misses, puts)`.
+pub fn stats_snapshot() -> (u64, u64, u64) {
+    (
+        LIQUID_HITS.load(Ordering::Relaxed),
+        LIQUID_MISSES.load(Ordering::Relaxed),
+        LIQUID_PUTS.load(Ordering::Relaxed),
+    )
+}
 
 /// Configured max memory budget for the cache (bytes). Applied when the cache is first built.
 static MAX_MEMORY_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -234,7 +254,18 @@ pub unsafe fn get_page_into_outbuf(
     out_presence_bits_cap: i64,
 ) -> Option<i64> {
     let cache = cache()?;
-    let array: ArrayRef = runtime().block_on(cache.get(&eid).read())?;
+    // Count the liquid outcome at the page-boundary get: Some => hit (served without a Parquet
+    // decode), None => miss (the caller decodes and typically puts). One relaxed atomic per page.
+    let array: ArrayRef = match runtime().block_on(cache.get(&eid).read()) {
+        Some(a) => {
+            LIQUID_HITS.fetch_add(1, Ordering::Relaxed);
+            a
+        }
+        None => {
+            LIQUID_MISSES.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
     let int_array = array.as_any().downcast_ref::<Int64Array>()?;
     let len = int_array.len();
 
@@ -320,6 +351,7 @@ pub fn put_page(eid: EntryID, longs: &[i64], presence: &[bool]) {
     // Best-effort: a CacheFull error just means this page is not cached this time.
     // `insert`/`get` return builder types that implement `IntoFuture`, so convert before block_on.
     let _ = runtime().block_on(cache.insert(eid, array_ref).into_future());
+    LIQUID_PUTS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Cache a decoded primitive page directly from the FFM out-buffers. Reads the already-written
@@ -364,4 +396,5 @@ pub unsafe fn put_page_from_outbuf(
     let array = PrimitiveArray::<Int64Type>::new(values_buf.into(), Some(null_buf));
     let array_ref: ArrayRef = Arc::new(array);
     let _ = runtime().block_on(cache.insert(eid, array_ref).into_future());
+    LIQUID_PUTS.fetch_add(1, Ordering::Relaxed);
 }

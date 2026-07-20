@@ -8,8 +8,6 @@
 
 package org.opensearch.parquet.codec;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.DocValuesSkipper;
@@ -62,8 +60,6 @@ import java.util.Map;
  */
 public final class ParquetDocValuesProducer extends DocValuesProducer {
 
-    private static final Logger logger = LogManager.getLogger(ParquetDocValuesProducer.class);
-
     private final Path parquetFile;
     private final MapperService mapperService;
     private final int maxDoc;
@@ -73,8 +69,6 @@ public final class ParquetDocValuesProducer extends DocValuesProducer {
     private final Map<String, ParquetColumnReader> columnReaders = new HashMap<>();
     private final Map<String, OrdinalTable> ordinalTables = new HashMap<>();
 
-    /** Nanoseconds spent in producer setup (file resolve + metadata read); flushed when query stats are attached. */
-    private final long setupNanos;
     /** Optional per-query accumulator; propagated to each column reader so its stats roll up at close. */
     private QueryParquetStats queryStats;
 
@@ -89,7 +83,6 @@ public final class ParquetDocValuesProducer extends DocValuesProducer {
      * @throws IllegalStateException if the Row ID = Doc ID invariant is violated (Req 12.3)
      */
     public ParquetDocValuesProducer(SegmentReadState state, MapperService mapperService) throws IOException {
-        long setupStart = System.nanoTime();
         this.mapperService = mapperService;
         this.maxDoc = state.segmentInfo.maxDoc();
 
@@ -122,18 +115,15 @@ public final class ParquetDocValuesProducer extends DocValuesProducer {
                 )
             );
         }
-        this.setupNanos = System.nanoTime() - setupStart;
     }
 
     /**
-     * Attaches the per-query accumulator. The producer's setup time is folded in immediately, and
-     * the accumulator is propagated to every column reader (existing and future) so each reader's
-     * stats roll up into the query total when it closes.
+     * Attaches the per-query accumulator. The accumulator is propagated to every column reader
+     * (existing and future) so each reader's stats roll up into the query total when it closes.
      */
     public void setQueryStats(QueryParquetStats queryStats) {
         this.queryStats = queryStats;
         if (queryStats != null) {
-            queryStats.addProducerSetupNanos(setupNanos);
             for (ParquetColumnReader reader : columnReaders.values()) {
                 reader.setQueryStats(queryStats);
             }
@@ -232,30 +222,8 @@ public final class ParquetDocValuesProducer extends DocValuesProducer {
         if (closed) {
             return;
         }
-        // Aggregate cache-effectiveness summary across all columns touched by this segment's
-        // producer. Per-column detail is logged by each ParquetColumnReader on its own close.
-        if (columnReaders.isEmpty() == false && logger.isDebugEnabled()) {
-            long hits = 0, misses = 0, decodes = 0, allNullSkips = 0;
-            for (ParquetColumnReader reader : columnReaders.values()) {
-                hits += reader.stats().pageCacheHits();
-                misses += reader.stats().pageCacheMisses();
-                decodes += reader.stats().pageDecodes();
-                allNullSkips += reader.stats().allNullPageSkips();
-            }
-            long lookups = hits + misses;
-            double hitRate = lookups == 0 ? 0.0 : (double) hits / lookups * 100.0;
-            logger.debug(
-                "[PARQUET_DV_CACHE_STATS] segment summary: file={} columns={} | L1/2 hits={} misses={} (hitRate={}%) "
-                    + "| L4 allNullSkips={} | FFM pageDecodes={}",
-                parquetFile,
-                columnReaders.size(),
-                hits,
-                misses,
-                String.format(Locale.ROOT, "%.2f", hitRate),
-                allNullSkips,
-                decodes
-            );
-        }
+        // Cache-effectiveness is summarized once per query on the dedicated stats channel
+        // ([PARQUET_DV_QUERY_STATS]); no per-segment detail line here.
         closed = true;
         IOException first = null;
         for (ParquetColumnReader reader : columnReaders.values()) {

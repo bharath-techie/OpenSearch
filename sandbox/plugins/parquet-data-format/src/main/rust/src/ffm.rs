@@ -1306,6 +1306,30 @@ pub unsafe extern "C" fn parquet_liquid_cache_clear() -> i64 {
     Ok(0)
 }
 
+/// Snapshots the process-wide liquid event counters into the three out-pointers:
+/// `hits` (pages served from liquid), `misses` (get found nothing → caller decodes), and `puts`
+/// (decoded pages inserted). Monotonic since process start; a caller computes per-query deltas by
+/// reading before and after. Returns 0 on success. Null out-pointers are skipped.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn parquet_liquid_cache_stats(
+    hits_out: *mut i64,
+    misses_out: *mut i64,
+    puts_out: *mut i64,
+) -> i64 {
+    let (hits, misses, puts) = crate::liquid_page_cache::stats_snapshot();
+    if !hits_out.is_null() {
+        *hits_out = hits as i64;
+    }
+    if !misses_out.is_null() {
+        *misses_out = misses as i64;
+    }
+    if !puts_out.is_null() {
+        *puts_out = puts as i64;
+    }
+    Ok(0)
+}
+
 /// Slow-path single-value read at `row`.
 ///
 /// On success writes:

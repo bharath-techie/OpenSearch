@@ -57,6 +57,7 @@ public class RustBridge {
     private static final MethodHandle OPEN_COLUMN_READER_COUNT;
     private static final MethodHandle LIQUID_CACHE_SET_ENABLED;
     private static final MethodHandle LIQUID_CACHE_CLEAR;
+    private static final MethodHandle LIQUID_CACHE_STATS;
     private static final MethodHandle READ_VALUE_AT_ROW;
     private static final MethodHandle READ_REPEATED_AT_ROW;
     private static final MethodHandle GET_COLUMN_NUM_PAGES;
@@ -333,6 +334,15 @@ public class RustBridge {
         LIQUID_CACHE_CLEAR = linker.downcallHandle(
             lib.find("parquet_liquid_cache_clear").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_LONG)   // status (< 0 error pointer)
+        );
+        LIQUID_CACHE_STATS = linker.downcallHandle(
+            lib.find("parquet_liquid_cache_stats").orElseThrow(),
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG,   // status (< 0 error pointer)
+                ValueLayout.ADDRESS,     // hits_out
+                ValueLayout.ADDRESS,     // misses_out
+                ValueLayout.ADDRESS      // puts_out
+            )
         );
         READ_VALUE_AT_ROW = linker.downcallHandle(
             lib.find("parquet_read_value_at_row").orElseThrow(),
@@ -888,6 +898,34 @@ public class RustBridge {
      */
     public static void liquidCacheClear() {
         NativeCall.invokeStatic(LIQUID_CACHE_CLEAR);
+    }
+
+    /**
+     * Process-wide liquid decoded-page cache event counters, monotonic since process start.
+     *
+     * @param hits   pages served from liquid without a Parquet decode
+     * @param misses liquid {@code get} found nothing, so the caller decoded from Parquet
+     * @param puts   decoded pages inserted into liquid
+     */
+    public record LiquidCacheStats(long hits, long misses, long puts) {}
+
+    /**
+     * Snapshots the codec liquid cache event counters. Cheap (three relaxed atomic loads on the
+     * native side); read before and after a query to compute per-query deltas. Returns zeros when
+     * the cache is disabled.
+     */
+    public static LiquidCacheStats liquidCacheStats() {
+        try (var call = new NativeCall()) {
+            var hits = call.longOut();
+            var misses = call.longOut();
+            var puts = call.longOut();
+            call.invoke(LIQUID_CACHE_STATS, hits, misses, puts);
+            return new LiquidCacheStats(
+                hits.get(ValueLayout.JAVA_LONG, 0),
+                misses.get(ValueLayout.JAVA_LONG, 0),
+                puts.get(ValueLayout.JAVA_LONG, 0)
+            );
+        }
     }
 
     /**
