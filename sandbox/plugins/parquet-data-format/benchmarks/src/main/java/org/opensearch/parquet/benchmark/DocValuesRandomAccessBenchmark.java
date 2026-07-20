@@ -191,6 +191,35 @@ public class DocValuesRandomAccessBenchmark {
         }
     }
 
+    /**
+     * Per-query lifecycle cost: open a fresh column reader (the once-per-field-per-query step a
+     * real search pays for every producer), read a handful of scattered docs, close. Dominated
+     * by {@link ParquetColumnReader#open}'s metadata work — schema resolution + page-layout
+     * (OffsetIndex/ColumnIndex) computation + ColumnPageIndex marshal — which the node-level
+     * file-metadata cache converts from a per-open parse into an Arc-clone lookup. This is the
+     * benchmark that shows the "dvm-equivalent" win; the decode benchmarks above open once per
+     * trial and cannot see it.
+     */
+    @Benchmark
+    public long openReadClose(Blackhole bh) throws IOException {
+        String column = columnType.equals("INT64") ? "val_i64" : "val_i32";
+        ParquetPhysicalType physical = columnType.equals("INT64") ? ParquetPhysicalType.INT64 : ParquetPhysicalType.INT32;
+        try (BufferPool pool = new BufferPool(); ParquetColumnReader r = ParquetColumnReader.open(file, column, physical, false, pool)) {
+            ParquetNumericDocValues dv = new ParquetNumericDocValues(r, rows);
+            long sum = 0;
+            // Touch a few scattered docs so the open isn't dead-code-eliminated and the reader
+            // exercises a realistic first-access pattern (a couple of page decodes).
+            for (int i = 0; i < 8; i++) {
+                int t = randomTargets[i * (TARGETS / 8)];
+                if (dv.advanceExact(t)) {
+                    sum += dv.longValue();
+                }
+            }
+            bh.consume(sum);
+            return sum;
+        }
+    }
+
     // ── data generation ──
 
     private void writeFile() throws Exception {

@@ -948,6 +948,7 @@ impl DecodeScratch {
 
 /// One row-aligned page in the column (or one row group, in the no-page-index
 /// fallback). All row indices are global (file-relative).
+#[derive(Clone)]
 struct PageEntry {
     /// Global index of the first row in the page.
     global_first_row: i64,
@@ -971,70 +972,117 @@ struct PageEntry {
     local_first_row: i64,
 }
 
+/// Gets or builds the per-file metadata cache entry. First call for a given path parses the
+/// footer + page index; subsequent calls (other columns, other queries) get an Arc clone in
+/// O(1). The page layout for a specific column is computed lazily within the cached entry.
+fn get_or_build_file_metadata(filename: &str) -> Result<std::sync::Arc<FileMetadataCache>, String> {
+    let mut cache = FILE_METADATA_CACHE
+        .lock()
+        .map_err(|_| "file metadata cache mutex poisoned".to_string())?;
+    if let Some(entry) = cache.get(filename) {
+        return Ok(std::sync::Arc::clone(entry));
+    }
+
+    // First access to this file: parse footer + page index.
+    let file = File::open(filename).map_err(|e| format!("Failed to open '{}': {}", filename, e))?;
+    let options = ReadOptionsBuilder::new().with_page_index().build();
+    let reader = SerializedFileReader::new_with_options(file, options)
+        .map_err(|e| format!("Failed to read parquet metadata '{}': {}", filename, e))?;
+
+    let metadata = reader.metadata();
+    let schema = metadata.file_metadata().schema_descr_ptr();
+    let row_count = metadata.file_metadata().num_rows();
+
+    let n_rg = metadata.num_row_groups();
+    let mut rg_first_row = Vec::with_capacity(n_rg);
+    let mut rg_num_rows = Vec::with_capacity(n_rg);
+    let mut acc = 0i64;
+    for i in 0..n_rg {
+        let rn = metadata.row_group(i).num_rows();
+        rg_first_row.push(acc);
+        rg_num_rows.push(rn);
+        acc += rn;
+    }
+
+    // Pre-compute per-column descriptors.
+    let columns: Vec<_> = (0..schema.num_columns())
+        .map(|i| {
+            let d = schema.column(i);
+            (i, d.physical_type(), d.max_rep_level(), d.max_def_level())
+        })
+        .collect();
+
+    // Pre-compute page layouts for ALL columns (small per column; avoids per-column re-parse).
+    let mut column_pages = HashMap::new();
+    for &(leaf_idx, phys, _, _) in &columns {
+        let pages = build_page_layout(metadata, leaf_idx, phys, &rg_first_row, &rg_num_rows);
+        column_pages.insert(leaf_idx, pages);
+    }
+
+    let entry = std::sync::Arc::new(FileMetadataCache {
+        schema,
+        row_count,
+        rg_first_row,
+        rg_num_rows,
+        column_pages,
+        columns,
+    });
+    cache.insert(filename.to_string(), std::sync::Arc::clone(&entry));
+    Ok(entry)
+}
+
 impl ColumnReaderState {
     fn open(filename: &str, column: &str, expected_type: i32) -> Result<ColumnReaderState, String> {
+        // Use the node-level metadata cache — first call parses; subsequent calls are O(1).
+        let fmc = get_or_build_file_metadata(filename)?;
+
+        // Resolve column from cached schema descriptor (no file I/O, no re-parse).
+        let mut found: Option<(usize, PhysicalType, i16, i16)> = None;
+        for i in 0..fmc.schema.num_columns() {
+            let descr = fmc.schema.column(i);
+            if descr.name() == column || descr.path().string() == column {
+                found = Some((i, descr.physical_type(), descr.max_rep_level(), descr.max_def_level()));
+                break;
+            }
+        }
+        let (leaf_idx, phys, max_rep, max_def) = found.ok_or_else(|| {
+            format!("Column '{}' not found in parquet file '{}'", column, filename)
+        })?;
+
+        let actual = physical_type_code(phys);
+        if actual != expected_type {
+            return Err(format!(
+                "Column '{}' physical type mismatch in '{}': expected type code {}, found {:?} (code {})",
+                column, filename, expected_type, phys, actual
+            ));
+        }
+
+        // Get the pre-computed page layout from the cache.
+        let pages = fmc.column_pages.get(&leaf_idx)
+            .cloned()
+            .unwrap_or_default();
+
+        // Open a file handle for this column reader WITH the page index loaded: the retained
+        // cursor's skip_records uses the page index internally for efficient page-hopping. The
+        // per-file metadata cache above saves the JAVA-FACING costs (schema resolution, page
+        // layout computation, ColumnPageIndex FFM marshal) — this reader's page-index load is
+        // cheap (already in OS page cache from the first parse) and necessary for decode perf.
         let file = File::open(filename).map_err(|e| format!("Failed to open '{}': {}", filename, e))?;
-        // Load the Parquet page index (OffsetIndex + ColumnIndex) so we can build
-        // the Layer 3/4 page layout. Falls back gracefully to row-group
-        // granularity if the file was written without a page index.
         let options = ReadOptionsBuilder::new().with_page_index().build();
         let reader = SerializedFileReader::new_with_options(file, options)
             .map_err(|e| format!("Failed to read parquet '{}': {}", filename, e))?;
-
-        // Extract everything we need from the (borrowed) metadata inside a block so
-        // the borrow ends before we move `reader` into the returned struct.
-        let (leaf_idx, physical_type, repeated, max_def_level, row_count, rg_first_row, rg_num_rows, pages) = {
-            let metadata = reader.metadata();
-            let schema = metadata.file_metadata().schema_descr();
-
-            let mut found: Option<(usize, PhysicalType, i16, i16)> = None;
-            for i in 0..schema.num_columns() {
-                let descr = schema.column(i);
-                if descr.name() == column || descr.path().string() == column {
-                    found = Some((i, descr.physical_type(), descr.max_rep_level(), descr.max_def_level()));
-                    break;
-                }
-            }
-            let (leaf_idx, phys, max_rep, max_def) = found.ok_or_else(|| {
-                format!("Column '{}' not found in parquet file '{}'", column, filename)
-            })?;
-
-            let actual = physical_type_code(phys);
-            if actual != expected_type {
-                return Err(format!(
-                    "Column '{}' physical type mismatch in '{}': expected type code {}, found {:?} (code {})",
-                    column, filename, expected_type, phys, actual
-                ));
-            }
-
-            let n_rg = metadata.num_row_groups();
-            let mut rg_first_row = Vec::with_capacity(n_rg);
-            let mut rg_num_rows = Vec::with_capacity(n_rg);
-            let mut acc = 0i64;
-            for i in 0..n_rg {
-                let rn = metadata.row_group(i).num_rows();
-                rg_first_row.push(acc);
-                rg_num_rows.push(rn);
-                acc += rn;
-            }
-            let row_count = metadata.file_metadata().num_rows();
-
-            let pages = build_page_layout(metadata, leaf_idx, phys, &rg_first_row, &rg_num_rows);
-
-            (leaf_idx, phys, max_rep > 0, max_def, row_count, rg_first_row, rg_num_rows, pages)
-        };
 
         let liquid_file_id = crate::liquid_page_cache::file_id(filename);
 
         Ok(ColumnReaderState {
             reader,
             leaf_idx,
-            physical_type,
-            repeated,
-            max_def_level,
-            row_count,
-            rg_first_row,
-            rg_num_rows,
+            physical_type: phys,
+            repeated: max_rep > 0,
+            max_def_level: max_def,
+            row_count: fmc.row_count,
+            rg_first_row: fmc.rg_first_row.clone(),
+            rg_num_rows: fmc.rg_num_rows.clone(),
             pages,
             liquid_file_id,
             cursor: None,
@@ -1229,7 +1277,33 @@ fn read_record_values<T: ParquetDataType>(
     Ok(values)
 }
 
+/// Cached per-file metadata: footer + page-index parse results shared across all column readers
+/// for the same file. Parquet files are immutable (changed data = new file = new path), so entries
+/// never need invalidation — they can only be evicted when a file is deleted (shard close). This
+/// is the `.dvm` equivalent: parsed once at first column open, then every subsequent query reuses
+/// it without FFM/IO, at node lifetime scope.
+struct FileMetadataCache {
+    /// Schema descriptor pointer (for column lookup).
+    schema: std::sync::Arc<parquet::schema::types::SchemaDescriptor>,
+    /// Number of rows in the file.
+    row_count: i64,
+    /// Per-row-group: global first row.
+    rg_first_row: Vec<i64>,
+    /// Per-row-group: number of rows.
+    rg_num_rows: Vec<i64>,
+    /// Per-column page layouts, keyed by leaf column index. Computed lazily per column.
+    column_pages: HashMap<usize, Vec<PageEntry>>,
+    /// Per-column descriptor cache: (leaf_idx, physical_type, max_rep_level, max_def_level).
+    /// Retained for future dictionary pre-warm; column lookup currently goes through `schema`.
+    #[allow(dead_code)]
+    columns: Vec<(usize, PhysicalType, i16, i16)>,
+}
+
 lazy_static! {
+    /// Node-level file metadata cache. Keyed by absolute file path. Entries are never
+    /// invalidated (immutable files) — evicted only on explicit `parquet_evict_file_metadata`.
+    static ref FILE_METADATA_CACHE: Mutex<HashMap<String, std::sync::Arc<FileMetadataCache>>> = Mutex::new(HashMap::new());
+
     /// Per-handle registry of open column readers, keyed by an opaque i64 handle.
     /// Mirrors the writer-side handle pattern; serialised behind a single mutex
     /// since column readers are not shared across threads.
@@ -1246,6 +1320,24 @@ fn lock_readers<'a>() -> Result<MutexGuard<'a, HashMap<i64, ColumnReaderState>>,
     COLUMN_READERS
         .lock()
         .map_err(|_| "column reader registry mutex poisoned".to_string())
+}
+
+/// Evicts a file's cached metadata (footer + page index) from the node-level cache, e.g. on
+/// shard close or file deletion. No-op if the file isn't cached. Returns 0 on success.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn parquet_evict_file_metadata(
+    file_ptr: *const u8,
+    file_len: i64,
+) -> i64 {
+    let filename = str_from_raw(file_ptr, file_len)
+        .map_err(|e| format!("parquet_evict_file_metadata: {}", e))?
+        .to_string();
+    FILE_METADATA_CACHE
+        .lock()
+        .map_err(|_| "file metadata cache mutex poisoned".to_string())?
+        .remove(&filename);
+    Ok(RC_OK)
 }
 
 /// Opens a per-column reader over `file` for `col`, validating that the column
