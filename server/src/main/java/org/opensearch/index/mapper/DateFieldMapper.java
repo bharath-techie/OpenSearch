@@ -446,6 +446,20 @@ public final class DateFieldMapper extends ParametrizedFieldMapper {
             this(name, true, false, true, dateFormatter, resolution, null, Collections.emptyMap());
         }
 
+        // TODO(parquet-poc): TEMPORARY. Mirror the NumberFieldType hack for date fields. Force dates
+        // to report non-searchable so rangeQuery/termQuery route to the doc-values-only query
+        // (SortedNumericDocValuesField.newSlowRangeQuery via the if (!isSearchable()) branch in
+        // rangeQuery) instead of the BKD wrapper tree (ApproximateScoreQuery ->
+        // IndexSortSortedNumericDocValuesRangeQuery -> IndexOrDocValuesQuery), which returns 0 hits on
+        // Parquet-only date fields that have no BKD points index (e.g. EventTime). This is a
+        // NODE-GLOBAL hack for the Parquet DocValues skipper benchmark and regresses vanilla date
+        // point queries -- do NOT ship. The real fix is a plugin-registered date field type gated on
+        // index.pluggable.dataformat.enabled.
+        @Override
+        public boolean isSearchable() {
+            return false;
+        }
+
         @Override
         public String typeName() {
             return resolution.type();

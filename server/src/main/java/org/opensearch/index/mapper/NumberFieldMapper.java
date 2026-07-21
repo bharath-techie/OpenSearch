@@ -1968,6 +1968,19 @@ public class NumberFieldMapper extends ParametrizedFieldMapper {
             this(name, type, true, false, true, false, true, null, Collections.emptyMap());
         }
 
+        // TODO(parquet-poc): TEMPORARY. Force numeric fields to report non-searchable so
+        // termQuery/termsQuery/rangeQuery route to the doc-values-only query
+        // (SortedNumericDocValuesField.newSlowRangeQuery) instead of the BKD wrapper tree
+        // (ApproximateScoreQuery -> IndexSortSortedNumericDocValuesRangeQuery -> IndexOrDocValuesQuery),
+        // which returns 0 hits on Parquet-only fields that have no BKD points index. This is a
+        // NODE-GLOBAL hack for the Parquet DocValues skipper benchmark and regresses vanilla numeric
+        // point queries -- do NOT ship. The real fix is a plugin-registered ParquetNumberFieldType
+        // (subclass overriding isSearchable) gated on index.pluggable.dataformat.enabled.
+        @Override
+        public boolean isSearchable() {
+            return false;
+        }
+
         @Override
         public String typeName() {
             return type.name;
