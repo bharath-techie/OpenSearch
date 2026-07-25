@@ -67,6 +67,12 @@ pub struct DatafusionQueryConfig {
     pub force_strategy: Option<FilterStrategy>,
     pub cost_predicate: u32,
     pub cost_collector: u32,
+    /// Use one adaptive Arrow decoder across a segment chunk's row groups.
+    /// Default-off while correctness and performance are validated.
+    pub indexed_multi_rg_decode: bool,
+    /// Route marker-free, non-row-id scans through IndexedTableProvider.
+    /// Default-off benchmark aid for ListingTable parity work.
+    pub route_pure_parquet_through_indexed: bool,
 }
 
 /// FFM wire format. Must stay in lockstep with the Java `MemoryLayout`.
@@ -90,6 +96,10 @@ pub struct WireDatafusionQueryConfig {
     pub force_strategy: i32,
     pub cost_predicate: i32,
     pub cost_collector: i32,
+    /// 0 = false, 1 = true
+    pub indexed_multi_rg_decode: i32,
+    /// 0 = false, 1 = true
+    pub route_pure_parquet_through_indexed: i32,
 }
 
 impl DatafusionQueryConfig {
@@ -108,6 +118,8 @@ impl DatafusionQueryConfig {
             force_strategy: None,
             cost_predicate: 1,
             cost_collector: 10,
+            indexed_multi_rg_decode: false,
+            route_pure_parquet_through_indexed: false,
         }
     }
 
@@ -157,6 +169,8 @@ impl DatafusionQueryConfig {
             },
             cost_predicate: w.cost_predicate as u32,
             cost_collector: w.cost_collector as u32,
+            indexed_multi_rg_decode: w.indexed_multi_rg_decode != 0,
+            route_pure_parquet_through_indexed: w.route_pure_parquet_through_indexed != 0,
         }
     }
 }
@@ -205,6 +219,14 @@ impl DatafusionQueryConfigBuilder {
         self.0.cost_collector = v;
         self
     }
+    pub fn indexed_multi_rg_decode(mut self, v: bool) -> Self {
+        self.0.indexed_multi_rg_decode = v;
+        self
+    }
+    pub fn route_pure_parquet_through_indexed(mut self, v: bool) -> Self {
+        self.0.route_pure_parquet_through_indexed = v;
+        self
+    }
     pub fn build(self) -> DatafusionQueryConfig {
         self.0
     }
@@ -226,12 +248,30 @@ mod tests {
         assert_eq!(c.force_strategy, None);
         assert_eq!(c.cost_predicate, 1);
         assert_eq!(c.cost_collector, 10);
+        assert!(!c.indexed_multi_rg_decode);
+        assert!(!c.route_pure_parquet_through_indexed);
     }
 
     #[test]
     #[should_panic(expected = "null query config pointer")]
     fn wire_decode_null_pointer_panics() {
         unsafe { DatafusionQueryConfig::from_ffm_ptr(0) };
+    }
+
+    #[test]
+    fn wire_layout_matches_java_snapshot() {
+        assert_eq!(std::mem::size_of::<WireDatafusionQueryConfig>(), 64);
+        assert_eq!(
+            std::mem::offset_of!(WireDatafusionQueryConfig, indexed_multi_rg_decode),
+            52
+        );
+        assert_eq!(
+            std::mem::offset_of!(
+                WireDatafusionQueryConfig,
+                route_pure_parquet_through_indexed
+            ),
+            56
+        );
     }
 
     #[test]
@@ -264,6 +304,8 @@ mod tests {
             force_strategy: 1,
             cost_predicate: 3,
             cost_collector: 17,
+            indexed_multi_rg_decode: 1,
+            route_pure_parquet_through_indexed: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
@@ -276,6 +318,8 @@ mod tests {
         assert_eq!(c.force_strategy, Some(FilterStrategy::BooleanMask));
         assert_eq!(c.cost_predicate, 3);
         assert_eq!(c.cost_collector, 17);
+        assert!(c.indexed_multi_rg_decode);
+        assert!(c.route_pure_parquet_through_indexed);
     }
 
     #[test]
@@ -290,9 +334,13 @@ mod tests {
             force_strategy: -1,
             cost_predicate: 1,
             cost_collector: 10,
+            indexed_multi_rg_decode: 0,
+            route_pure_parquet_through_indexed: 0,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
         assert_eq!(c.force_strategy, None);
+        assert!(!c.indexed_multi_rg_decode);
+        assert!(!c.route_pure_parquet_through_indexed);
     }
 }

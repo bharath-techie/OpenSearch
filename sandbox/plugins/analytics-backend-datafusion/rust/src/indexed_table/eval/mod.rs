@@ -86,7 +86,7 @@ use super::page_pruner::PagePruner;
 use super::page_pruner::StatsPruneTree;
 use super::row_selection::PositionMap;
 use super::stream::RowGroupInfo;
-use datafusion::arrow::buffer::Buffer;
+use datafusion::parquet::arrow::arrow_reader::RowSelection;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -167,25 +167,62 @@ pub trait RowGroupBitsetSource: Send + Sync {
     }
 }
 
+/// Pre-decode row access selected by an evaluator.
+pub enum PrefetchedRgRows {
+    /// Candidate doc IDs, RG-relative (bit 0 = first row of the RG).
+    /// Tree evaluators use this representation because refinement and
+    /// row-ID emission need random access to original row positions.
+    Bitmap(Arc<RoaringBitmap>),
+    /// Candidate doc IDs as packed u64 words, RG-relative. Collector
+    /// evaluators use this: Java already returns matches as a packed bitset,
+    /// and keeping it packed lets selection building, mask building, and
+    /// batch masks work word-at-a-time instead of per set bit — the roaring
+    /// round-trip dominated non-selective collector scans.
+    DenseBitmap(Arc<crate::indexed_table::dense_bits::DenseBitset>),
+    /// A page-granular Parquet selection. Predicate-only scans can pass the
+    /// page pruner's result straight to the decoder when row positions are not
+    /// needed, avoiding an intermediate bitmap and packed mask.
+    Selection {
+        selection: RowSelection,
+        selected_rows: usize,
+    },
+}
+
+impl PrefetchedRgRows {
+    pub fn matched_rows(&self) -> usize {
+        match self {
+            Self::Bitmap(candidates) => candidates.len() as usize,
+            Self::DenseBitmap(candidates) => candidates.count_ones(),
+            Self::Selection { selected_rows, .. } => *selected_rows,
+        }
+    }
+
+    pub fn bitmap(&self) -> Option<&RoaringBitmap> {
+        match self {
+            Self::Bitmap(candidates) => Some(candidates.as_ref()),
+            Self::DenseBitmap(..) | Self::Selection { .. } => None,
+        }
+    }
+
+    /// Candidate positions as a `RoaringBitmap`, converting if necessary.
+    /// Test/diagnostic helper — hot paths must match on the variant instead.
+    pub fn to_roaring(&self) -> Option<RoaringBitmap> {
+        match self {
+            Self::Bitmap(candidates) => Some(candidates.as_ref().clone()),
+            Self::DenseBitmap(candidates) => Some(candidates.to_roaring()),
+            Self::Selection { .. } => None,
+        }
+    }
+}
+
 /// Output of `prefetch_rg`.
 pub struct PrefetchedRg {
-    /// Candidate doc-id bitmap, RG-relative (bit 0 = first row of the RG
-    /// doc range). `IndexedStream` converts this to a `RowSelection` using
-    /// `min_skip_run` and keeps the matching `PositionMap` alongside for
-    /// post-decode alignment.
-    pub candidates: RoaringBitmap,
+    pub rows: PrefetchedRgRows,
     /// Time spent producing the bitset (nanoseconds). For metrics.
     pub eval_nanos: u64,
     /// Opaque per-RG state threaded to `on_batch_mask` via `rg_state: &dyn Any`.
     /// Evaluators downcast to their own concrete type.
     pub context: Box<dyn Any + Send + Sync>,
-    /// Optional: pre-built Arrow `Buffer` holding `candidates` in
-    /// Arrow's native LSB-first bit layout, length = rg_num_rows. When
-    /// `Some`, `IndexedStream::build_mask` wraps a `BooleanBuffer` view
-    /// over this buffer (zero-copy) instead of rematerialising from the
-    /// `RoaringBitmap`. Set by evaluators that already produced the
-    /// packed bits internally (e.g. `SingleCollectorEvaluator`).
-    pub mask_buffer: Option<Buffer>,
 }
 
 impl PrefetchedRg {
@@ -193,10 +230,9 @@ impl PrefetchedRg {
     /// path, which doesn't do refinement [post-scan]).
     pub fn without_context(candidates: RoaringBitmap, eval_nanos: u64) -> Self {
         Self {
-            candidates,
+            rows: PrefetchedRgRows::Bitmap(Arc::new(candidates)),
             eval_nanos,
             context: Box::new(()),
-            mask_buffer: None,
         }
     }
 }
@@ -521,10 +557,9 @@ impl RowGroupBitsetSource for TreeBitsetSource {
         }
 
         Ok(Some(PrefetchedRg {
-            candidates: rg_candidates,
+            rows: PrefetchedRgRows::Bitmap(Arc::new(rg_candidates)),
             eval_nanos: t.elapsed().as_nanos() as u64,
             context: Box::new(prefetch),
-            mask_buffer: None,
         }))
     }
 

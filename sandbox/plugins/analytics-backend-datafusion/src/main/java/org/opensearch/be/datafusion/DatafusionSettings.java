@@ -77,6 +77,28 @@ public final class DatafusionSettings {
     );
 
     /**
+     * Whether indexed scans reuse one adaptive Arrow decoder across all row
+     * groups in a segment chunk. Default-off while the path is experimental.
+     */
+    public static final Setting<Boolean> INDEXED_MULTI_RG_DECODE = Setting.boolSetting(
+        "datafusion.indexed.multi_rg_decode",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * Whether marker-free, non-row-id Parquet scans are routed through the
+     * indexed provider. Default-off benchmark aid for ListingTable parity work.
+     */
+    public static final Setting<Boolean> INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED = Setting.boolSetting(
+        "datafusion.indexed.route_pure_parquet_through_indexed",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
      * Default minimum run length (in rows) below which the indexed stream skips
      * row-selection optimizations and falls back to sequential decode. Shorter runs
      * have higher per-row overhead from selection vector maintenance.
@@ -227,6 +249,8 @@ public final class DatafusionSettings {
         BATCH_SIZE,
         LISTING_TABLE_PUSHDOWN_FILTERS,
         INDEXED_PUSHDOWN_FILTERS,
+        INDEXED_MULTI_RG_DECODE,
+        INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED,
         INDEXED_MIN_SKIP_RUN_DEFAULT,
         INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD,
         INDEXED_FORCE_STRATEGY
@@ -266,6 +290,8 @@ public final class DatafusionSettings {
             .targetPartitions(deriveTargetPartitions(this.concurrentSearchMode, this.maxSliceCount))
             .listingTablePushdownFilters(LISTING_TABLE_PUSHDOWN_FILTERS.get(settings))
             .indexedPushdownFilters(INDEXED_PUSHDOWN_FILTERS.get(settings))
+            .indexedMultiRgDecode(INDEXED_MULTI_RG_DECODE.get(settings))
+            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
             .forceStrategy(forceStrategyToWire(INDEXED_FORCE_STRATEGY.get(settings)))
@@ -287,6 +313,8 @@ public final class DatafusionSettings {
             .targetPartitions(deriveTargetPartitions(this.concurrentSearchMode, this.maxSliceCount))
             .listingTablePushdownFilters(LISTING_TABLE_PUSHDOWN_FILTERS.get(settings))
             .indexedPushdownFilters(INDEXED_PUSHDOWN_FILTERS.get(settings))
+            .indexedMultiRgDecode(INDEXED_MULTI_RG_DECODE.get(settings))
+            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
             .forceStrategy(forceStrategyToWire(INDEXED_FORCE_STRATEGY.get(settings)))
@@ -304,6 +332,14 @@ public final class DatafusionSettings {
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_PUSHDOWN_FILTERS, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).indexedPushdownFilters(newValue).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_MULTI_RG_DECODE, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).indexedMultiRgDecode(newValue).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).routePureParquetThroughIndexed(newValue).build();
         });
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_MIN_SKIP_RUN_DEFAULT, newValue -> {

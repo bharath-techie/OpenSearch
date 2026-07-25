@@ -37,6 +37,23 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertTrue(DatafusionSettings.INDEXED_PUSHDOWN_FILTERS.hasNodeScope());
     }
 
+    public void testIndexedMultiRgDecodeSettingDefinition() {
+        assertEquals("datafusion.indexed.multi_rg_decode", DatafusionSettings.INDEXED_MULTI_RG_DECODE.getKey());
+        assertEquals(Boolean.FALSE, DatafusionSettings.INDEXED_MULTI_RG_DECODE.get(Settings.EMPTY));
+        assertTrue(DatafusionSettings.INDEXED_MULTI_RG_DECODE.isDynamic());
+        assertTrue(DatafusionSettings.INDEXED_MULTI_RG_DECODE.hasNodeScope());
+    }
+
+    public void testRoutePureParquetThroughIndexedSettingDefinition() {
+        assertEquals(
+            "datafusion.indexed.route_pure_parquet_through_indexed",
+            DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.getKey()
+        );
+        assertEquals(Boolean.FALSE, DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(Settings.EMPTY));
+        assertTrue(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.isDynamic());
+        assertTrue(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.hasNodeScope());
+    }
+
     public void testMinSkipRunDefaultSettingDefinition() {
         assertEquals("datafusion.indexed.min_skip_run_default", DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT.getKey());
         assertEquals(Integer.valueOf(1024), DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT.get(Settings.EMPTY));
@@ -55,13 +72,15 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
     }
 
     public void testAllSettingsContainsAllExpectedSettings() {
-        assertEquals(31, DatafusionSettings.ALL_SETTINGS.size());
+        assertEquals(33, DatafusionSettings.ALL_SETTINGS.size());
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_REDUCE_TARGET_PARTITIONS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_MEMORY_GUARD_SPILL_EXEMPT_CAP));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_SPILL_DIRECTORY));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.BATCH_SIZE));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.LISTING_TABLE_PUSHDOWN_FILTERS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_PUSHDOWN_FILTERS));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MULTI_RG_DECODE));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_FORCE_STRATEGY));
@@ -102,6 +121,8 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertEquals(1024, snapshot.minSkipRunDefault());
         assertEquals(0.03, snapshot.minSkipRunSelectivityThreshold(), 1e-15);
         assertEquals(DEFAULT_PARALLELISM, snapshot.targetPartitions());
+        assertFalse(snapshot.indexedMultiRgDecode());
+        assertFalse(snapshot.routePureParquetThroughIndexed());
     }
 
     public void testTargetPartitionsPassthroughWhenNonZero() {

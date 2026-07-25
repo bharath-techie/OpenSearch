@@ -129,6 +129,15 @@ fn coalesce_short_skips(input: Vec<RowSelector>, min_skip_run: usize) -> RowSele
     RowSelection::from(out)
 }
 
+/// Apply the same minimum-skip policy to an existing page-level selection.
+/// This avoids expanding the selection through an intermediate bitmap.
+pub fn coalesce_row_selection_with_min_skip_run(
+    selection: RowSelection,
+    min_skip_run: usize,
+) -> RowSelection {
+    coalesce_short_skips(selection.into(), min_skip_run)
+}
+
 /// Maps a delivered batch-row index (0-based across all selects in a
 /// `RowSelection`, in order) to its RG-relative row position. Built from
 /// the same `RowSelection` handed to parquet.
@@ -157,6 +166,12 @@ pub enum PositionMap {
     Bitmap {
         /// Delivered row i corresponds to the i-th set bit of `bits`.
         bits: Arc<RoaringBitmap>,
+        delivered_count: usize,
+    },
+    /// Same contract as `Bitmap` but over a packed-word bitset (collector
+    /// path). Shares the `Arc` with the evaluator's candidate set.
+    DenseBitmap {
+        bits: Arc<crate::indexed_table::dense_bits::DenseBitset>,
         delivered_count: usize,
     },
     Runs {
@@ -227,6 +242,9 @@ impl PositionMap {
             | Self::Bitmap {
                 delivered_count, ..
             }
+            | Self::DenseBitmap {
+                delivered_count, ..
+            }
             | Self::Runs {
                 delivered_count, ..
             } => *delivered_count,
@@ -253,6 +271,15 @@ impl PositionMap {
                 }
                 // RoaringBitmap::select(n) returns the n-th smallest set bit.
                 bits.select(delivered_idx as u32).map(|b| b as usize)
+            }
+            Self::DenseBitmap {
+                bits,
+                delivered_count,
+            } => {
+                if delivered_idx >= *delivered_count {
+                    return None;
+                }
+                bits.select(delivered_idx)
             }
             Self::Runs {
                 runs,
@@ -345,10 +372,13 @@ pub fn build_mask(candidates: &RoaringBitmap, position_map: &PositionMap) -> Boo
             let bits = bitmap_to_packed_bits(candidates, *delivered_count as u32);
             packed_bits_to_boolean_array(bits, *delivered_count)
         }
-        // Bitmap → delivered rows are exactly the candidate set bits. Every
-        // delivered row is by construction a candidate, so the mask is
-        // all-true.
+        // Bitmap/DenseBitmap → delivered rows are exactly the candidate set
+        // bits. Every delivered row is by construction a candidate, so the
+        // mask is all-true.
         PositionMap::Bitmap {
+            delivered_count, ..
+        }
+        | PositionMap::DenseBitmap {
             delivered_count, ..
         } => {
             let all_true = datafusion::arrow::buffer::BooleanBuffer::new_set(*delivered_count);

@@ -30,6 +30,7 @@ datafusion-datasource = "=54.0.0"
 datafusion-common = "=54.0.0"
 datafusion-execution = "=54.0.0"
 datafusion-physical-expr = "=54.0.0"
+datafusion-physical-expr-adapter = "=54.0.0"
 datafusion-substrait = "=54.0.0"
 
 # Async
@@ -97,3 +98,23 @@ codegen-units = 16
 incremental = true
 debug = "full"
 strip = false
+
+# Arrow 58.3 plus the additive ParquetPushDecoder row-group boundary APIs from
+# arrow-rs #9804, #9968, and #10158. Keep every Arrow package on the same git
+# source so Arrow array/schema types have one Cargo package identity.
+[patch.crates-io]
+arrow = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-arith = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-array = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-buffer = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-cast = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-csv = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-data = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-ipc = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-json = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-ord = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-row = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-schema = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-select = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+arrow-string = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }
+parquet = { git = "https://github.com/bharath-techie/arrow-rs.git", rev = "f43e24042d42c4853f1db3d7fea7413b1457ce57" }

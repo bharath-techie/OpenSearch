@@ -28,15 +28,13 @@ use std::sync::OnceLock;
 use datafusion::arrow::array::BooleanArray;
 use datafusion::arrow::record_batch::RecordBatch;
 use native_bridge_common::log_debug;
-use roaring::RoaringBitmap;
 
-use super::{PrefetchedRg, RowGroupBitsetSource};
+use super::{PrefetchedRg, PrefetchedRgRows, RowGroupBitsetSource};
+use crate::indexed_table::dense_bits::{DenseBitset, DenseBitsetBuilder};
 use crate::indexed_table::ffm_callbacks::{create_provider, FfmSegmentCollector, ProviderHandle};
 use crate::indexed_table::index::RowGroupDocsCollector;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
-use crate::indexed_table::row_selection::{
-    bitmap_to_packed_bits, packed_bits_to_boolean_array, row_selection_to_bitmap, PositionMap,
-};
+use crate::indexed_table::row_selection::{packed_bits_to_boolean_array, PositionMap};
 use datafusion::parquet::file::metadata::ParquetMetaData;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 use std::time::Instant;
@@ -103,17 +101,57 @@ impl DelegatedBackendCollectorFactory for FfmDelegatedBackendCollectorFactory {
 /// Per-RG state the evaluator keeps for refinement. In row-granular
 /// mode parquet narrowed fully via `with_predicate` + `RowSelection`
 /// and nothing is needed here. In block-granular mode we need the
-/// Collector candidate bitmap to build a post-decode mask.
-///
-/// `mask_buffer` is the candidate bitmap in Arrow's native LSB-first bit
-/// layout, wrapped as a refcounted `Buffer`. Sharing an `Arc<Buffer>` lets
-/// `on_batch_mask` and `build_mask` build zero-copy `BooleanBuffer`
-/// views via `BooleanBuffer::new(buf.clone(), bit_offset, bit_len)`.
-/// Length of the underlying buffer covers `mask_len` bits (= rg_num_rows).
+/// Collector candidate bitset to build a post-decode mask.
 struct SingleCollectorState {
-    candidates: RoaringBitmap,
-    mask_buffer: datafusion::arrow::buffer::Buffer,
-    mask_len: usize,
+    candidates: Arc<DenseBitset>,
+}
+
+fn candidate_mask_for_batch(
+    candidates: &DenseBitset,
+    position_map: &PositionMap,
+    batch_offset: usize,
+    batch_len: usize,
+) -> BooleanArray {
+    if matches!(
+        position_map,
+        PositionMap::Bitmap { .. } | PositionMap::DenseBitmap { .. }
+    ) {
+        return BooleanArray::new(
+            datafusion::arrow::buffer::BooleanBuffer::new_set(batch_len),
+            None,
+        );
+    }
+
+    match position_map {
+        // Identity: delivered row i == RG position batch_offset + i.
+        // Zero-copy slice over the packed candidate words.
+        PositionMap::Identity { .. } => candidates.boolean_slice(batch_offset, batch_len),
+        PositionMap::Runs { runs, .. } => {
+            let mut out = vec![0u64; batch_len.div_ceil(64)];
+            let batch_end = batch_offset.saturating_add(batch_len);
+            for &(rg_start, delivered_start, run_len) in runs {
+                let delivered_end = delivered_start.saturating_add(run_len);
+                let overlap_start = delivered_start.max(batch_offset);
+                let overlap_end = delivered_end.min(batch_end);
+                if overlap_start >= overlap_end {
+                    continue;
+                }
+                let rg_overlap_start = rg_start + overlap_start - delivered_start;
+                // Word-copy the overlapping candidate bits to their local
+                // batch positions; no per-bit iteration.
+                candidates.copy_bits_into(
+                    rg_overlap_start,
+                    overlap_end - overlap_start,
+                    &mut out,
+                    overlap_start - batch_offset,
+                );
+            }
+            packed_bits_to_boolean_array(out, batch_len)
+        }
+        PositionMap::Bitmap { .. } | PositionMap::DenseBitmap { .. } => {
+            unreachable!("handled above")
+        }
+    }
 }
 
 /// Evaluator holding one collector and applying per-RG page pruning.
@@ -339,7 +377,12 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         // Build candidates either from the always-call correctness collector OR, when
         // the query is performance-only (no Collector leaves), from the page-pruned
         // universe. Performance leaves are AND'd in below if the selectivity gate fires.
-        let mut candidates = match self.collector.as_ref() {
+        //
+        // Candidates are kept as a packed-word DenseBitset: the collector's
+        // packed u64 return is OR'd in place and page ranges applied by
+        // word-masked fills — no per-bit roaring construction.
+        let mut candidates = DenseBitsetBuilder::zeros(rg.num_rows as usize);
+        match self.collector.as_ref() {
             Some(collector) => {
                 // Dispatch collector call strategy.
                 let call_ranges: Vec<(i32, i32)> = match self.call_strategy {
@@ -356,8 +399,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                     },
                 };
 
-                // Call collector for each range, merge into one RG-relative bitmap.
-                let mut bm = RoaringBitmap::new();
+                // Call collector for each range, OR the packed words in place.
                 for (r_min, r_max) in &call_ranges {
                     let bitset = collector
                         .collect_packed_u64_bitset(*r_min, *r_max)
@@ -370,54 +412,46 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                     if let Some(ref c) = self.ffm_collector_calls {
                         c.add(1);
                     }
-                    let offset = (*r_min as i64 - rg.first_row) as u32;
-                    let num_docs = (*r_max - *r_min) as u32;
-                    let bytes: &[u8] = unsafe {
-                        std::slice::from_raw_parts(bitset.as_ptr() as *const u8, bitset.len() * 8)
-                    };
-                    let mut chunk = RoaringBitmap::from_lsb0_bytes(offset, bytes);
-                    let upper = offset.saturating_add(num_docs);
-                    if upper < u32::MAX {
-                        chunk.remove_range(upper..);
-                    }
-                    bm |= chunk;
+                    let offset = (*r_min as i64 - rg.first_row) as usize;
+                    let num_docs = (*r_max - *r_min) as usize;
+                    candidates.or_lsb0_words(offset, &bitset, num_docs);
                 }
 
-                // For FullRange and TightenOuterBounds, AND with page bitmap
+                // For FullRange and TightenOuterBounds, mask to page ranges
                 // to remove rows in dead pages that the collector scanned.
                 if self.call_strategy != CollectorCallStrategy::PageRangeSplit {
                     if let Some(ref ranges) = page_ranges {
-                        let mut allowed = RoaringBitmap::new();
-                        for (r_min, r_max) in ranges {
-                            let lo = (*r_min as i64 - rg.first_row) as u32;
-                            let hi = (*r_max as i64 - rg.first_row) as u32;
-                            allowed.insert_range(lo..hi);
-                        }
-                        bm &= allowed;
+                        let rel: Vec<(usize, usize)> = ranges
+                            .iter()
+                            .map(|(r_min, r_max)| {
+                                (
+                                    (*r_min as i64 - rg.first_row) as usize,
+                                    (*r_max as i64 - rg.first_row) as usize,
+                                )
+                            })
+                            .collect();
+                        candidates.retain_ranges(&rel);
                     }
                 }
-                bm
             }
             None => {
                 // Performance-only query. Seed candidates with the page-pruned universe
                 // (or the full RG if no PruningPredicate). The opportunistic peer branch
                 // below may narrow further; otherwise DF's pushdown filter handles the
                 // residual at decode time.
-                let mut bm = RoaringBitmap::new();
                 match &page_ranges {
                     Some(r) if r.is_empty() => return Ok(None),
                     Some(r) => {
                         for (r_min, r_max) in r {
-                            let lo = (*r_min as i64 - rg.first_row) as u32;
-                            let hi = (*r_max as i64 - rg.first_row) as u32;
-                            bm.insert_range(lo..hi);
+                            let lo = (*r_min as i64 - rg.first_row) as usize;
+                            let hi = (*r_max as i64 - rg.first_row) as usize;
+                            candidates.set_range(lo, hi);
                         }
                     }
                     None => {
-                        bm.insert_range(0..rg.num_rows as u32);
+                        candidates.set_range(0, rg.num_rows as usize);
                     }
                 }
-                bm
             }
         };
 
@@ -488,47 +522,34 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             if let Some(ref c) = self.ffm_collector_calls {
                 c.add(1);
             }
-            let offset = (min_doc as i64 - rg.first_row) as u32;
-            let num_docs = (max_doc - min_doc) as u32;
-            let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(bitset.as_ptr() as *const u8, bitset.len() * 8)
-            };
-            let mut peer_bm = RoaringBitmap::from_lsb0_bytes(offset, bytes);
-            let upper = offset.saturating_add(num_docs);
-            if upper < u32::MAX {
-                peer_bm.remove_range(upper..);
-            }
-            // Per-RG debug log — see note above on `format!` cost. Re-enable locally for debugging.
-            // let candidates_before = candidates.len();
-            // let peer_card = peer_bm.len();
-            candidates &= peer_bm;
-            // log_debug!(
-            //     "[scf-rust] peer bitset intersected rg={} writer_generation={} candidates_before={} peer_cardinality={} candidates_after={}",
-            //     rg.index, self.writer_generation, candidates_before, peer_card, candidates.len()
-            // );
+            let offset = (min_doc as i64 - rg.first_row) as usize;
+            let num_docs = (max_doc - min_doc) as usize;
+            // AND with the peer bitset; bits outside the peer's window are
+            // cleared (the window covers the whole RG range queried).
+            candidates.and_lsb0_words(offset, &bitset, num_docs);
         }
 
+        let candidates = candidates.freeze();
         if candidates.is_empty() {
             return Ok(None);
         }
 
-        // Materialise the final RG-relative bitmap as an Arrow `Buffer`
-        // in Arrow's native LSB-first layout. This is the ONLY
-        // representation the hot paths (`on_batch_mask`, `build_mask`)
-        // need; they construct zero-copy `BooleanBuffer` views via
-        // `BooleanBuffer::new(buf.clone(), bit_offset, bit_len)`.
-        let mask_len = rg.num_rows as usize;
-        let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
-        let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
+        // Keep one authoritative candidate representation. Row-selection
+        // planning and optional residual refinement share it by Arc; packed
+        // Arrow masks are materialized only by the block/batch path that
+        // consumes them.
+        let candidates = Arc::new(candidates);
+        let context: Box<dyn std::any::Any + Send + Sync> = if self.residual_expr.is_some() {
+            Box::new(SingleCollectorState {
+                candidates: Arc::clone(&candidates),
+            })
+        } else {
+            Box::new(())
+        };
         Ok(Some(PrefetchedRg {
-            candidates: candidates.clone(),
+            rows: PrefetchedRgRows::DenseBitmap(candidates),
             eval_nanos: t.elapsed().as_nanos() as u64,
-            context: Box::new(SingleCollectorState {
-                candidates,
-                mask_buffer: mask_buffer.clone(),
-                mask_len,
-            }),
-            mask_buffer: Some(mask_buffer),
+            context,
         }))
     }
 
@@ -553,53 +574,8 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 "SingleCollectorEvaluator: rg_state is not SingleCollectorState".to_string()
             })?;
 
-        // Build Collector mask over delivered rows via PositionMap.
-        // All paths produce a `BooleanArray` whose underlying
-        // `Buffer` is a refcounted view into `state.mask_buffer` —
-        // zero allocation for Identity, at most one small packed
-        // Vec<u64> for Runs.
-        let collector_mask: BooleanArray = match position_map {
-            // Identity: delivered row i == rg_position (batch_offset + i).
-            // BooleanBuffer::new adjusts bit_offset without copying the
-            // underlying Buffer. The returned BooleanArray points into
-            // state.mask_buffer; lifecycle is Arc-managed.
-            PositionMap::Identity { .. } => {
-                let bb = datafusion::arrow::buffer::BooleanBuffer::new(
-                    state.mask_buffer.clone(),
-                    batch_offset,
-                    batch_len,
-                );
-                BooleanArray::new(bb, None)
-            }
-            // Every delivered row is by construction a candidate — mask is all-true.
-            PositionMap::Bitmap { .. } => BooleanArray::new(
-                datafusion::arrow::buffer::BooleanBuffer::new_set(batch_len),
-                None,
-            ),
-            // Runs: gather per-row bit from the shared mask_buffer into
-            // a new packed Vec<u64> (small — bounded by batch_len/64).
-            PositionMap::Runs { .. } => {
-                let words = batch_len.div_ceil(64);
-                let mut out = vec![0u64; words];
-                let src_bytes = state.mask_buffer.as_slice();
-                for i in 0..batch_len {
-                    let delivered_idx = batch_offset + i;
-                    let rg_pos = position_map.rg_position(delivered_idx).ok_or_else(|| {
-                        format!(
-                            "SingleCollectorEvaluator: delivered_idx {} out of range",
-                            delivered_idx
-                        )
-                    })?;
-                    // Read bit rg_pos from the packed buffer (LSB-first).
-                    let hit = rg_pos < state.mask_len
-                        && (src_bytes[rg_pos >> 3] >> (rg_pos & 7)) & 1 == 1;
-                    if hit {
-                        out[i >> 6] |= 1u64 << (i & 63);
-                    }
-                }
-                packed_bits_to_boolean_array(out, batch_len)
-            }
-        };
+        let collector_mask =
+            candidate_mask_for_batch(&state.candidates, position_map, batch_offset, batch_len);
 
         // Evaluate residual against the batch.
         let residual_mask = super::eval_helpers::evaluate_residual(residual, batch, batch_len)?;
@@ -613,41 +589,25 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         Ok(Some(combined))
     }
 
-    /// When we have a residual to apply in `on_batch_mask`, pushdown
-    /// must be OFF in **block-granular mode** because we use
-    /// `PositionMap` to look up RG positions over the full delivered
-    /// rowset — pushdown would drop rows and misalign. In
-    /// **row-granular mode** (`min_skip_run == 1`), pushdown is safe
-    /// and desirable: parquet applies the residual in lockstep with
-    /// decoding, `on_batch_mask` returns `None`, and output is
-    /// exact. But the evaluator doesn't know min_skip_run — the
-    /// stream does. The stream guards this via its
-    /// `alignment_risk = min_skip_run != 1 && needs_row_mask()`
-    /// check plus `forbid_parquet_pushdown`. We return `false` here
-    /// and rely on `needs_row_mask = true` (default when residual is
-    /// present) to trigger the stream's alignment guard in block
-    /// mode; in row-granular mode that guard is inactive and
-    /// pushdown proceeds.
+    /// With a residual, `on_batch_mask` owns exact filtering (collector
+    /// candidates ∧ residual) over the RowSelection-delivered rowset and
+    /// looks up RG positions via `PositionMap` in block-granular mode.
+    /// A parquet RowFilter would (a) drop rows mid-decode and misalign
+    /// those lookups, and (b) evaluate the same residual a second time in
+    /// row-granular mode. Forbid it and evaluate the residual exactly once
+    /// post-decode — the same ownership rule as the predicate-only direct
+    /// selection path. Without a residual there is nothing to push.
     fn forbid_parquet_pushdown(&self) -> bool {
-        false
+        self.residual_expr.is_some()
     }
 
-    /// Stream's `current_mask` construction consults this. When
-    /// residual is set, we return `true` so the stream knows our
-    /// `on_batch_mask` uses PositionMap (alignment risk) — this flag
-    /// flips the stream's `alignment_risk` computation which
-    /// suppresses pushdown in block-granular mode. In row-granular
-    /// mode (min_skip_run == 1) the stream ignores this flag's
-    /// pushdown impact and pushes anyway (which is what we want:
-    /// parquet applies residual during decode of already-narrowed
-    /// rowset, on_batch_mask returns None below).
-    ///
-    /// Without residual, we return `true` too — stream builds
-    /// `current_mask` from Collector bitmap to narrow post-decode
-    /// (legacy path for SingleCollector without a residual wasn't
-    /// used in production but kept for defensive correctness).
+    /// With a residual, `on_batch_mask` returns `Some` for every batch and
+    /// `finalize_batch` applies that mask exclusively — a stream-built
+    /// `current_mask` would be constructed and then ignored (it measured
+    /// ~140 ms per non-selective query). Only without a residual does the
+    /// stream's `current_mask` perform the collector narrowing.
     fn needs_row_mask(&self) -> bool {
-        true
+        self.residual_expr.is_none()
     }
 }
 
@@ -655,8 +615,9 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::parquet::arrow::arrow_reader::ArrowReaderMetadata;
-    use datafusion::parquet::arrow::arrow_reader::ArrowReaderOptions;
+    use datafusion::parquet::arrow::arrow_reader::{
+        ArrowReaderMetadata, ArrowReaderOptions, RowSelection,
+    };
     use datafusion::parquet::arrow::ArrowWriter;
     use std::fmt;
     use std::sync::Arc;
@@ -712,6 +673,57 @@ mod tests {
         Arc::new(pruner)
     }
 
+    fn mask_values(mask: &BooleanArray) -> Vec<bool> {
+        (0..mask.len()).map(|index| mask.value(index)).collect()
+    }
+
+    fn dense_from_bits(bits: &[usize], len: usize) -> DenseBitset {
+        let mut b = DenseBitsetBuilder::zeros(len);
+        for &bit in bits {
+            b.or_lsb0_words(bit, &[1u64], 1);
+        }
+        b.freeze()
+    }
+
+    #[test]
+    fn candidate_batch_mask_slices_identity_positions() {
+        let candidates = dense_from_bits(&[1, 3, 4, 8], 10);
+        let position_map = PositionMap::from_selection(&RowSelection::from(vec![
+            datafusion::parquet::arrow::arrow_reader::RowSelector::select(10),
+        ]));
+
+        let mask = candidate_mask_for_batch(&candidates, &position_map, 2, 4);
+        assert_eq!(mask_values(&mask), vec![false, true, true, false]);
+    }
+
+    #[test]
+    fn candidate_batch_mask_is_true_for_exact_bitmap_selection() {
+        let candidates = Arc::new(dense_from_bits(&[1, 3, 8], 10));
+        let position_map = PositionMap::DenseBitmap {
+            delivered_count: candidates.count_ones(),
+            bits: Arc::clone(&candidates),
+        };
+
+        let mask = candidate_mask_for_batch(&candidates, &position_map, 1, 2);
+        assert_eq!(mask_values(&mask), vec![true, true]);
+    }
+
+    #[test]
+    fn candidate_batch_mask_maps_across_selection_runs() {
+        use datafusion::parquet::arrow::arrow_reader::RowSelector;
+
+        let candidates = dense_from_bits(&[4, 8, 9], 11);
+        let position_map = PositionMap::from_selection(&RowSelection::from(vec![
+            RowSelector::skip(2),
+            RowSelector::select(4),
+            RowSelector::skip(2),
+            RowSelector::select(3),
+        ]));
+
+        let mask = candidate_mask_for_batch(&candidates, &position_map, 2, 4);
+        assert_eq!(mask_values(&mask), vec![true, false, true, true]);
+    }
+
     #[test]
     fn path_b_and_mode_collects_docs_and_returns_offsets() {
         let collector = Arc::new(StubCollector {
@@ -741,7 +753,7 @@ mod tests {
             num_rows: 8,
         };
         let prefetched = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
-        let got: Vec<u32> = prefetched.candidates.iter().collect();
+        let got: Vec<u32> = prefetched.rows.to_roaring().unwrap().iter().collect();
         assert_eq!(got, vec![0u32, 3, 7]);
     }
 
@@ -786,10 +798,46 @@ mod tests {
     }
 
     #[test]
+    fn single_collector_mask_and_pushdown_flags_with_residual() {
+        // With a residual, on_batch_mask owns exact filtering: the stream
+        // must not build a current_mask (it would be ignored) and parquet
+        // must not run the residual as a RowFilter (double evaluation +
+        // block-granular misalignment).
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::scalar::ScalarValue;
+        let residual: Arc<dyn datafusion::physical_expr::PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::NotEq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+        ));
+        let collector = Arc::new(StubCollector { docs: vec![0] }) as Arc<dyn RowGroupDocsCollector>;
+        let pruner = minimal_page_pruner();
+        let eval = SingleCollectorEvaluator::new(
+            Some(collector),
+            pruner,
+            None,
+            Some(residual),
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            Arc::new(HashMap::new()),
+            0,
+            Arc::new(FfmDelegatedBackendCollectorFactory),
+            0,
+            None,
+            None,
+            HashMap::new(),
+        );
+        assert!(!eval.needs_row_mask());
+        assert!(eval.forbid_parquet_pushdown());
+    }
+
+    #[test]
     fn single_collector_needs_row_mask() {
-        // SingleCollectorEvaluator returns None from on_batch_mask, so
-        // IndexedStream must build current_mask from candidate offsets
-        // (it's the only post-decode filter we have on this path).
+        // Without a residual, on_batch_mask returns None, so IndexedStream
+        // must build current_mask from candidate offsets (it's the only
+        // post-decode filter on this path) and pushdown stays permitted.
         let collector = Arc::new(StubCollector { docs: vec![0] }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
         let eval = SingleCollectorEvaluator::new(
@@ -809,6 +857,7 @@ mod tests {
             HashMap::new(),
         );
         assert!(eval.needs_row_mask());
+        assert!(!eval.forbid_parquet_pushdown());
     }
 
     #[test]
@@ -873,7 +922,7 @@ mod tests {
             num_rows: 8,
         };
         let prefetched = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
-        let got: Vec<u32> = prefetched.candidates.iter().collect();
+        let got: Vec<u32> = prefetched.rows.to_roaring().unwrap().iter().collect();
         assert_eq!(got, vec![0u32, 3, 7]);
     }
 
@@ -946,7 +995,7 @@ mod tests {
             .prefetch_rg(&rg, 0, 8)
             .unwrap()
             .expect("should have matches");
-        let got: Vec<u32> = prefetched.candidates.iter().collect();
+        let got: Vec<u32> = prefetched.rows.to_roaring().unwrap().iter().collect();
         assert_eq!(got, vec![0u32, 3, 7]);
     }
 
@@ -980,7 +1029,7 @@ mod tests {
             .prefetch_rg(&rg, 0, 8)
             .unwrap()
             .expect("should have matches");
-        let got: Vec<u32> = prefetched.candidates.iter().collect();
+        let got: Vec<u32> = prefetched.rows.to_roaring().unwrap().iter().collect();
         assert_eq!(got, vec![1u32, 5]);
     }
 

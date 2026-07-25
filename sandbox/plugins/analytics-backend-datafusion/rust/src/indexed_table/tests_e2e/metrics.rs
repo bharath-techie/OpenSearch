@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// metrics propagate up via the shared counter handles passed through
 /// `StreamMetrics`, but we only need to inspect `QueryShardExec` itself
 /// to read them back out.
-fn aggregate_metrics(plan: &Arc<dyn ExecutionPlan>) -> MetricsSet {
+pub(super) fn aggregate_metrics(plan: &Arc<dyn ExecutionPlan>) -> MetricsSet {
     let mut set = MetricsSet::new();
     fn walk(plan: &Arc<dyn ExecutionPlan>, out: &mut MetricsSet) {
         if plan.name() == "QueryShardExec" {

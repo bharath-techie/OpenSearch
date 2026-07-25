@@ -1036,7 +1036,6 @@ pub unsafe extern "C" fn df_create_session_context(
     plan_ptr: *const u8,
     plan_len: i64,
 ) -> i64 {
-    crate::search_stats::inc_listing_table_scan();
     let table_name = str_from_raw(table_name_ptr, table_name_len)
         .map_err(|e| format!("df_create_session_context: {}", e))?;
     let query_config =
@@ -1291,6 +1290,16 @@ pub unsafe extern "C" fn df_close_session_context(ptr: i64) {
     crate::session_context::close_session_context(ptr);
 }
 
+fn should_use_indexed_executor(
+    has_indexed_config: bool,
+    has_row_id: bool,
+    force_indexed_provider: bool,
+) -> bool {
+    // Delegation controls has_indexed_config; the force flag is deliberately
+    // independent so marker-free Parquet plans can exercise IndexedTableProvider.
+    has_indexed_config || has_row_id || force_indexed_provider
+}
+
 #[ffm_safe]
 #[no_mangle]
 pub unsafe extern "C" fn df_execute_with_context(
@@ -1319,7 +1328,13 @@ pub unsafe extern "C" fn df_execute_with_context(
     let has_row_id = plan_bytes
         .windows(crate::ROW_ID_COLUMN_NAME.len())
         .any(|w| w == crate::ROW_ID_COLUMN_NAME.as_bytes());
-    let use_indexed = session_handle.indexed_config.is_some() || has_row_id;
+    let use_indexed = should_use_indexed_executor(
+        session_handle.indexed_config.is_some(),
+        has_row_id,
+        session_handle
+            .query_config
+            .route_pure_parquet_through_indexed,
+    );
     if use_indexed {
         // Extract target_partitions BEFORE boxing into raw pointer (session_handle is consumed).
         let partition_weight = session_handle.query_config.target_partitions.max(1) as u32;
@@ -1353,6 +1368,7 @@ pub unsafe extern "C" fn df_execute_with_context(
             })
             .map_err(|e| e.to_string())
     } else {
+        crate::search_stats::inc_listing_table_scan();
         // Extract target_partitions before moving session_handle into the closure.
         let partition_weight = session_handle.query_config.target_partitions.max(1) as u32;
         mgr.io_runtime
@@ -1622,6 +1638,24 @@ mod tests {
             SENDER_SEND_RECEIVER_DROPPED
         );
         assert_eq!(SENDER_SEND_RECEIVER_DROPPED, 1);
+    }
+
+    #[test]
+    fn indexed_execution_route_is_an_or_of_all_route_signals() {
+        for has_indexed_config in [false, true] {
+            for has_row_id in [false, true] {
+                for force_indexed_provider in [false, true] {
+                    assert_eq!(
+                        should_use_indexed_executor(
+                            has_indexed_config,
+                            has_row_id,
+                            force_indexed_provider,
+                        ),
+                        has_indexed_config || has_row_id || force_indexed_provider,
+                    );
+                }
+            }
+        }
     }
 
     /// Initialize the global runtime manager for tests.

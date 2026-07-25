@@ -6,12 +6,7 @@
  * compatible open source license.
  */
 
-//! Unified DataFusion `TableProvider` for all indexed-query paths.
-//!
-//! This is the ONE provider. Paths B and C differ only in the evaluator
-//! factory closure supplied in `IndexedTableConfig`. The provider itself,
-//! the `QueryShardExec` it wraps, and the `IndexedExec`s it spawns are
-//! identical across paths.
+//! DataFusion `TableProvider` for indexed parquet paths.
 //!
 //! ```text
 //!     IndexedTableProvider (scan)
@@ -30,7 +25,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::catalog::{Session, TableProvider};
+use datafusion::catalog::{ScanArgs, ScanResult, Session, TableProvider};
 use datafusion::common::{Result, Statistics};
 use datafusion::datasource::TableType;
 use datafusion::execution::SendableRecordBatchStream;
@@ -243,6 +238,7 @@ impl TableProvider for IndexedTableProvider {
     fn schema(&self) -> SchemaRef {
         self.config.schema.clone()
     }
+
     fn table_type(&self) -> TableType {
         TableType::Base
     }
@@ -267,12 +263,13 @@ impl TableProvider for IndexedTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let full_schema = self.config.schema.clone();
+        let config = &self.config;
+        let full_schema = config.schema.clone();
 
         // Detect __row_id__ in the output projection when emit_row_ids=true.
         // If present, we strip it from the parquet read and compute it from position.
         let row_id_col_in_full_schema = full_schema.index_of(crate::ROW_ID_COLUMN_NAME).ok();
-        let row_id_output_index: Option<usize> = if self.config.emit_row_ids {
+        let row_id_output_index: Option<usize> = if config.emit_row_ids {
             match projection {
                 Some(proj) => proj
                     .iter()
@@ -301,7 +298,7 @@ impl TableProvider for IndexedTableProvider {
         };
 
         // Read projection = output columns (minus ___row_id) + predicate columns for evaluator.
-        let read_projection: Option<Vec<usize>> = if self.config.emit_row_ids {
+        let read_projection: Option<Vec<usize>> = if config.emit_row_ids {
             let output_cols: Vec<usize> = match projection {
                 Some(proj) => proj
                     .iter()
@@ -313,19 +310,19 @@ impl TableProvider for IndexedTableProvider {
                     .collect(),
             };
             let mut cols = output_cols;
-            for &idx in &self.config.predicate_columns {
+            for &idx in &config.predicate_columns {
                 if !cols.contains(&idx) {
                     cols.push(idx);
                 }
             }
             cols.sort();
             Some(cols)
-        } else if self.config.predicate_columns.is_empty() {
+        } else if config.predicate_columns.is_empty() {
             projection.cloned()
         } else {
             projection.map(|proj| {
                 let mut cols = proj.clone();
-                for &idx in &self.config.predicate_columns {
+                for &idx in &config.predicate_columns {
                     if !cols.contains(&idx) {
                         cols.push(idx);
                     }
@@ -346,11 +343,10 @@ impl TableProvider for IndexedTableProvider {
         // to `ParquetSource::with_predicate` — is derived from the
         // BoolNode in `execute_indexed_query` and stashed on the
         // config by that caller.
-        let predicate = self.config.pushdown_predicate.clone();
+        let predicate = config.pushdown_predicate.clone();
 
         // Row-group-aligned partition assignments
-        let layouts: Vec<SegmentLayout> = self
-            .config
+        let layouts: Vec<SegmentLayout> = config
             .segments
             .iter()
             .map(|seg| SegmentLayout {
@@ -363,11 +359,11 @@ impl TableProvider for IndexedTableProvider {
         // min/max are disjoint), `target_partitions >= num_segments` so the
         // optimizer's chain check at `file_scan_config.rs:551` would accept,
         // and that we're not on the QTF row-id-emit path (gated for v1).
-        let target_partitions = self.config.query_config.target_partitions.max(1);
-        let chain_ok = !self.config.sort_fields.is_empty()
-            && !self.config.emit_row_ids
-            && segments_chain_on_sort_key(&self.config.segments)
-            && target_partitions >= self.config.segments.len();
+        let target_partitions = config.query_config.target_partitions.max(1);
+        let chain_ok = !config.sort_fields.is_empty()
+            && !config.emit_row_ids
+            && segments_chain_on_sort_key(&config.segments)
+            && target_partitions >= config.segments.len();
 
         // Build the LexOrdering against the projected schema. If the lead
         // sort field is projected away, this returns None and we fall back to
@@ -377,31 +373,30 @@ impl TableProvider for IndexedTableProvider {
         let lex_ordering = if chain_ok {
             build_projected_lex_ordering(
                 &projected_schema,
-                &self.config.sort_fields,
-                &self.config.sort_orders,
+                &config.sort_fields,
+                &config.sort_orders,
             )
         } else {
             None
         };
 
-        let (assignments, eq_properties, advertised_ordering) = if chain_ok
-            && lex_ordering.is_some()
-        {
-            let assignments = compute_assignments_one_per_segment(&self.config.segments, &layouts);
-            let lex = lex_ordering.unwrap();
-            let eq = EquivalenceProperties::new_with_orderings(
-                projected_schema.clone(),
-                vec![lex.clone()],
-            );
-            (assignments, eq, Some(lex))
-        } else {
-            let assignments = compute_assignments(&layouts, target_partitions);
-            (
-                assignments,
-                EquivalenceProperties::new(projected_schema.clone()),
-                None,
-            )
-        };
+        let (assignments, eq_properties, advertised_ordering) =
+            if chain_ok && lex_ordering.is_some() {
+                let assignments = compute_assignments_one_per_segment(&config.segments, &layouts);
+                let lex = lex_ordering.unwrap();
+                let eq = EquivalenceProperties::new_with_orderings(
+                    projected_schema.clone(),
+                    vec![lex.clone()],
+                );
+                (assignments, eq, Some(lex))
+            } else {
+                let assignments = compute_assignments(&layouts, target_partitions);
+                (
+                    assignments,
+                    EquivalenceProperties::new(projected_schema.clone()),
+                    None,
+                )
+            };
 
         let properties = Arc::new(PlanProperties::new(
             eq_properties,
@@ -421,7 +416,7 @@ impl TableProvider for IndexedTableProvider {
         }
 
         Ok(Arc::new(QueryShardExec {
-            config: Arc::clone(&self.config),
+            config: Arc::clone(config),
             full_schema,
             projected_schema,
             projection: read_projection,
@@ -437,8 +432,36 @@ impl TableProvider for IndexedTableProvider {
         }))
     }
 
+    async fn scan_with_args<'a>(
+        &self,
+        state: &dyn Session,
+        args: ScanArgs<'a>,
+    ) -> Result<ScanResult> {
+        let projection = args.projection().map(|projection| projection.to_vec());
+        let filters = args.filters().unwrap_or_default();
+        let plan = self
+            .scan(state, projection.as_ref(), filters, args.limit())
+            .await?;
+        Ok(plan.into())
+    }
+
     fn statistics(&self) -> Option<Statistics> {
-        None
+        let total_rows: usize = self
+            .config
+            .segments
+            .iter()
+            .map(|seg| {
+                seg.row_groups
+                    .iter()
+                    .map(|rg| rg.num_rows as usize)
+                    .sum::<usize>()
+            })
+            .sum();
+        Some(Statistics {
+            num_rows: datafusion::common::stats::Precision::Exact(total_rows),
+            total_byte_size: datafusion::common::stats::Precision::Absent,
+            column_statistics: vec![],
+        })
     }
 }
 
@@ -831,7 +854,6 @@ impl QueryShardExec {
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::{col, lit};
     use datafusion::prelude::SessionContext;
 
     fn empty_config() -> IndexedTableConfig {

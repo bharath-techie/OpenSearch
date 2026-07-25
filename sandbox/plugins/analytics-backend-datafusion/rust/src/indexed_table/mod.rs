@@ -13,9 +13,10 @@
 //! Three shapes of query land in this module depending on the filter tree
 //! produced by `substrait_to_tree::classify_filter`:
 //!
-//! - **No-index path** — no `index_filter(...)` calls in the plan. The
-//!   query never reaches this module; [`crate::query_executor`] runs it
-//!   as a plain `ListingTable` scan.
+//! - **No-index path** — no `index_filter(...)` calls in the plan. Normally
+//!   [`crate::query_executor`] runs it as a plain `ListingTable` scan. When
+//!   the indexed-provider experiment is enabled, [`table_provider::IndexedTableProvider`]
+//!   builds an evaluator-free DataFusion parquet scan instead.
 //! - **Single-collector path** — exactly one `index_filter(...)` AND'd
 //!   with zero or more parquet-native predicates. The collector produces
 //!   the candidate bitset; DataFusion's
@@ -31,9 +32,9 @@
 //!   stage on the decoded record batches using Arrow kernels (to produce
 //!   the exact per-row answer).
 //!
-//! All three share the same [`stream::IndexedExec`] / [`stream::IndexedStream`]
-//! / [`table_provider::IndexedTableProvider`]. The evaluator choice is the
-//! only thing that varies.
+//! The indexed paths share [`stream::IndexedExec`] / [`stream::IndexedStream`].
+//! Marker-free parquet scans use [`table_provider::IndexedTableProvider`] but
+//! intentionally bypass those custom executors.
 //!
 //! # Row-group-by-row-group streaming
 //!
@@ -56,6 +57,8 @@
 
 pub mod bloom_pruner;
 pub mod bool_tree;
+mod decoder_stream;
+pub mod dense_bits;
 pub mod dynamic_filter;
 pub mod eval;
 pub mod ffm_callbacks;

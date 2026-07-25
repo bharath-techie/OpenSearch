@@ -40,6 +40,7 @@ use super::table_provider::{IndexedTableConfig, IndexedTableProvider, SegmentFil
 
 mod boolean_algebra;
 mod constant_predicate;
+mod decoder_stream;
 mod dynamic_filter_pushdown;
 mod fuzz;
 mod metrics;
@@ -132,7 +133,7 @@ fn write_fixture_parquet() -> NamedTempFile {
     // Use smallish row groups so there's > 1 and the streaming loop cycles.
     // Enable page index so PagePruner can prune predicates.
     let props = datafusion::parquet::file::properties::WriterProperties::builder()
-        .set_max_row_group_size(8)
+        .set_max_row_group_size(4)
         .set_statistics_enabled(datafusion::parquet::file::properties::EnabledStatistics::Page)
         .build();
     let mut w = ArrowWriter::try_new(tmp.reopen().unwrap(), schema, Some(props)).unwrap();
@@ -193,10 +194,29 @@ async fn run_tree(tree: BoolNode) -> Vec<(String, i32, String, String)> {
     run_tree_and_plan(tree).await.0
 }
 
+async fn run_tree_with_decoder(
+    tree: BoolNode,
+    indexed_multi_rg_decode: bool,
+) -> Vec<(String, i32, String, String)> {
+    run_tree_and_plan_with_decoder(tree, indexed_multi_rg_decode)
+        .await
+        .0
+}
+
 /// Like [`run_tree`] but also returns the physical plan so tests can
 /// read metrics off it after execution.
 async fn run_tree_and_plan(
     tree: BoolNode,
+) -> (
+    Vec<(String, i32, String, String)>,
+    std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+) {
+    run_tree_and_plan_with_decoder(tree, false).await
+}
+
+async fn run_tree_and_plan_with_decoder(
+    tree: BoolNode,
+    indexed_multi_rg_decode: bool,
 ) -> (
     Vec<(String, i32, String, String)>,
     std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
@@ -293,6 +313,7 @@ async fn run_tree_and_plan(
         .target_partitions(1)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(indexed_multi_rg_decode)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -384,7 +405,7 @@ fn pred_str(col: &str, op: Operator, v: &str) -> BoolNode {
 }
 
 /// Walk `tree` in DFS order and return one collector per Collector leaf,
-/// built from the leaf's `query_bytes` tag (0=amazon, 1=apple, 2=archived).
+/// built from the leaf's annotation tag.
 /// Result order matches `tree.collector_leaves()`.
 fn wire_collectors(tree: &BoolNode) -> Vec<Arc<dyn RowGroupDocsCollector>> {
     let mut out = Vec::new();
@@ -401,6 +422,15 @@ fn wire(node: &BoolNode, out: &mut Vec<Arc<dyn RowGroupDocsCollector>>) {
                 Some(0) => brand_eq("amazon"),
                 Some(1) => brand_eq("apple"),
                 Some(2) => status_eq("archived"),
+                Some(3) => Arc::new(MockCollector {
+                    matching: vec![4, 5, 6, 7],
+                }),
+                Some(4) => Arc::new(MockCollector {
+                    matching: vec![0, 12],
+                }),
+                Some(5) => Arc::new(MockCollector {
+                    matching: vec![0, 1, 2, 3],
+                }),
                 other => panic!("unknown test collector tag {:?}", other),
             };
             out.push(c);

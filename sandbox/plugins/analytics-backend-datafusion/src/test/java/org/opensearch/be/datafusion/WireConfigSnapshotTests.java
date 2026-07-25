@@ -17,7 +17,7 @@ import java.lang.foreign.ValueLayout;
 public class WireConfigSnapshotTests extends OpenSearchTestCase {
 
     public void testByteSize() {
-        assertEquals(52L, WireConfigSnapshot.BYTE_SIZE);
+        assertEquals(64L, WireConfigSnapshot.BYTE_SIZE);
     }
 
     public void testWriteToWritesCorrectValuesAtCorrectOffsets() {
@@ -63,6 +63,8 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             assertEquals(-1, segment.get(ValueLayout.JAVA_INT, 40)); // force_strategy default (None)
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 44));  // cost_predicate (hardcoded)
             assertEquals(10, segment.get(ValueLayout.JAVA_INT, 48)); // cost_collector (hardcoded)
+            assertEquals(0, segment.get(ValueLayout.JAVA_INT, 52));  // indexed_multi_rg_decode default (false)
+            assertEquals(0, segment.get(ValueLayout.JAVA_INT, 56));  // route_pure_parquet default (false)
         }
     }
 
@@ -91,6 +93,30 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         }
     }
 
+    public void testIndexedMultiRgDecodeIsWrittenFromSnapshot() {
+        for (boolean v : new boolean[] { true, false }) {
+            WireConfigSnapshot snapshot = WireConfigSnapshot.builder().indexedMultiRgDecode(v).build();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
+                snapshot.writeTo(segment);
+                assertEquals(v ? 1 : 0, segment.get(ValueLayout.JAVA_INT, 52));
+            }
+            assertEquals(v, snapshot.indexedMultiRgDecode());
+        }
+    }
+
+    public void testRoutePureParquetThroughIndexedIsWrittenFromSnapshot() {
+        for (boolean v : new boolean[] { true, false }) {
+            WireConfigSnapshot snapshot = WireConfigSnapshot.builder().routePureParquetThroughIndexed(v).build();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
+                snapshot.writeTo(segment);
+                assertEquals(v ? 1 : 0, segment.get(ValueLayout.JAVA_INT, 56));
+            }
+            assertEquals(v, snapshot.routePureParquetThroughIndexed());
+        }
+    }
+
     public void testBuilderDefaultsMatchExpected() {
         WireConfigSnapshot snapshot = WireConfigSnapshot.builder().build();
 
@@ -100,6 +126,8 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(1024, snapshot.minSkipRunDefault());
         assertEquals(0.03, snapshot.minSkipRunSelectivityThreshold(), 1e-15);
         assertEquals(true, snapshot.indexedPushdownFilters());
+        assertEquals(false, snapshot.indexedMultiRgDecode());
+        assertEquals(false, snapshot.routePureParquetThroughIndexed());
     }
 
     public void testBuilderCopyPreservesAllFields() {
@@ -111,6 +139,8 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .minSkipRunSelectivityThreshold(0.5)
             .indexedPushdownFilters(false)
             .forceStrategy(1)
+            .indexedMultiRgDecode(true)
+            .routePureParquetThroughIndexed(true)
             .build();
 
         WireConfigSnapshot copy = WireConfigSnapshot.builder(original).build();
@@ -122,5 +152,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(original.minSkipRunSelectivityThreshold(), copy.minSkipRunSelectivityThreshold(), 0.0);
         assertEquals(original.indexedPushdownFilters(), copy.indexedPushdownFilters());
         assertEquals(original.forceStrategy(), copy.forceStrategy());
+        assertEquals(original.indexedMultiRgDecode(), copy.indexedMultiRgDecode());
+        assertEquals(original.routePureParquetThroughIndexed(), copy.routePureParquetThroughIndexed());
     }
 }

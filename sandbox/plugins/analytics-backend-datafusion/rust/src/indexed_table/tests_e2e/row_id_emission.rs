@@ -112,6 +112,7 @@ async fn run_tree_row_ids(tree: BoolNode) -> Vec<i64> {
             qc.target_partitions = 1;
             qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
+            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
@@ -284,6 +285,7 @@ async fn run_tree_row_ids_with_global_base(tree: BoolNode, global_base: u64) -> 
             qc.target_partitions = 1;
             qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
+            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
@@ -566,6 +568,7 @@ async fn test_row_id_with_data_columns() {
             qc.target_partitions = 1;
             qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
+            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
@@ -832,6 +835,7 @@ async fn run_two_segments_row_ids(tree: BoolNode) -> Vec<i64> {
             qc.target_partitions = 1;
             qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
+            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],

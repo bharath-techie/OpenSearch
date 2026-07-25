@@ -39,7 +39,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
+use datafusion::parquet::arrow::arrow_reader::RowSelection;
 use datafusion::parquet::file::metadata::ParquetMetaData;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
@@ -50,10 +50,13 @@ use futures::{Future, Stream};
 use native_bridge_common::log_debug;
 use tokio::task::JoinHandle;
 
-use super::eval::{PrefetchedRg, RowGroupBitsetSource};
+use super::eval::{PrefetchedRg, PrefetchedRgRows, RowGroupBitsetSource};
 use super::metrics::StreamMetrics;
 use super::parquet_bridge::{self, RowGroupStreamConfig};
-use super::row_selection::{build_mask, build_row_selection_with_min_skip_run, PositionMap};
+use super::row_selection::{
+    build_mask, build_row_selection_with_min_skip_run, coalesce_row_selection_with_min_skip_run,
+    row_selection_to_bitmap, PositionMap,
+};
 use crate::datafusion_query_config::DatafusionQueryConfig;
 use datafusion::physical_plan::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use std::time::{Duration, Instant};
@@ -82,9 +85,168 @@ pub enum FilterStrategy {
 
 // ── Prefetched Row Group ─────────────────────────────────────────────
 
-struct PrefetchedRowGroup {
-    rg: RowGroupInfo,
-    prefetched: PrefetchedRg,
+pub(super) struct PrefetchedRowGroup {
+    pub(super) rg: RowGroupInfo,
+    pub(super) prefetched: PrefetchedRg,
+}
+
+/// Parquet selection and post-decode state derived from one candidate bitmap.
+/// Both indexed stream implementations use this helper so strategy decisions,
+/// alignment rules, and metrics remain identical.
+pub(super) struct RowGroupDecodePlan {
+    pub(super) selection: RowSelection,
+    pub(super) position_map: Option<PositionMap>,
+    pub(super) mask: Option<BooleanArray>,
+    pub(super) push_predicate: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_rg_plan(
+    force_strategy: Option<FilterStrategy>,
+    min_skip_run_default: usize,
+    min_skip_run_selectivity_threshold: f64,
+    indexed_pushdown_filters: bool,
+    evaluator: &Arc<dyn RowGroupBitsetSource>,
+    metrics: &StreamMetrics,
+    rg: &RowGroupInfo,
+    rows: PrefetchedRgRows,
+    requires_row_positions: bool,
+) -> RowGroupDecodePlan {
+    let matched_rows = rows.matched_rows();
+    let rows = match rows {
+        PrefetchedRgRows::Selection { selection, .. } if requires_row_positions => {
+            PrefetchedRgRows::Bitmap(Arc::new(row_selection_to_bitmap(&selection)))
+        }
+        rows => rows,
+    };
+    let direct_selection = matches!(&rows, PrefetchedRgRows::Selection { .. });
+    let selectivity = matched_rows as f64 / rg.num_rows as f64;
+    let min_skip_run = match force_strategy {
+        Some(FilterStrategy::RowSelection) => 1,
+        Some(FilterStrategy::BooleanMask) => rg.num_rows as usize + 1,
+        // Page-pruner selections are already page-granular, so selector
+        // fragmentation is bounded by page count rather than row-level bitmap
+        // scatter. Preserve every page skip by default.
+        None if direct_selection => 1,
+        None if selectivity < min_skip_run_selectivity_threshold => 1,
+        None => min_skip_run_default,
+    };
+
+    if min_skip_run == 1 {
+        if let Some(ref counter) = metrics.min_skip_run_row_granular {
+            counter.add(1);
+        }
+    } else if let Some(ref counter) = metrics.min_skip_run_block_granular {
+        counter.add(1);
+    }
+
+    let (selection, position_map, mask) = match rows {
+        PrefetchedRgRows::Bitmap(candidates) => {
+            let selection = build_row_selection_with_min_skip_run(
+                &candidates,
+                rg.num_rows as usize,
+                min_skip_run,
+            );
+            let position_map = PositionMap::from_candidates_with_selection(
+                Arc::clone(&candidates),
+                &selection,
+                min_skip_run,
+            );
+            let mask = if min_skip_run == 1 || !evaluator.needs_row_mask() {
+                None
+            } else {
+                let started = Instant::now();
+                let mask = build_mask(&candidates, &position_map);
+                if let Some(ref timer) = metrics.build_mask_time {
+                    timer.add_duration(started.elapsed());
+                }
+                Some(mask)
+            };
+            (selection, Some(position_map), mask)
+        }
+        PrefetchedRgRows::DenseBitmap(candidates) => {
+            // Word-at-a-time run detection; no per-bit iteration.
+            let selection = candidates.to_row_selection(min_skip_run);
+            let position_map = if min_skip_run == 1 {
+                PositionMap::DenseBitmap {
+                    delivered_count: candidates.count_ones(),
+                    bits: Arc::clone(&candidates),
+                }
+            } else {
+                PositionMap::from_selection(&selection)
+            };
+            let mask = if min_skip_run == 1 || !evaluator.needs_row_mask() {
+                None
+            } else {
+                let started = Instant::now();
+                // Under block/full regimes the delivered rows follow the
+                // coalesced selection; the mask marks which of them are true
+                // candidates. Word-copy per select run.
+                let mask = match &position_map {
+                    PositionMap::Identity { delivered_count } => {
+                        candidates.boolean_slice(0, *delivered_count)
+                    }
+                    PositionMap::Runs {
+                        runs,
+                        delivered_count,
+                    } => {
+                        let mut out = vec![0u64; delivered_count.div_ceil(64)];
+                        for &(rg_start, delivered_start, run_len) in runs {
+                            candidates.copy_bits_into(rg_start, run_len, &mut out, delivered_start);
+                        }
+                        super::row_selection::packed_bits_to_boolean_array(out, *delivered_count)
+                    }
+                    // min_skip_run != 1 here, so DenseBitmap/Bitmap variants
+                    // are unreachable (they're only built row-granular).
+                    _ => unreachable!("row-granular PositionMap under block regime"),
+                };
+                if let Some(ref timer) = metrics.build_mask_time {
+                    timer.add_duration(started.elapsed());
+                }
+                Some(mask)
+            };
+            (selection, Some(position_map), mask)
+        }
+        PrefetchedRgRows::Selection { selection, .. } => {
+            let selection = if min_skip_run == 1 {
+                selection
+            } else {
+                coalesce_row_selection_with_min_skip_run(selection, min_skip_run)
+            };
+            (selection, None, None)
+        }
+    };
+
+    match position_map.as_ref() {
+        Some(PositionMap::Identity { .. }) => {
+            if let Some(ref c) = metrics.position_map_identity {
+                c.add(1);
+            }
+        }
+        Some(PositionMap::Bitmap { .. }) | Some(PositionMap::DenseBitmap { .. }) => {
+            if let Some(ref c) = metrics.position_map_bitmap {
+                c.add(1);
+            }
+        }
+        Some(PositionMap::Runs { .. }) => {
+            if let Some(ref c) = metrics.position_map_runs {
+                c.add(1);
+            }
+        }
+        None => {}
+    }
+
+    let alignment_risk =
+        requires_row_positions || (min_skip_run != 1 && evaluator.needs_row_mask());
+    let push_predicate =
+        indexed_pushdown_filters && !alignment_risk && !evaluator.forbid_parquet_pushdown();
+
+    RowGroupDecodePlan {
+        selection,
+        position_map,
+        mask,
+        push_predicate,
+    }
 }
 
 /// Outcome of one prefetch task.
@@ -104,7 +266,7 @@ type PrefetchHandle = JoinHandle<PrefetchResult>;
 
 // ── IndexReader (drives the evaluator RG-by-RG with prefetch overlap) ──
 
-struct IndexReader {
+pub(super) struct IndexReader {
     evaluator: Arc<dyn RowGroupBitsetSource>,
     row_groups: Vec<RowGroupInfo>,
     current_rg_idx: usize,
@@ -142,7 +304,7 @@ struct IndexReader {
 
 impl IndexReader {
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub(super) fn new(
         evaluator: Arc<dyn RowGroupBitsetSource>,
         row_groups: Vec<RowGroupInfo>,
         doc_range: Option<(i32, i32)>,
@@ -174,7 +336,7 @@ impl IndexReader {
     /// True when this query's task has been cancelled. Cheap (one relaxed
     /// atomic load); `None` token (untracked/test) is never cancelled.
     #[inline]
-    fn is_cancelled(&self) -> bool {
+    pub(super) fn is_cancelled(&self) -> bool {
         self.cancellation_token
             .as_ref()
             .is_some_and(|t| t.is_cancelled())
@@ -260,7 +422,7 @@ impl IndexReader {
         self.pending_prefetch = Some(handle);
     }
 
-    fn poll_next_row_group(
+    pub(super) fn poll_next_row_group(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<std::result::Result<Option<PrefetchedRowGroup>, DataFusionError>> {
@@ -354,7 +516,7 @@ impl IndexReader {
         }
     }
 
-    fn init_prefetch(&mut self) {
+    pub(super) fn init_prefetch(&mut self) {
         self.start_prefetch(0);
     }
 }
@@ -463,6 +625,35 @@ impl ExecutionPlan for IndexedExec {
                 .take()
                 .ok_or_else(|| DataFusionError::Internal("evaluator already consumed".into()))?
         };
+
+        if self.query_config.indexed_multi_rg_decode && self.dynamic_filter.is_none() {
+            return super::decoder_stream::build_decoder_stream(
+                super::decoder_stream::DecoderStreamArgs {
+                    schema: self.schema.clone(),
+                    full_schema: self.full_schema.clone(),
+                    projection: self.projection.clone(),
+                    object_path: self.object_path.clone(),
+                    store: Arc::clone(&self.store),
+                    metadata: Arc::clone(&self.metadata),
+                    predicate: self.predicate.clone(),
+                    evaluator,
+                    row_groups: self.row_groups.clone(),
+                    doc_range: self.doc_range,
+                    metrics: self.stream_metrics.clone(),
+                    force_strategy: self.query_config.force_strategy,
+                    min_skip_run_default: self.query_config.min_skip_run_default,
+                    min_skip_run_selectivity_threshold: self
+                        .query_config
+                        .min_skip_run_selectivity_threshold,
+                    indexed_pushdown_filters: self.query_config.indexed_pushdown_filters,
+                    batch_size: self.query_config.batch_size,
+                    global_base: self.global_base,
+                    row_id_output_index: self.row_id_output_index,
+                    cancellation_token: self.cancellation_token.clone(),
+                },
+            );
+        }
+
         let index_reader = IndexReader::new(
             evaluator,
             self.row_groups.clone(),
@@ -497,11 +688,11 @@ impl ExecutionPlan for IndexedExec {
             self.emit_row_ids,
             self.row_id_output_index,
             self.dynamic_filter.clone(),
-        )))
+        )?))
     }
 }
 
-// Indexed streams - Per segment stream
+// Indexed stream - per segment stream.
 
 struct IndexedStream {
     schema: SchemaRef,
@@ -599,12 +790,12 @@ impl IndexedStream {
         emit_row_ids: bool,
         row_id_output_index: Option<usize>,
         dynamic_filter: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
-    ) -> Self {
+    ) -> Result<Self> {
         let evaluator = Arc::clone(&index_reader.evaluator);
         let batch_coalescer = LimitedBatchCoalescer::new(schema.clone(), target_batch_size, None);
         let dynamic_rg_pruner =
             super::dynamic_filter::DynamicRgPruner::new(dynamic_filter, full_schema.clone());
-        Self {
+        Ok(Self {
             schema,
             full_schema,
             object_path,
@@ -640,31 +831,7 @@ impl IndexedStream {
             emit_row_ids,
             row_id_output_index,
             dynamic_rg_pruner,
-        }
-    }
-
-    /// Per-RG `min_skip_run` decision.
-    ///
-    /// When `force_strategy` is set (via the `datafusion.indexed.force_strategy`
-    /// cluster setting) it pins the choice to either extreme (`RowSelection` → 1,
-    /// `BooleanMask` → whole-RG select), bypassing the heuristic.
-    ///
-    /// Otherwise the choice is selectivity-driven: at low selectivity every gap
-    /// is worth skipping (`min_skip_run = 1`, row-granular); at higher selectivity
-    /// noisy short gaps would explode the selector Vec, so absorb anything shorter
-    /// than `min_skip_run_default` (block-granular).
-    fn pick_min_skip_run(&self, num_candidates: usize, rg_num_rows: usize) -> usize {
-        match self.force_strategy {
-            Some(FilterStrategy::RowSelection) => return 1,
-            Some(FilterStrategy::BooleanMask) => return rg_num_rows + 1,
-            None => {}
-        }
-        let selectivity = num_candidates as f64 / rg_num_rows as f64;
-        if selectivity < self.min_skip_run_selectivity_threshold {
-            1
-        } else {
-            self.min_skip_run_default
-        }
+        })
     }
 
     fn bridge_config(&self) -> RowGroupStreamConfig {
@@ -727,8 +894,7 @@ impl IndexedStream {
             Some(ctx) => ctx.as_ref(),
             None => &UNIT,
         };
-        let empty_pos_map =
-            PositionMap::from_selection(&RowSelection::from(Vec::<RowSelector>::new()));
+        let empty_pos_map = PositionMap::Identity { delivered_count: 0 };
         let position_map = self.current_position_map.as_ref().unwrap_or(&empty_pos_map);
 
         let t_on_batch = Instant::now();
@@ -1047,21 +1213,20 @@ impl IndexedStream {
                         }
                     }
 
-                    let candidates = prefetched.prefetched.candidates;
-                    let prefetch_mask_buffer = prefetched.prefetched.mask_buffer;
+                    let matched_rows = prefetched.prefetched.rows.matched_rows();
+                    let rows = prefetched.prefetched.rows;
 
                     if let Some(ref timer) = self.metrics.index_time {
                         timer.add_duration(Duration::from_nanos(prefetched.prefetched.eval_nanos));
                     }
                     if let Some(ref counter) = self.metrics.rows_matched {
-                        counter.add(candidates.len() as usize);
+                        counter.add(matched_rows);
                     }
                     if let Some(ref counter) = self.metrics.rows_pruned {
                         // Rows in this RG that the candidate stage
                         // dropped (either via Collector intersection or
                         // page-level pruning). `rg.num_rows - matched`.
-                        let pruned =
-                            (rg.num_rows as usize).saturating_sub(candidates.len() as usize);
+                        let pruned = (rg.num_rows as usize).saturating_sub(matched_rows);
                         counter.add(pruned);
                     }
                     if let Some(ref counter) = self.metrics.rg_processed {
@@ -1075,136 +1240,34 @@ impl IndexedStream {
                     self.current_rg_context = Some(prefetched.prefetched.context);
                     self.batch_offset = 0;
 
-                    // Decide min_skip_run for this RG (see `pick_min_skip_run`).
-                    let min_skip_run =
-                        self.pick_min_skip_run(candidates.len() as usize, rg.num_rows as usize);
-
-                    // Metrics: track which regime we landed in, using the
-                    // same counters as before so `EXPLAIN ANALYZE` output
-                    // stays comparable.
-                    if min_skip_run == 1 {
-                        if let Some(ref counter) = self.metrics.min_skip_run_row_granular {
-                            counter.add(1);
-                        }
-                    } else if let Some(ref counter) = self.metrics.min_skip_run_block_granular {
-                        counter.add(1);
-                    }
-
-                    let selection = build_row_selection_with_min_skip_run(
-                        &candidates,
-                        rg.num_rows as usize,
-                        min_skip_run,
+                    let RowGroupDecodePlan {
+                        selection,
+                        position_map,
+                        mask,
+                        push_predicate,
+                    } = build_rg_plan(
+                        self.force_strategy,
+                        self.min_skip_run_default,
+                        self.min_skip_run_selectivity_threshold,
+                        self.indexed_pushdown_filters,
+                        &self.evaluator,
+                        &self.metrics,
+                        &rg,
+                        rows,
+                        self.row_id_output_index.is_some(),
                     );
-                    // Share the bitmap between PositionMap (under
-                    // row-granular regime) and build_mask without cloning
-                    // the underlying data.
-                    let candidates = Arc::new(candidates);
-                    let position_map = PositionMap::from_candidates_with_selection(
-                        Arc::clone(&candidates),
-                        &selection,
-                        min_skip_run,
-                    );
-                    // Metric: record which PositionMap variant this RG
-                    // landed in. Useful for tuning min_skip_run and
-                    // understanding per-query memory profiles.
-                    match &position_map {
-                        PositionMap::Identity { .. } => {
-                            if let Some(ref c) = self.metrics.position_map_identity {
-                                c.add(1);
-                            }
-                        }
-                        PositionMap::Bitmap { .. } => {
-                            if let Some(ref c) = self.metrics.position_map_bitmap {
-                                c.add(1);
-                            }
-                        }
-                        PositionMap::Runs { .. } => {
-                            if let Some(ref c) = self.metrics.position_map_runs {
-                                c.add(1);
-                            }
-                        }
-                    }
 
                     let t_plan = Instant::now();
-                    // Pushdown decision:
-                    //
-                    // Row-granular (min_skip_run == 1): RowSelection
-                    // already narrowed to candidate rows; parquet's
-                    // `with_predicate` applies the residual in lockstep
-                    // with the decode. Delivered rows = candidate ∧
-                    // residual = exact output. Pushdown is ON.
-                    //
-                    // Block-granular (min_skip_run > 1): RowSelection
-                    // is coalesced. If the stream will build
-                    // `current_mask` over delivered rows, or the
-                    // evaluator's `on_batch_mask` will look up positions
-                    // via PositionMap, pushdown would drop rows
-                    // mid-decode and misalign those indices. Pushdown
-                    // OFF; the evaluator applies the residual
-                    // post-decode.
-                    //
-                    // `forbid_parquet_pushdown()` is a blanket opt-out
-                    // that overrides the row-granular path too — used by
-                    // BitmapTreeEvaluator because its `on_batch_mask`
-                    // uses PositionMap on Collector leaves regardless of
-                    // strategy, and because the outer FilterExec is
-                    // dropped (supports_filters_pushdown = Exact) so
-                    // there's no safety net if pushdown misbehaves on a
-                    // UDF-containing predicate.
-                    // Node-wide `indexed_pushdown_filters` setting, gated by
-                    // alignment/forbid checks below.
-                    let alignment_risk = min_skip_run != 1 && self.evaluator.needs_row_mask();
-                    let push = self.indexed_pushdown_filters
-                        && !alignment_risk
-                        && !self.evaluator.forbid_parquet_pushdown();
-
-                    match self.create_row_selection_stream(&rg, selection, push) {
+                    match self.create_row_selection_stream(&rg, selection, push_predicate) {
                         Ok((stream, plan)) => {
                             if let Some(ref timer) = self.metrics.parquet_time {
                                 timer.add_duration(t_plan.elapsed());
                             }
                             self.current_stream = Some(stream);
                             self.current_inner_plan = Some(plan);
-                            // Under row-granular (min_skip_run == 1) every
-                            // delivered row is by construction a candidate,
-                            // so the mask would be all-true — skip building
-                            // it. Under block/full regimes, build the mask
-                            // only if the evaluator consumes it.
-                            self.current_mask = if min_skip_run == 1 {
-                                None
-                            } else if self.evaluator.needs_row_mask() {
-                                let t_build = Instant::now();
-                                let m = if let Some(buf) = prefetch_mask_buffer.as_ref() {
-                                    if matches!(position_map, PositionMap::Identity { .. }) {
-                                        // Fast path: full-scan regime (no skips),
-                                        // delivered row i == RG position i. Wrap
-                                        // the pre-built packed bits as BooleanArray
-                                        // with zero per-RG allocation.
-                                        let bb = datafusion::arrow::buffer::BooleanBuffer::new(
-                                            buf.clone(),
-                                            0,
-                                            rg.num_rows as usize,
-                                        );
-                                        BooleanArray::new(bb, None)
-                                    } else {
-                                        // Block-granular: RowSelection has skip
-                                        // runs, so delivered rows don't map 1:1
-                                        // to RG positions. Must build the mask
-                                        // through PositionMap.
-                                        build_mask(&candidates, &position_map)
-                                    }
-                                } else {
-                                    build_mask(&candidates, &position_map)
-                                };
-                                if let Some(ref t) = self.metrics.build_mask_time {
-                                    t.add_duration(t_build.elapsed());
-                                }
-                                Some(m)
-                            } else {
-                                None
-                            };
+                            self.current_mask = mask;
                             self.mask_offset = 0;
-                            self.current_position_map = Some(position_map);
+                            self.current_position_map = position_map;
                         }
                         Err(e) => return Poll::Ready(Some(Err(e))),
                     }
@@ -1230,9 +1293,133 @@ impl RecordBatchStream for IndexedStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::parquet::arrow::arrow_reader::RowSelector;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    struct PlanningOnlyEvaluator;
+
+    impl RowGroupBitsetSource for PlanningOnlyEvaluator {
+        fn prefetch_rg(
+            &self,
+            _rg: &RowGroupInfo,
+            _min_doc: i32,
+            _max_doc: i32,
+        ) -> Result<Option<PrefetchedRg>, String> {
+            unreachable!()
+        }
+
+        fn on_batch_mask(
+            &self,
+            _rg_state: &dyn std::any::Any,
+            _rg_first_row: i64,
+            _position_map: &PositionMap,
+            _batch_offset: usize,
+            _batch_len: usize,
+            _batch: &RecordBatch,
+        ) -> Result<Option<BooleanArray>, String> {
+            Ok(None)
+        }
+
+        fn forbid_parquet_pushdown(&self) -> bool {
+            true
+        }
+    }
+
+    fn direct_test_rows() -> PrefetchedRgRows {
+        PrefetchedRgRows::Selection {
+            selection: RowSelection::from(vec![
+                RowSelector::skip(2),
+                RowSelector::select(3),
+                RowSelector::skip(3),
+            ]),
+            selected_rows: 3,
+        }
+    }
+
+    #[test]
+    fn direct_selection_plan_skips_mask_position_map_and_pushdown() {
+        let evaluator: Arc<dyn RowGroupBitsetSource> = Arc::new(PlanningOnlyEvaluator);
+        let plan = build_rg_plan(
+            None,
+            1_024,
+            0.1,
+            true,
+            &evaluator,
+            &StreamMetrics::empty(),
+            &RowGroupInfo {
+                index: 0,
+                first_row: 0,
+                num_rows: 8,
+            },
+            direct_test_rows(),
+            false,
+        );
+
+        assert!(plan.position_map.is_none());
+        assert!(plan.mask.is_none());
+        assert!(plan.push_predicate == false);
+        let selectors: Vec<RowSelector> = plan.selection.into();
+        assert_eq!(selectors.len(), 3);
+        assert!(selectors[0].skip);
+        assert_eq!(selectors[1].row_count, 3);
+    }
+
+    #[test]
+    fn direct_selection_boolean_override_coalesces_to_full_rg() {
+        let evaluator: Arc<dyn RowGroupBitsetSource> = Arc::new(PlanningOnlyEvaluator);
+        let plan = build_rg_plan(
+            Some(FilterStrategy::BooleanMask),
+            1_024,
+            0.1,
+            false,
+            &evaluator,
+            &StreamMetrics::empty(),
+            &RowGroupInfo {
+                index: 0,
+                first_row: 0,
+                num_rows: 8,
+            },
+            direct_test_rows(),
+            false,
+        );
+
+        assert!(plan.position_map.is_none());
+        assert!(plan.mask.is_none());
+        let selectors: Vec<RowSelector> = plan.selection.into();
+        assert_eq!(selectors, vec![RowSelector::select(8)]);
+    }
+
+    #[test]
+    fn direct_selection_rebuilds_bitmap_plan_when_positions_are_required() {
+        let evaluator: Arc<dyn RowGroupBitsetSource> = Arc::new(PlanningOnlyEvaluator);
+        let plan = build_rg_plan(
+            Some(FilterStrategy::RowSelection),
+            1_024,
+            0.1,
+            true,
+            &evaluator,
+            &StreamMetrics::empty(),
+            &RowGroupInfo {
+                index: 0,
+                first_row: 0,
+                num_rows: 8,
+            },
+            direct_test_rows(),
+            true,
+        );
+
+        assert!(matches!(
+            plan.position_map,
+            Some(PositionMap::Bitmap {
+                delivered_count: 3,
+                ..
+            })
+        ));
+        assert!(plan.mask.is_none());
+        assert!(plan.push_predicate == false);
+    }
 
     /// A mock evaluator that panics on prefetch_rg, simulating the
     /// `subtree_cost` panic when DelegationPossible reaches the Tree evaluator.

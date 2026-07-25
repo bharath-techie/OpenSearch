@@ -177,6 +177,7 @@ async fn run_two_segment_query(
         .target_partitions(num_partitions)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -386,6 +387,7 @@ async fn run_two_segment_query_witness(
         .target_partitions(num_partitions)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -595,6 +597,7 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
         .target_partitions(num_partitions)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -1105,6 +1108,7 @@ async fn run_wide_segments(
         .target_partitions(num_partitions)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -1468,6 +1472,7 @@ async fn run_wide_segments_with_stats_pruning(
         .target_partitions(num_partitions)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -1828,7 +1833,7 @@ async fn stats_prune_direct_prefetch_asserts_pruning_and_empty_bitsets() {
     // Verify the collector bitmap is non-empty (all docs match).
     let prefetched = result_rg2.unwrap();
     assert!(
-        !prefetched.candidates.is_empty(),
+        prefetched.rows.matched_rows() > 0,
         "RG2 should have non-empty candidates"
     );
 
@@ -1979,7 +1984,7 @@ async fn stats_prune_asserts_empty_collector_bitset_in_pruned_subtree() {
     let prefetched = result.unwrap();
     // Candidates should be non-empty (Collector1 matches all docs).
     assert!(
-        !prefetched.candidates.is_empty(),
+        prefetched.rows.matched_rows() > 0,
         "Collector1 should produce non-empty candidates"
     );
 

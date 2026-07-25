@@ -919,7 +919,7 @@ fn bitmap_to_batch_mask(
                 }
             }
         }
-        PositionMap::Bitmap { .. } | PositionMap::Runs { .. } => {
+        PositionMap::Bitmap { .. } | PositionMap::DenseBitmap { .. } | PositionMap::Runs { .. } => {
             // General case — fall back to per-row lookup but use packed-bit
             // assembly so we avoid the Vec<bool> + BooleanArray::from copy.
             for i in 0..batch_len {

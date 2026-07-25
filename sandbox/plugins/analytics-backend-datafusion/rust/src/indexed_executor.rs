@@ -260,6 +260,55 @@ pub(crate) fn reverse_segment_iteration_order(segments: &mut [SegmentFileInfo]) 
 }
 
 /// Collect all `Predicate(expr)` leaves in DFS order. Used by the
+/// Remove `IS NOT NULL(col)` sub-expressions that are tautological given the
+/// schema (the column is non-nullable). Returns `None` if the entire expression
+/// reduces to a tautology — i.e., no residual is needed.
+///
+/// Handles bare `IsNotNull(col)` and `AND(IsNotNull(col), rest...)`, stripping
+/// tautological leaves and promoting/collapsing the remainder.
+fn eliminate_tautological_not_null(
+    expr: &Arc<dyn PhysicalExpr>,
+    schema: &SchemaRef,
+) -> Option<Arc<dyn PhysicalExpr>> {
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::Column as PhysColumn;
+    use datafusion::physical_expr::expressions::{BinaryExpr, IsNotNullExpr};
+
+    // Check if a single expr is a tautological IS NOT NULL.
+    let is_tautology = |e: &Arc<dyn PhysicalExpr>| -> bool {
+        if let Some(inn) = e.downcast_ref::<IsNotNullExpr>() {
+            if let Some(col) = inn.arg().downcast_ref::<PhysColumn>() {
+                if let Ok(field) = schema.field_with_name(col.name()) {
+                    return field.is_nullable() == false;
+                }
+            }
+        }
+        false
+    };
+
+    // Case 1: bare tautology → eliminate entire residual.
+    if is_tautology(expr) {
+        return None;
+    }
+
+    // Case 2: AND tree — strip tautological leaves, rebuild.
+    if let Some(bin) = expr.downcast_ref::<BinaryExpr>() {
+        if *bin.op() == Operator::And {
+            let left = eliminate_tautological_not_null(bin.left(), schema);
+            let right = eliminate_tautological_not_null(bin.right(), schema);
+            return match (left, right) {
+                (None, None) => None,
+                (Some(l), None) => Some(l),
+                (None, Some(r)) => Some(r),
+                (Some(l), Some(r)) => Some(Arc::new(BinaryExpr::new(l, Operator::And, r))),
+            };
+        }
+    }
+
+    // Not a tautology or AND — keep as-is.
+    Some(Arc::clone(expr))
+}
+
 /// dispatcher to build a per-leaf `PruningPredicate` cache keyed by
 /// `Arc::as_ptr` identity.
 fn collect_predicate_exprs(tree: &BoolNode, out: &mut Vec<Arc<dyn PhysicalExpr>>) {
@@ -457,6 +506,60 @@ impl TableProvider for PlaceholderProvider {
             "PlaceholderProvider should not be scanned".into(),
         ))
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_registered_provider(
+    ctx: datafusion::execution::context::SessionContext,
+    query_context: crate::query_tracker::QueryTrackingContext,
+    plan: &Plan,
+    aggregate_mode: crate::agg_mode::Mode,
+    has_topk: bool,
+    cpu_executor: DedicatedExecutor,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Result<i64, DataFusionError> {
+    let context_id = query_context.context_id();
+    let logical_plan = from_substrait_plan(&ctx.state(), plan).await?;
+    log_debug!(
+        "DataFusion logical plan:\n{}",
+        logical_plan.display_indent()
+    );
+    let dataframe = ctx.execute_logical_plan(logical_plan).await?;
+    let physical_plan = dataframe.create_physical_plan().await?;
+    let physical_plan = if aggregate_mode != crate::agg_mode::Mode::Default {
+        crate::agg_mode::apply_aggregate_mode(physical_plan, aggregate_mode, has_topk)?
+    } else {
+        physical_plan
+    };
+    let target_schema = crate::schema_coerce::coerce_inferred_schema(physical_plan.schema());
+    let physical_plan = crate::relabel_exec::wrap_if_relabel_needed(physical_plan, target_schema)?;
+    log_debug!(
+        "DataFusion physical plan:\n{}",
+        displayable(physical_plan.as_ref()).indent(true)
+    );
+    let df_stream = execute_stream(physical_plan.clone(), ctx.task_ctx())
+        .map_err(|e| DataFusionError::Execution(format!("execute_stream: {}", e)))?;
+
+    let (cross_rt_stream, abort_handle, _task_done) =
+        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_executor.clone(), None);
+
+    if let Some(h) = abort_handle {
+        crate::query_tracker::set_abort_handle(context_id, h);
+    }
+    if let Some(rt) = cpu_executor.handle() {
+        crate::query_tracker::set_cpu_runtime_handle(context_id, rt);
+    }
+
+    let schema = cross_rt_stream.schema();
+    let wrapped = RecordBatchStreamAdapter::new(schema, cross_rt_stream);
+    let stream_handle = crate::api::QueryStreamHandle::with_physical_plan(
+        wrapped,
+        query_context,
+        ctx,
+        Some(permit),
+        physical_plan,
+    );
+    Ok(Box::into_raw(Box::new(stream_handle)) as i64)
 }
 
 #[cfg(test)]
@@ -898,8 +1001,8 @@ async unsafe fn execute_indexed_with_context_inner(
     });
 
     let query_config = Arc::new(handle.query_config);
-    let num_partitions = query_config.target_partitions.max(1);
     let aggregate_mode = handle.aggregate_mode;
+    let has_topk = handle.has_topk;
     let ctx = handle.ctx;
     let table_name = handle.table_name;
     let table_path = handle.table_path;
@@ -923,9 +1026,9 @@ async unsafe fn execute_indexed_with_context_inner(
     let register_name = crate::api::first_named_table_name(substrait_bytes.as_slice())
         .unwrap_or_else(|| table_name.clone());
 
-    // SessionContext already has RuntimeEnv, caches, memory pool, UDF from create_session_context_indexed.
-    // Deregister the default ListingTable (registered by create_session_context) — will be replaced
-    // with IndexedTableProvider after plan decoding.
+    // SessionContext already has RuntimeEnv, caches, memory pool, UDF from
+    // create_session_context_indexed. Replace the default ListingTable with
+    // IndexedTableProvider after plan decoding.
     ctx.deregister_table(&register_name)?;
 
     let store = ctx.state().runtime_env().object_store(&table_path)?;
@@ -1083,7 +1186,8 @@ async unsafe fn execute_indexed_with_context_inner(
                 .and_then(|e| build_prune_tree_config(&e.tree, &schema_for_pruner, &leaf_exprs));
             let residual_expr: Option<Arc<dyn PhysicalExpr>> = extraction
                 .as_ref()
-                .and_then(|e| residual_bool_to_physical_expr(&e.tree));
+                .and_then(|e| residual_bool_to_physical_expr(&e.tree))
+                .and_then(|expr| eliminate_tautological_not_null(&expr, &schema_for_pruner));
             let residual_pruning_predicate: Option<Arc<PruningPredicate>> = residual_expr
                 .as_ref()
                 .and_then(|expr| build_pruning_predicate(expr, Arc::clone(&schema_for_pruner)));
@@ -1171,12 +1275,18 @@ async unsafe fn execute_indexed_with_context_inner(
             let residual_bool = extract_single_collector_residual(&extraction.tree);
             let residual_expr = residual_bool
                 .as_ref()
-                .and_then(residual_bool_to_physical_expr);
+                .and_then(residual_bool_to_physical_expr)
+                .and_then(|expr| eliminate_tautological_not_null(&expr, &schema_for_pruner));
             let residual_pruning_predicate: Option<Arc<PruningPredicate>> = residual_expr
                 .as_ref()
                 .and_then(|expr| build_pruning_predicate(expr, Arc::clone(&schema_for_pruner)));
 
-            let call_strategy = CollectorCallStrategy::PageRangeSplit;
+            // Lucene collectors are forward-only. Splitting one RG into page
+            // ranges adds an FFM transition and FixedBitSet allocation/copy
+            // per range without avoiding iterator advancement across gaps.
+            // Tighten only the outer bounds, then intersect with page ranges
+            // in Rust to retain exact page pruning.
+            let call_strategy = CollectorCallStrategy::TightenOuterBounds;
             let bloom_store = Arc::clone(&store);
             let bloom_schema = schema.clone();
             (
@@ -1407,51 +1517,14 @@ async unsafe fn execute_indexed_with_context_inner(
     }));
     ctx.register_table(&register_name, provider)?;
 
-    let logical_plan = from_substrait_plan(&ctx.state(), &plan).await?;
-    log_debug!(
-        "DataFusion logical plan:\n{}",
-        logical_plan.display_indent()
-    );
-    let dataframe = ctx.execute_logical_plan(logical_plan).await?;
-    let physical_plan = dataframe.create_physical_plan().await?;
-    // Retag bit-compatible Int↔UInt output mismatches to match the substrait-declared
-    // types. The target is schema_coerce::coerce_inferred_schema(physical_schema) — same
-    // narrowing the partition-stream registration uses, so consumer-side StreamingTable
-    // and producer-side batches agree by construction (see crate::relabel_exec).
-    // Apply aggregate mode stripping when prepare_partial_plan was called (engine-native-merge).
-    // This makes the indexed executor produce Binary HLL state (Partial) instead of Int64 (Final).
-    let physical_plan = if aggregate_mode != crate::agg_mode::Mode::Default {
-        crate::agg_mode::apply_aggregate_mode(physical_plan, aggregate_mode, handle.has_topk)?
-    } else {
-        physical_plan
-    };
-    let target_schema = crate::schema_coerce::coerce_inferred_schema(physical_plan.schema());
-    let physical_plan = crate::relabel_exec::wrap_if_relabel_needed(physical_plan, target_schema)?;
-    log_debug!(
-        "DataFusion physical plan:\n{}",
-        displayable(physical_plan.as_ref()).indent(true)
-    );
-    let df_stream = execute_stream(physical_plan.clone(), ctx.task_ctx())
-        .map_err(|e| DataFusionError::Execution(format!("execute_stream: {}", e)))?;
-
-    let (cross_rt_stream, abort_handle, _task_done) =
-        CrossRtStream::new_with_df_error_stream_cancellable(df_stream, cpu_executor.clone(), None);
-
-    if let Some(h) = abort_handle {
-        crate::query_tracker::set_abort_handle(context_id, h);
-    }
-    if let Some(rt) = cpu_executor.handle() {
-        crate::query_tracker::set_cpu_runtime_handle(context_id, rt);
-    }
-
-    let schema = cross_rt_stream.schema();
-    let wrapped = RecordBatchStreamAdapter::new(schema, cross_rt_stream);
-    let stream_handle = crate::api::QueryStreamHandle::with_physical_plan(
-        wrapped,
-        query_context,
+    execute_registered_provider(
         ctx,
-        Some(permit),
-        physical_plan,
-    );
-    Ok(Box::into_raw(Box::new(stream_handle)) as i64)
+        query_context,
+        &plan,
+        aggregate_mode,
+        has_topk,
+        cpu_executor,
+        permit,
+    )
+    .await
 }

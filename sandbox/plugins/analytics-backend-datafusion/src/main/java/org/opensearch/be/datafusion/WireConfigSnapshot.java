@@ -26,7 +26,7 @@ import java.lang.foreign.ValueLayout;
 public final class WireConfigSnapshot {
 
     /** Total byte size of the wire struct ({@code WireDatafusionQueryConfig}). */
-    public static final long BYTE_SIZE = 52;
+    public static final long BYTE_SIZE = 64;
 
     private final int batchSize;
     private final int targetPartitions;
@@ -35,6 +35,8 @@ public final class WireConfigSnapshot {
     private final double minSkipRunSelectivityThreshold;
     private final boolean indexedPushdownFilters;
     private final int forceStrategy;
+    private final boolean indexedMultiRgDecode;
+    private final boolean routePureParquetThroughIndexed;
 
     private WireConfigSnapshot(Builder builder) {
         this.batchSize = builder.batchSize;
@@ -44,6 +46,8 @@ public final class WireConfigSnapshot {
         this.minSkipRunSelectivityThreshold = builder.minSkipRunSelectivityThreshold;
         this.indexedPushdownFilters = builder.indexedPushdownFilters;
         this.forceStrategy = builder.forceStrategy;
+        this.indexedMultiRgDecode = builder.indexedMultiRgDecode;
+        this.routePureParquetThroughIndexed = builder.routePureParquetThroughIndexed;
     }
 
     public static Builder builder() {
@@ -61,7 +65,9 @@ public final class WireConfigSnapshot {
             .minSkipRunDefault(current.minSkipRunDefault)
             .minSkipRunSelectivityThreshold(current.minSkipRunSelectivityThreshold)
             .indexedPushdownFilters(current.indexedPushdownFilters)
-            .forceStrategy(current.forceStrategy);
+            .forceStrategy(current.forceStrategy)
+            .indexedMultiRgDecode(current.indexedMultiRgDecode)
+            .routePureParquetThroughIndexed(current.routePureParquetThroughIndexed);
     }
 
     public int batchSize() {
@@ -93,6 +99,14 @@ public final class WireConfigSnapshot {
         return forceStrategy;
     }
 
+    public boolean indexedMultiRgDecode() {
+        return indexedMultiRgDecode;
+    }
+
+    public boolean routePureParquetThroughIndexed() {
+        return routePureParquetThroughIndexed;
+    }
+
     /**
      * Writes this snapshot into a {@code MemorySegment} matching the
      * {@code WireDatafusionQueryConfig} {@code #[repr(C)]} layout.
@@ -114,8 +128,10 @@ public final class WireConfigSnapshot {
      * 40      4     force_strategy                       i32      from snapshot (-1/0/1)
      * 44      4     cost_predicate                       i32      hardcoded 1
      * 48      4     cost_collector                       i32      hardcoded 10
+     * 52      4     indexed_multi_rg_decode              i32      from snapshot (0/1)
+     * 56      4     route_pure_parquet_through_indexed   i32      from snapshot (0/1)
      * ──────  ────
-     * Total: 52 bytes
+     * Total: 60 bytes of payload, padded to 64 (8-byte aligned, repr(C))
      * </pre>
      *
      * @param segment the target memory segment (at least {@link #BYTE_SIZE} bytes)
@@ -139,6 +155,10 @@ public final class WireConfigSnapshot {
         segment.set(ValueLayout.JAVA_INT, 44, 1);
         // Offset 48: cost_collector (i32) — hardcoded 10
         segment.set(ValueLayout.JAVA_INT, 48, 10);
+        // Offset 52: indexed_multi_rg_decode (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 52, indexedMultiRgDecode ? 1 : 0);
+        // Offset 56: route_pure_parquet_through_indexed (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 56, routePureParquetThroughIndexed ? 1 : 0);
     }
 
     /**
@@ -153,6 +173,8 @@ public final class WireConfigSnapshot {
         private double minSkipRunSelectivityThreshold = 0.03;
         private boolean indexedPushdownFilters = true;
         private int forceStrategy = -1;
+        private boolean indexedMultiRgDecode = false;
+        private boolean routePureParquetThroughIndexed = false;
 
         private Builder() {}
 
@@ -189,6 +211,16 @@ public final class WireConfigSnapshot {
         /** @param forceStrategy -1 = None (heuristic), 0 = RowSelection, 1 = BooleanMask. */
         public Builder forceStrategy(int forceStrategy) {
             this.forceStrategy = forceStrategy;
+            return this;
+        }
+
+        public Builder indexedMultiRgDecode(boolean indexedMultiRgDecode) {
+            this.indexedMultiRgDecode = indexedMultiRgDecode;
+            return this;
+        }
+
+        public Builder routePureParquetThroughIndexed(boolean routePureParquetThroughIndexed) {
+            this.routePureParquetThroughIndexed = routePureParquetThroughIndexed;
             return this;
         }
 

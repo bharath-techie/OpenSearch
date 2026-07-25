@@ -319,6 +319,24 @@ struct CachedMetadataReader {
     io_stats: Arc<ReadIoStats>,
 }
 
+/// Construct the same cached, metered reader used by the per-RG
+/// `DataSourceExec` path for a direct push-decoder scan.
+pub(crate) fn create_cached_metadata_reader(
+    store: Arc<dyn ObjectStore>,
+    location: object_store::path::Path,
+    metadata: Arc<ParquetMetaData>,
+    metrics: ParquetFileMetrics,
+    io_stats: Arc<ReadIoStats>,
+) -> Box<dyn AsyncFileReader + Send> {
+    Box::new(CachedMetadataReader {
+        store,
+        location,
+        metadata,
+        metrics,
+        io_stats,
+    })
+}
+
 impl AsyncFileReader for CachedMetadataReader {
     fn get_bytes(
         &mut self,

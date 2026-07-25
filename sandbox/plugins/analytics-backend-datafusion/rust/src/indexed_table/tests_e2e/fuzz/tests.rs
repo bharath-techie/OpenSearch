@@ -210,7 +210,7 @@ async fn fuzz_multi_column_or() {
 /// well above 3% threshold), and the large RGs ensure real skip runs
 /// (> 1024 rows) survive coalescing. This is the production regime for
 /// wide-selectivity queries and catches mask-alignment bugs between
-/// `prefetch_mask_buffer` and `PositionMap` in `finalize_batch`.
+/// the lazily built candidate mask and `PositionMap` in `finalize_batch`.
 #[tokio::test(flavor = "multi_thread")]
 async fn fuzz_block_granular_dense() {
     run_fuzz(

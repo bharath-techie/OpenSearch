@@ -19,15 +19,13 @@ use std::time::Instant;
 
 use datafusion::arrow::array::BooleanArray;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use datafusion::physical_optimizer::pruning::PruningPredicate;
-use roaring::RoaringBitmap;
 
-use super::eval_helpers::{
-    compute_page_ranges, evaluate_residual, universe_bitmap_from_page_ranges,
-};
-use super::{PrefetchedRg, RowGroupBitsetSource};
+use super::eval_helpers::evaluate_residual;
+use super::{PrefetchedRg, PrefetchedRgRows, RowGroupBitsetSource};
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
-use crate::indexed_table::row_selection::{bitmap_to_packed_bits, PositionMap};
+use crate::indexed_table::row_selection::PositionMap;
 use crate::indexed_table::stream::RowGroupInfo;
 
 /// Evaluator for predicate-only queries (no Collector).
@@ -67,7 +65,7 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
     fn prefetch_rg(
         &self,
         rg: &RowGroupInfo,
-        min_doc: i32,
+        _min_doc: i32,
         _max_doc: i32,
     ) -> Result<Option<PrefetchedRg>, String> {
         let t = Instant::now();
@@ -85,28 +83,30 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             }
         }
 
-        let page_ranges = compute_page_ranges(
-            self.pruning_predicate.as_ref(),
-            &self.page_pruner,
-            rg,
-            min_doc,
-            self.page_prune_metrics.as_ref(),
-        );
-
-        let candidates = match universe_bitmap_from_page_ranges(&page_ranges, rg) {
-            Some(bm) if bm.is_empty() => return Ok(None),
-            Some(bm) => bm,
-            None => return Ok(None),
+        let selection = match self.pruning_predicate.as_ref() {
+            Some(predicate) => self
+                .page_pruner
+                .prune_rg(predicate, rg.index, self.page_prune_metrics.as_ref())
+                .unwrap_or_else(|| {
+                    RowSelection::from(vec![RowSelector::select(rg.num_rows as usize)])
+                }),
+            None => RowSelection::from(vec![RowSelector::select(rg.num_rows as usize)]),
         };
-
-        let mask_len = rg.num_rows as usize;
-        let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
-        let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
+        let selected_rows = selection
+            .iter()
+            .filter(|selector| selector.skip == false)
+            .map(|selector| selector.row_count)
+            .sum();
+        if selected_rows == 0 {
+            return Ok(None);
+        }
         Ok(Some(PrefetchedRg {
-            candidates,
+            rows: PrefetchedRgRows::Selection {
+                selection,
+                selected_rows,
+            },
             eval_nanos: t.elapsed().as_nanos() as u64,
             context: Box::new(()),
-            mask_buffer: Some(mask_buffer),
         }))
     }
 
@@ -123,6 +123,14 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             return Ok(None);
         };
         Ok(Some(evaluate_residual(residual, batch, batch_len)?))
+    }
+
+    fn forbid_parquet_pushdown(&self) -> bool {
+        // The page pruner already supplies a bounded direct RowSelection.
+        // A controlled ClickBench A/B found that evaluating the same residual
+        // as a parquet RowFilter regressed 14/15 tested query shapes, so keep
+        // refinement on decoded batches for this evaluator.
+        true
     }
 }
 
@@ -201,7 +209,8 @@ mod tests {
             .prefetch_rg(&rg, 0, 8)
             .unwrap()
             .expect("should have candidates");
-        assert_eq!(prefetched.candidates.len(), 8);
+        assert_eq!(prefetched.rows.matched_rows(), 8);
+        assert!(prefetched.rows.bitmap().is_none());
     }
 
     #[test]
@@ -217,6 +226,7 @@ mod tests {
             .prefetch_rg(&rg, 0, 8)
             .unwrap()
             .expect("should have candidates");
-        assert_eq!(prefetched.candidates.len(), 8);
+        assert_eq!(prefetched.rows.matched_rows(), 8);
+        assert!(prefetched.rows.bitmap().is_none());
     }
 }

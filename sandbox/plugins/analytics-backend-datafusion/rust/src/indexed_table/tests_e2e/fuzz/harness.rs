@@ -1025,8 +1025,7 @@ mod tests {
     /// Bare Collector with 50% density and small `min_skip_run` (4).
     /// Forces the block-granular mask path where `PositionMap::Runs`
     /// is non-identity and `current_mask` must be built through
-    /// `build_mask` (not the zero-copy `prefetch_mask_buffer` fast
-    /// path). Catches the mask-alignment bug where `finalize_batch`
+    /// `build_mask`. Catches the mask-alignment bug where `finalize_batch`
     /// indexes the RG-relative mask by delivered-row offset after
     /// skip runs shift the alignment.
     #[tokio::test]

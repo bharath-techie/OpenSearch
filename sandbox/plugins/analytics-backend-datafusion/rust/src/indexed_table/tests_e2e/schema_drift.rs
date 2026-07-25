@@ -130,6 +130,7 @@ async fn run_missing_col_tree(tree_bool: BoolNode) -> usize {
         .target_partitions(1)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -441,6 +442,7 @@ async fn query_with_mismatched_schema(
         .target_partitions(1)
         .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
+        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: table_schema,

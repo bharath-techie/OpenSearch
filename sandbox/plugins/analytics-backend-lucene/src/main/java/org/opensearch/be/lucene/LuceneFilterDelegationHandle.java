@@ -235,9 +235,14 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                         if (docId < scanFrom) {
                             docId = iterator.advance(scanFrom);
                         }
-                        while (docId != DocIdSetIterator.NO_MORE_DOCS && docId < scanTo) {
-                            bits.set(docId - minDoc);
-                            docId = iterator.nextDoc();
+                        if (docId != DocIdSetIterator.NO_MORE_DOCS && docId < scanTo) {
+                            // Bulk-fill: postings formats fill dense blocks
+                            // word-at-a-time instead of one nextDoc()/set()
+                            // round-trip per matching doc. Leaves the iterator
+                            // on the first doc >= scanTo, preserving the
+                            // forward-only cursor contract across calls.
+                            iterator.intoBitSet(scanTo, bits, minDoc);
+                            docId = iterator.docID();
                         }
                         handle.currentDoc = docId;
                     }

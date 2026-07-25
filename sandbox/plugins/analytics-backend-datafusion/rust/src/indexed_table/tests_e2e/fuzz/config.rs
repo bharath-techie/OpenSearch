@@ -631,8 +631,7 @@ impl FixtureConfig {
 
     /// Block-granular dense: exercises the block-granular `min_skip_run`
     /// regime where the RowSelection has real skip runs and
-    /// `current_mask` must be built through `PositionMap` (not the
-    /// zero-copy `prefetch_mask_buffer` fast path). Uses small data
+    /// `current_mask` must be built lazily through `PositionMap`. Uses small data
     /// (10k rows, 2k RGs) but sets `min_skip_run_default = 4` so that
     /// even small gaps between the 10% candidate matches produce real
     /// skips — no need for 100k+ row RGs.
