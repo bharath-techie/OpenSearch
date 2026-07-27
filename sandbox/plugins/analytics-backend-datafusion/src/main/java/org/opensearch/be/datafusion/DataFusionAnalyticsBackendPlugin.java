@@ -298,6 +298,7 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
         ScalarFunction.LEFT,
         ScalarFunction.LENGTH,
         ScalarFunction.CHAR_LENGTH,
+        ScalarFunction.OCTET_LENGTH,
         ScalarFunction.LOCATE,
         ScalarFunction.POSITION,
         ScalarFunction.LOWER,

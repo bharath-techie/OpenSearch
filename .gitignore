@@ -75,3 +75,4 @@ doc-tools/missing-doclet/bin/
 
 /sandbox/plugins/analytics-backend-datafusion/target/
 /sandbox/libs/dataformat-native/rust/target
+/distro/

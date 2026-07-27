@@ -15,6 +15,8 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
+import org.opensearch.core.common.unit.ByteSizeUnit;
+import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
@@ -51,6 +53,41 @@ public class NativeBridgeModule extends Plugin {
 
     private volatile long currentNativeLimitBytes;
     private volatile int currentThresholdPercent;
+
+    /**
+     * Whether jemalloc may run its own internal background threads to perform decay purging
+     * asynchronously instead of inline on allocating threads (jemalloc TUNING.md recommends
+     * {@code true} for throughput-oriented workloads).
+     * <p>
+     * Default: false, matching jemalloc's own default. Measured on ClickBench q18: enabling it
+     * changed neither wall time nor fault counts, because the dominant purge cost there was
+     * jemalloc's eager oversize-extent purge (see {@code oversize_threshold} in the compile-time
+     * malloc conf, dataformat-native/build.gradle), which bypasses decay entirely and is not
+     * offloaded by background threads. Kept as an operational knob only.
+     */
+    public static final Setting<Boolean> JEMALLOC_BACKGROUND_THREAD = Setting.boolSetting(
+        "native.jemalloc.background_thread",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
+     * jemalloc oversize_threshold: freed allocations at or above this size are purged back to the
+     * OS immediately, bypassing decay entirely, so the next query re-faults and re-zeroes every
+     * page. DataFusion frees its aggregation hash tables / sort buffers as single doubling-growth
+     * allocations (up to ~512 MB on URL-keyed ClickBench group-bys), so jemalloc's 8 MB default
+     * cost ~510k minor faults and ~136 ms per memory-heavy query; suite-scale A/B: 8 MB → 40.46 s,
+     * 64 MB → 41.29 s, 1 GiB → 37.69 s. Default matches the value compiled into the native lib's
+     * malloc conf (dataformat-native/build.gradle); this setting retunes all arenas live via the
+     * {@code arena.<i>.oversize_threshold} mallctl. {@code 0} disables oversize routing.
+     */
+    public static final Setting<ByteSizeValue> JEMALLOC_OVERSIZE_THRESHOLD = Setting.byteSizeSetting(
+        "native.jemalloc.oversize_threshold",
+        new ByteSizeValue(1, ByteSizeUnit.GB),
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
 
     /** jemalloc dirty page decay time (ms). Dynamically tunable — applied to all arenas at runtime. */
     public static final Setting<Long> JEMALLOC_DIRTY_DECAY_MS = Setting.longSetting(
@@ -144,10 +181,22 @@ public class NativeBridgeModule extends Plugin {
 
         // Apply initial allocator values — requires native library to be loaded
         try {
+            // Enable background purging before the decay values are applied: writing a per-arena
+            // decay time forces an immediate purge, and we want jemalloc's own threads to own that
+            // work rather than the calling thread.
+            NativeAllocatorConfig.setBackgroundThread(JEMALLOC_BACKGROUND_THREAD.get(settings));
             NativeAllocatorConfig.setDirtyDecayMs(JEMALLOC_DIRTY_DECAY_MS.get(settings));
             NativeAllocatorConfig.setMuzzyDecayMs(JEMALLOC_MUZZY_DECAY_MS.get(settings));
+            NativeAllocatorConfig.setOversizeThreshold(JEMALLOC_OVERSIZE_THRESHOLD.get(settings).getBytes());
 
             // Register dynamic update listeners
+            clusterService.getClusterSettings()
+                .addSettingsUpdateConsumer(JEMALLOC_BACKGROUND_THREAD, NativeAllocatorConfig::setBackgroundThread);
+            clusterService.getClusterSettings()
+                .addSettingsUpdateConsumer(
+                    JEMALLOC_OVERSIZE_THRESHOLD,
+                    v -> NativeAllocatorConfig.setOversizeThreshold(v.getBytes())
+                );
             clusterService.getClusterSettings().addSettingsUpdateConsumer(JEMALLOC_DIRTY_DECAY_MS, NativeAllocatorConfig::setDirtyDecayMs);
             clusterService.getClusterSettings().addSettingsUpdateConsumer(JEMALLOC_MUZZY_DECAY_MS, NativeAllocatorConfig::setMuzzyDecayMs);
             clusterService.getClusterSettings()
@@ -170,7 +219,14 @@ public class NativeBridgeModule extends Plugin {
 
     @Override
     public List<Setting<?>> getSettings() {
-        return List.of(JEMALLOC_DIRTY_DECAY_MS, JEMALLOC_MUZZY_DECAY_MS, JEMALLOC_PURGE_INTERVAL, JEMALLOC_PURGE_THRESHOLD_PERCENT);
+        return List.of(
+            JEMALLOC_BACKGROUND_THREAD,
+            JEMALLOC_DIRTY_DECAY_MS,
+            JEMALLOC_MUZZY_DECAY_MS,
+            JEMALLOC_OVERSIZE_THRESHOLD,
+            JEMALLOC_PURGE_INTERVAL,
+            JEMALLOC_PURGE_THRESHOLD_PERCENT
+        );
     }
 
     @Override

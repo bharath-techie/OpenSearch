@@ -344,8 +344,30 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         // task it created for doExecute once this listener settles. Unregistering it ourselves
         // would double-free a task we no longer own.
         ActionListener<Iterable<VectorSchemaRoot>> batchesListener = ActionListener.wrap(batches -> {
+            // TEMPORARY latency-attribution instrumentation. The QueryProfile exposes planning and
+            // the native execution window, but nothing for the Java-side segments between them, so
+            // per-query overhead could only be inferred by subtraction. Log the real boundaries.
+            final long batchesReadyNanos = System.nanoTime();
             Iterable<Object[]> rows = batchesToRows(batches, outputColumnOrder);
+            final long rowsBuiltNanos = System.nanoTime();
             long totalRows = rows instanceof List ? ((List<?>) rows).size() : 0;
+            if (logger.isDebugEnabled()) {
+                int batchCount = 0;
+                for (VectorSchemaRoot ignored : batches) {
+                    batchCount++;
+                }
+                logger.debug(
+                    "[latency-attr query-{}] plan={}us dispatch_to_batches={}us batchesToRows={}us "
+                        + "total_to_rows={}us batches={} rows={}",
+                    dag.queryId(),
+                    TimeUnit.NANOSECONDS.toMicros(planningTimeNanos),
+                    TimeUnit.NANOSECONDS.toMicros(batchesReadyNanos - queryStartNanos - planningTimeNanos),
+                    TimeUnit.NANOSECONDS.toMicros(rowsBuiltNanos - batchesReadyNanos),
+                    TimeUnit.NANOSECONDS.toMicros(rowsBuiltNanos - queryStartNanos),
+                    batchCount,
+                    totalRows
+                );
+            }
             queryListener.onQueryComplete(dag.queryId(), System.nanoTime() - queryStartNanos, totalRows);
             rowsListener.onResponse(rows);
         }, rowsListener::onFailure);

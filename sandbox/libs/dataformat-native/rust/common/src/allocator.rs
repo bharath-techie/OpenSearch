@@ -90,6 +90,49 @@ pub extern "C" fn native_jemalloc_resident_bytes() -> i64 {
     })
 }
 
+/// FFI: Enables or disables jemalloc's internal background purge threads at runtime.
+/// Returns 0 on success, negative error pointer on failure.
+/// Called from Java when the cluster setting `native.jemalloc.background_thread` changes.
+///
+/// With `background_thread:false` (jemalloc's default) decay purging happens inline, "in the
+/// course of normal allocation/deallocation" — i.e. on whichever thread happens to allocate,
+/// which for us is a `datafusion-cpu` worker in the middle of a query. Because decay purging is
+/// incremental along a sigmoidal curve rather than deferred to the end of the decay window, a
+/// long `dirty_decay_ms` does NOT keep pages resident between queries: each query frees its
+/// working set, decay immediately starts returning those pages to the OS, and the next query
+/// re-faults them. Measured on ClickBench q18 (100M rows, 616MB scan): 670k minor faults and
+/// ~1.1s of extra CPU per query, which disappear when purging is moved off the query threads.
+///
+/// jemalloc's own TUNING.md recommends `background_thread:true` for throughput-oriented
+/// workloads precisely because it "generally improves the tail latency for application threads"
+/// and avoids "unintended purging delay caused by application inactivity".
+///
+/// This is deliberately a runtime mallctl rather than a `malloc_conf` entry: jemalloc documents
+/// that "enabling background thread using this option may cause crash or deadlock during
+/// initialization" and directs callers to the dynamic mallctl instead.
+#[no_mangle]
+pub extern "C" fn native_jemalloc_set_background_thread(enabled: i64) -> i64 {
+    ffm_wrap("native_jemalloc_set_background_thread", || {
+        let want = enabled != 0;
+        unsafe { tikv_jemalloc_ctl::raw::write(b"background_thread\0", want) }
+            .map_err(|e| format!("failed to set background_thread={}: {}", want, e))?;
+        // Read back: on platforms without pthread-based background thread support jemalloc
+        // accepts the write but leaves the value unchanged, so the log must reflect reality.
+        let active: bool = unsafe { tikv_jemalloc_ctl::raw::read(b"background_thread\0") }
+            .map_err(|e| format!("failed to read back background_thread: {}", e))?;
+        if active == want {
+            log_info!("jemalloc background_thread set to {}", active);
+        } else {
+            log_info!(
+                "jemalloc background_thread requested {} but is {} (unsupported on this platform)",
+                want,
+                active
+            );
+        }
+        Ok(0)
+    })
+}
+
 /// FFI: Sets dirty_decay_ms for all arenas at runtime. Returns 0 on success, negative error pointer on failure.
 /// Called from Java when the cluster setting `native.jemalloc.dirty_decay_ms` changes.
 #[no_mangle]
@@ -105,6 +148,48 @@ pub extern "C" fn native_jemalloc_set_dirty_decay_ms(ms: i64) -> i64 {
 pub extern "C" fn native_jemalloc_set_muzzy_decay_ms(ms: i64) -> i64 {
     ffm_wrap("native_jemalloc_set_muzzy_decay_ms", || {
         set_all_arenas(b"muzzy_decay_ms\0", ms)
+    })
+}
+
+/// FFI: Sets oversize_threshold for all arenas at runtime. Returns 0 on success, negative error
+/// pointer on failure. Called from Java when the cluster setting
+/// `native.jemalloc.oversize_threshold` changes.
+///
+/// jemalloc purges any freed extent >= this size back to the OS immediately ("shortcut to purge
+/// the oversize extent eagerly", extent.c), BYPASSING dirty_decay_ms — so the next allocation of
+/// that range re-faults and kernel-zeroes every page. DataFusion frees its grouped-aggregation
+/// hash tables and sort buffers as single doubling-growth allocations (~68-128 MB for q18-class
+/// group keys, 256-512 MB for URL-length keys), so the 8 MB default cost ClickBench q18 ~510k
+/// minor faults / ~136 ms per query. The compiled-in conf (build.gradle) sets the boot default
+/// (1 GiB); this setter allows retuning live without a rebuild or restart.
+///
+/// The per-arena `arena.<i>.oversize_threshold` mallctl is an atomic size_t store that takes
+/// effect immediately (ctl.c: arena_i_oversize_threshold_ctl). Unlike the decay setters this
+/// writes an UNSIGNED size_t — the ctl rejects any other width — hence a dedicated writer rather
+/// than `set_all_arenas` (which writes ssize_t for the decay knobs). 0 disables oversize routing
+/// entirely; there is no -1 sentinel.
+#[no_mangle]
+pub extern "C" fn native_jemalloc_set_oversize_threshold(bytes: i64) -> i64 {
+    ffm_wrap("native_jemalloc_set_oversize_threshold", || {
+        if bytes < 0 {
+            return Err(format!("oversize_threshold must be >= 0, got {}", bytes));
+        }
+        let val = bytes as usize;
+        let narenas: u32 = unsafe { tikv_jemalloc_ctl::raw::read(b"arenas.narenas\0") }
+            .map_err(|e| format!("failed to read arenas.narenas: {}", e))?;
+        let mut any_success = false;
+        for i in 0..narenas {
+            let key = format!("arena.{}.oversize_threshold\0", i);
+            if unsafe { tikv_jemalloc_ctl::raw::write(key.as_bytes(), val) }.is_ok() {
+                any_success = true;
+            }
+        }
+        if any_success {
+            log_info!("jemalloc oversize_threshold set to {} bytes on all arenas", val);
+            Ok(0)
+        } else {
+            Err("failed to set oversize_threshold on any arena".to_string())
+        }
     })
 }
 

@@ -166,8 +166,9 @@ public class RegexpReplaceAdapterTests extends OpenSearchTestCase {
     }
 
     public void testAdaptAppendsGlobalFlagFor3Arg() {
+        // Unanchored pattern can match repeatedly, so replace-all semantics need the "g" flag.
         RexNode field = rexBuilder.makeInputRef(varcharType, 0);
-        RexNode pattern = rexBuilder.makeLiteral("^OFFICE.*$");
+        RexNode pattern = rexBuilder.makeLiteral("OFFICE");
         RexNode replacement = rexBuilder.makeLiteral("OFC");
         RexCall original = (RexCall) rexBuilder.makeCall(SqlLibraryOperators.REGEXP_REPLACE_3, List.of(field, pattern, replacement));
 
@@ -177,6 +178,43 @@ public class RegexpReplaceAdapterTests extends OpenSearchTestCase {
         assertEquals("4 operands after append", 4, adapted.getOperands().size());
         assertTrue("trailing operand is a literal", adapted.getOperands().get(3) instanceof RexLiteral);
         assertEquals("trailing flag is \"g\"", "g", ((RexLiteral) adapted.getOperands().get(3)).getValueAs(String.class));
+    }
+
+    public void testAdaptSkipsGlobalFlagForAnchoredPattern() {
+        // A ^-anchored pattern matches at most once, so "g" is a no-op — and it is ~2.3x slower in
+        // DataFusion, which rescans for further matches. The 3-arg operator must be kept as-is.
+        RexNode field = rexBuilder.makeInputRef(varcharType, 0);
+        RexNode pattern = rexBuilder.makeLiteral("^https?://(?:www\\.)?([^/]+)/.*$");
+        RexNode replacement = rexBuilder.makeLiteral("${1}");
+        RexCall original = (RexCall) rexBuilder.makeCall(SqlLibraryOperators.REGEXP_REPLACE_3, List.of(field, pattern, replacement));
+
+        RexCall adapted = (RexCall) adapter.adapt(original, List.of(), cluster);
+
+        assertSame("operator stays 3-arg", SqlLibraryOperators.REGEXP_REPLACE_3, adapted.getOperator());
+        assertEquals("no flag appended", 3, adapted.getOperands().size());
+    }
+
+    public void testAdaptKeepsGlobalFlagForMultilineAnchoredPattern() {
+        // (?m) makes ^ match at every line start, so the pattern can match repeatedly.
+        RexNode field = rexBuilder.makeInputRef(varcharType, 0);
+        RexNode pattern = rexBuilder.makeLiteral("^(?m)foo.*$");
+        RexNode replacement = rexBuilder.makeLiteral("bar");
+        RexCall original = (RexCall) rexBuilder.makeCall(SqlLibraryOperators.REGEXP_REPLACE_3, List.of(field, pattern, replacement));
+
+        RexCall adapted = (RexCall) adapter.adapt(original, List.of(), cluster);
+
+        assertSame("multiline keeps PG_4 + flag", SqlLibraryOperators.REGEXP_REPLACE_PG_4, adapted.getOperator());
+        assertEquals("g flag appended", "g", ((RexLiteral) adapted.getOperands().get(3)).getValueAs(String.class));
+    }
+
+    public void testMatchesAtMostOnceClassification() {
+        assertTrue("plain ^ anchor", RegexpReplaceAdapter.matchesAtMostOnce("^abc"));
+        assertTrue("^ with non-flag group", RegexpReplaceAdapter.matchesAtMostOnce("^(?:www\\.)?x"));
+        assertTrue("^ with case-insensitive flag", RegexpReplaceAdapter.matchesAtMostOnce("^(?i)abc"));
+        assertFalse("unanchored", RegexpReplaceAdapter.matchesAtMostOnce("abc"));
+        assertFalse("multiline flag", RegexpReplaceAdapter.matchesAtMostOnce("^(?m)abc"));
+        assertFalse("combined multiline flag", RegexpReplaceAdapter.matchesAtMostOnce("^(?im)abc"));
+        assertFalse("null pattern", RegexpReplaceAdapter.matchesAtMostOnce(null));
     }
 
     public void testAdaptAppendsGlobalFlagForNonLiteralPattern() {

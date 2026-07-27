@@ -50,6 +50,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Data-node service that executes plan fragments against local shards.
@@ -72,6 +73,37 @@ import java.util.concurrent.Executor;
 public class AnalyticsSearchService implements AutoCloseable {
 
     private static final Logger LOGGER = LogManager.getLogger(AnalyticsSearchService.class);
+
+    /**
+     * TEMPORARY latency-attribution helper: process-wide minor fault count from {@code /proc/self/stat}
+     * (field 10). Used to attribute page faults to the native execution window rather than inferring
+     * them from whole-query deltas — datafusion-cli runs the same plan under the same jemalloc config
+     * with 7.6x fewer faults, and this pins down whether ours are incurred inside DataFusion.
+     * Process-wide, so it only reads cleanly under a single-query-at-a-time probe.
+     */
+    private static long minorFaults() {
+        try {
+            // MUST be the process-wide counter: /proc/self/stat read from a worker thread reports
+            // only THAT thread's minflt, and the faults we are chasing are taken on the Rust-side
+            // datafusion-cpu threads, so a thread-local read reports a misleading zero.
+            // /proc/self/statm is process-wide but has no fault counts; sum the per-task counters.
+            long total = 0;
+            try (var tasks = java.nio.file.Files.list(java.nio.file.Path.of("/proc/self/task"))) {
+                for (java.nio.file.Path t : tasks.toList()) {
+                    try {
+                        String stat = java.nio.file.Files.readString(t.resolve("stat"));
+                        String[] f = stat.substring(stat.lastIndexOf(')') + 2).split(" ");
+                        total += Long.parseLong(f[7]);
+                    } catch (Exception ignored) {
+                        // thread exited mid-scan
+                    }
+                }
+            }
+            return total;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
 
     private final Map<String, AnalyticsSearchBackendPlugin> backends;
     private final AnalyticsOperationListener listener;
@@ -199,15 +231,46 @@ public class AnalyticsSearchService implements AutoCloseable {
             executor.execute(() -> {
                 LOGGER.debug("[FragmentExecution] shard={} task={}", shard.shardId(), task.getId());
                 final long startNanos = System.nanoTime();
+                final long faultsAtFragmentStart = LOGGER.isDebugEnabled() ? minorFaults() : 0;
                 long rowsProduced = 0;
                 try (ResolvedExecution exec = executeFragmentStreamingResolved(request, shard, task)) {
+                    // TEMPORARY latency-attribution instrumentation: separate the cost of building
+                    // the native execution (substrait -> DataFusion plan -> stream handle) from the
+                    // cost of draining its batches, so per-query overhead is measured rather than
+                    // inferred by subtracting the native window from the stage window.
+                    final long execResolvedNanos = System.nanoTime();
+                    final long faultsResolve = LOGGER.isDebugEnabled() ? minorFaults() - faultsAtFragmentStart : -1;
                     Iterator<EngineResultBatch> it = exec.resources().stream().iterator();
+                    final long streamOpenNanos = System.nanoTime();
+                    final long faultsAtStreamOpen = LOGGER.isDebugEnabled() ? minorFaults() : 0;
+                    long batchCount = 0;
+                    long handoffNanos = 0;
                     while (it.hasNext()) {
                         EngineResultBatch batch = it.next();
+                        final long gotBatchNanos = System.nanoTime();
                         rowsProduced += batch.getRowCount();
+                        batchCount++;
                         responseHandler.onBatch(batch);
+                        handoffNanos += System.nanoTime() - gotBatchNanos;
                     }
                     long fragmentTookNanos = System.nanoTime() - startNanos;
+                    if (LOGGER.isDebugEnabled()) {
+                        LOGGER.debug(
+                            "[latency-attr shard={}] resolve={}us stream_open={}us drain={}us "
+                                + "(of which onBatch={}us) fragment_total={}us batches={} rows={} "
+                                + "faults[resolve={} drain={}]",
+                            shard.shardId(),
+                            TimeUnit.NANOSECONDS.toMicros(execResolvedNanos - startNanos),
+                            TimeUnit.NANOSECONDS.toMicros(streamOpenNanos - execResolvedNanos),
+                            TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - streamOpenNanos),
+                            TimeUnit.NANOSECONDS.toMicros(handoffNanos),
+                            TimeUnit.NANOSECONDS.toMicros(fragmentTookNanos),
+                            batchCount,
+                            rowsProduced,
+                            faultsResolve,
+                            minorFaults() - faultsAtStreamOpen
+                        );
+                    }
                     // Extract DataFusion execution metrics only when needed
                     if (request.profile() || LOGGER.isDebugEnabled()) {
                         byte[] metricsJson = exec.resources().getExecutionMetrics();

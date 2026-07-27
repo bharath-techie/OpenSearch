@@ -21,6 +21,7 @@ import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.OperandTypes;
 import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.util.ImmutableBitSet;
 import org.opensearch.analytics.planner.rel.AggregateCallAnnotation;
 import org.opensearch.analytics.planner.rel.AggregateMode;
 import org.opensearch.analytics.planner.rel.OpenSearchAggregate;
@@ -320,12 +321,13 @@ public class AggregateRuleTests extends BasePlannerRulesTests {
     // ---- Operator resolution ----
 
     /**
-     * Exact {@code COUNT(DISTINCT x)} is rewritten to {@code APPROX_COUNT_DISTINCT(x)} on the
-     * analytics-engine route — the resulting aggregate uses the standard approximate operator and
-     * is no longer marked {@code isDistinct}, so it routes through the APPROXIMATE
-     * single-stage gather path rather than the additive partial/final split.
+     * Grouped {@code COUNT(DISTINCT x)} is expanded to the exact two-level plan by
+     * {@code OpenSearchExpandDistinctCountRule}: a plain {@code COUNT} over a dedup aggregate,
+     * no {@code APPROX_COUNT_DISTINCT} and no {@code isDistinct} anywhere — so both levels route
+     * through the ordinary additive partial/final split instead of HLL sketch state. (HLL cost a
+     * 16KB register array per group; ClickBench q14's ~6M groups OOM-killed the node.)
      */
-    public void testCountDistinctRewrittenToApproxCountDistinct() {
+    public void testCountDistinctExpandsToExactTwoLevel() {
         RelNode scan = stubScan(mockTable("test_index", "status", "size"));
         AggregateCall countDistinct = AggregateCall.create(
             SqlStdOperatorTable.COUNT,
@@ -339,8 +341,13 @@ public class AggregateRuleTests extends BasePlannerRulesTests {
         OpenSearchAggregate agg = runAggregate(1, countDistinct);
         assertEquals(1, agg.getAggCallList().size());
         AggregateCall rebuilt = agg.getAggCallList().get(0);
-        assertSame(SqlStdOperatorTable.APPROX_COUNT_DISTINCT, rebuilt.getAggregation());
-        assertFalse("isDistinct must be cleared on the rewritten APPROX_COUNT_DISTINCT call", rebuilt.isDistinct());
+        assertSame(SqlStdOperatorTable.COUNT, rebuilt.getAggregation());
+        assertFalse("expansion must leave a plain COUNT, not COUNT(DISTINCT)", rebuilt.isDistinct());
+        RelNode dedup = RelNodeUtils.unwrapHep(agg.getInput());
+        assertTrue("input must be the dedup aggregate, got " + dedup.getClass().getSimpleName(), dedup instanceof OpenSearchAggregate);
+        OpenSearchAggregate dedupAgg = (OpenSearchAggregate) dedup;
+        assertEquals("dedup aggregate carries no calls", 0, dedupAgg.getAggCallList().size());
+        assertEquals("dedup groups on (key, x)", 2, dedupAgg.getGroupSet().cardinality());
     }
 
     /**
@@ -395,8 +402,10 @@ public class AggregateRuleTests extends BasePlannerRulesTests {
     }
 
     /**
-     * COUNT(DISTINCT smallint_col) inserts a widening CAST(col AS INTEGER) below the aggregate
-     * so DataFusion uses HLL (Binary state) instead of bitmap (List state).
+     * Ungrouped COUNT(DISTINCT smallint_col) — the shape that still takes the HLL rewrite —
+     * inserts a widening CAST(col AS INTEGER) below the aggregate so DataFusion uses HLL
+     * (Binary state) instead of bitmap (List state). Grouped dc() no longer exercises the
+     * widening: it expands to the exact two-level plan, where SMALLINT group keys are fine.
      */
     public void testCountDistinctOnSmallintWidensToInteger() {
         RelNode scan = stubScan(
@@ -411,9 +420,10 @@ public class AggregateRuleTests extends BasePlannerRulesTests {
             typeFactory.createSqlType(SqlTypeName.BIGINT),
             "dc"
         );
-        RelNode result = runPlanner(makeAggregate(scan, countDistinct), defaultContext(1));
+        RelNode result = runPlanner(makeAggregate(scan, ImmutableBitSet.of(), countDistinct), defaultContext(1));
         String plan = RelOptUtil.toString(result);
         logger.info("Full plan with SMALLINT dc:\n{}", plan);
+        assertTrue("Plan must contain APPROX_COUNT_DISTINCT (ungrouped keeps HLL)", plan.contains("APPROX_COUNT_DISTINCT"));
         assertTrue("Plan must contain CAST to widen SMALLINT to INTEGER", plan.contains("CAST") && plan.contains("INTEGER"));
     }
 

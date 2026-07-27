@@ -56,7 +56,16 @@ class RegexpReplaceAdapter implements ScalarFunctionAdapter {
             }
         }
 
-        boolean appendGlobalFlag = original.getOperator() == SqlLibraryOperators.REGEXP_REPLACE_3 && original.getOperands().size() == 3;
+        // PPL's regexp_replace is replace-all (it maps to Java's String.replaceAll), so the 3-arg
+        // form needs DataFusion's "g" flag to match. But "g" is far more expensive — DataFusion
+        // rescans for further matches after each replacement (2.3x on ClickBench q29: 5.5s -> 12.9s)
+        // — and it is a provable no-op for a pattern anchored at ^ without multiline mode, which can
+        // match at most once. Skip the flag in that case; semantics are unchanged.
+        boolean replaceAllNeeded = !(patternOperand instanceof RexLiteral patternLit)
+            || !matchesAtMostOnce(patternLit.getValueAs(String.class));
+        boolean appendGlobalFlag = original.getOperator() == SqlLibraryOperators.REGEXP_REPLACE_3
+            && original.getOperands().size() == 3
+            && replaceAllNeeded;
 
         if (rewrittenPattern == null && rewrittenReplacement == null && !appendGlobalFlag) {
             return original;
@@ -76,6 +85,37 @@ class RegexpReplaceAdapter implements ScalarFunctionAdapter {
             return rexBuilder.makeCall(original.getType(), SqlLibraryOperators.REGEXP_REPLACE_PG_4, newOperands);
         }
         return rexBuilder.makeCall(original.getType(), original.getOperator(), newOperands);
+    }
+
+    /**
+     * True when {@code pattern} can match at most once per input, making replace-all equivalent to
+     * replace-first. Conservative: only a leading {@code ^} anchor with no inline multiline flag
+     * qualifies. Anything else — including a null/non-literal pattern — returns false so the "g"
+     * flag is kept.
+     *
+     * <p>{@code (?m)} anywhere in the pattern makes {@code ^} match at every line start, so a
+     * multiline pattern can match repeatedly and must keep the flag. A leading {@code (?i)} or
+     * similar non-multiline inline group is fine but is not worth parsing, so it is not recognised.
+     */
+    static boolean matchesAtMostOnce(String pattern) {
+        if (pattern == null || !pattern.startsWith("^")) {
+            return false;
+        }
+        // (?m) / (?im) / (?s-m) … — any inline flag group enabling multiline disqualifies.
+        int flagIdx = pattern.indexOf("(?");
+        while (flagIdx >= 0) {
+            int close = pattern.indexOf(')', flagIdx);
+            if (close < 0) {
+                break;
+            }
+            String group = pattern.substring(flagIdx + 2, close);
+            // Only flag groups (letters and '-') matter; '(?:' etc. are plain groups.
+            if (group.chars().allMatch(c -> Character.isLetter(c) || c == '-') && group.indexOf('m') >= 0) {
+                return false;
+            }
+            flagIdx = pattern.indexOf("(?", close);
+        }
+        return true;
     }
 
     /** Wrap bare {@code $N} backreferences in braces, preserving {@code $$} and {@code ${…}}. */

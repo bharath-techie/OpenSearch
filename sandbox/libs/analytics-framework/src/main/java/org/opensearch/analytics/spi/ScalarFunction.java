@@ -94,6 +94,13 @@ public enum ScalarFunction {
     CONCAT_FUNCTION(Category.STRING, SqlKind.OTHER_FUNCTION, org.apache.calcite.sql.fun.SqlLibraryOperators.CONCAT_FUNCTION),
     CONCAT_WS(Category.STRING, SqlKind.OTHER_FUNCTION),
     CHAR_LENGTH(Category.STRING, SqlKind.OTHER_FUNCTION),
+    /**
+     * Byte length ({@code OCTET_LENGTH}), as distinct from {@link #CHAR_LENGTH}. PPL's
+     * {@code length()} is documented as "the length of the string measured in bytes", and byte
+     * length is also markedly cheaper — an array-offset subtraction rather than a UTF-8 walk
+     * (ClickBench q28: 2.93s vs 4.00s).
+     */
+    OCTET_LENGTH(Category.STRING, SqlKind.OTHER_FUNCTION, org.apache.calcite.sql.fun.SqlStdOperatorTable.OCTET_LENGTH),
     REPLACE(Category.STRING, SqlKind.OTHER_FUNCTION),
     REGEXP_REPLACE(Category.STRING, SqlKind.OTHER_FUNCTION),
     ASCII(Category.STRING, SqlKind.OTHER_FUNCTION),

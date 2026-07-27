@@ -79,9 +79,64 @@ task buildRustLibrary(type: Exec) {
     if (buildType == 'release') { cargoArgs.add('--release') }
     commandLine cargoArgs
 
+    // TODO : there is config.toml -> env already - move these there
+    // jemalloc options compiled in via --with-malloc-conf. This is the only mechanism that
+    // works here: the library is dlopen'd by the JVM and built with the "_rjem_" symbol
+    // prefix, so jemalloc looks up "_rjem_malloc_conf" and never reads an exported
+    // "malloc_conf" symbol (see lib/src/lib.rs).
+    //
+    // thp:always / metadata_thp:always — back allocations with transparent huge pages.
+    // System THP is typically mode "madvise", which only grants huge pages to regions that
+    // explicitly madvise(MADV_HUGEPAGE); jemalloc does not do so by default, so large
+    // hash tables faulted in as 4K pages. On ClickBench q16 (100M rows, 17.6M groups,
+    // ~1.1GB hash table) that cost ~160ms of kernel page-fault and cgroup accounting work
+    // per query — enabling this brought AnonHugePages from 0 to 1.19GB and the query from
+    // 745ms to 586ms, reaching parity with stock datafusion-cli.
+    //
+    // prof:true — profiling support is init-time only, so it must be baked in. It is NOT inert on
+    // its own: jemalloc's opt.prof_active defaults to true, so `prof:true` alone starts sampling
+    // allocations immediately, and each sample walks the stack via _Unwind_Backtrace. Measured on
+    // ClickBench q08: 6.0% of all query CPU landed in libgcc_s (_Unwind_Find_FDE →
+    // prof_backtrace_impl → _rjem_je_prof_tctx_create), ~5.6ms of 93ms CPU per query, for a
+    // profile nobody requested. prof_active:false keeps the capability compiled in while leaving
+    // it genuinely dormant; NativeHeapProfiler flips prof.active at runtime when a dump is asked
+    // for, so on-demand profiling is unaffected.
+    //
+    // lg_tcache_max:16 / dirty_decay_ms / muzzy_decay_ms — these were previously carried by an
+    // exported `malloc_conf` static in lib/src/lib.rs. That symbol was removed on the theory that
+    // the "_rjem_"-prefixed build never reads it, but dropping these options made ALL aggregate
+    // queries 4-9% slower with unchanged plans and unchanged planning time — the tell that the
+    // static was in fact live. lg_tcache_max:16 raises the thread-cache ceiling to 64KB (jemalloc
+    // defaults to 32KB), which matters for the mid-size allocations a hash aggregation makes, so
+    // it must be carried here. dirty/muzzy_decay_ms are also runtime-tunable via mallctl from
+    // cluster settings; these values only apply before OpenSearch initialises.
+    // oversize_threshold:1g — jemalloc routes any allocation >= this to a path that purges the
+    // extent back to the OS IMMEDIATELY on free ("shortcut to purge the oversize extent eagerly",
+    // extent.c — bypassing dirty_decay_ms entirely; only decay_ms:-1 disables it). DataFusion's
+    // grouped-hash-aggregation tables grow by doubling into 64-256MB chunks, so with the 8MB
+    // default every query frees ~1.2GB of hash table that jemalloc instantly madvises away and
+    // the next query re-faults+zeroes: measured 279k-510k minor faults and ~100-136ms per query
+    // on ClickBench q18 (and 93k faults on q16), reproduced on vanilla DataFusion 54 + jemalloc
+    // outside OpenSearch. Sweep on q18: 8MB=279k faults/1072ms, 64MB=12.8k/983ms (ClickHouse's
+    // value — too low for DataFusion's chunk sizes), 256MB/1GB/0 all ~500 faults/~970ms. 1GB is
+    // chosen over 0 to keep the eager-purge valve for genuinely huge transients (multi-GB spill
+    // buffers should return to the OS immediately, not sit for the 30s decay window).
+    def mallocConf = [
+        'thp:always',
+        'metadata_thp:always',
+        'lg_tcache_max:16',
+        'dirty_decay_ms:30000',
+        'muzzy_decay_ms:30000',
+        'oversize_threshold:1073741824'
+    ]
+    if (buildType == 'release') { mallocConf.addAll(['prof:true', 'prof_active:false']) }
+    environment 'JEMALLOC_SYS_WITH_MALLOC_CONF', mallocConf.join(',')
+
     inputs.files fileTree("${rustWorkspaceDir}/common/src")
     inputs.files fileTree("${rustWorkspaceDir}/lib/src")
     inputs.file "${rustWorkspaceDir}/Cargo.toml"
+    // Compiled into jemalloc, so a change here must invalidate the cached build.
+    inputs.property 'jemallocMallocConf', mallocConf.join(',')
     // Track all workspace member Rust sources so changes to plugin crates (e.g.,
     // analytics-backend-datafusion/rust/src/ffm.rs) invalidate the cached build.
     inputs.files fileTree("${projectDir}/../../plugins/analytics-backend-datafusion/rust/src")

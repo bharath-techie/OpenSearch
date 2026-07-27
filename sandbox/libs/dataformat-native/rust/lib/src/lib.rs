@@ -16,28 +16,22 @@
 //      automatically available for dlsym/SymbolLookup
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// jemalloc tuning applied at process start (before JVM/OpenSearch boots):
-/// - dirty_decay_ms and muzzy_decay_ms: also dynamically tunable at runtime via cluster settings
-///   (see NativeBridgeModule). The values here serve as defaults for the brief window between
-///   process start and OpenSearch initialization. On restart, the persisted cluster setting
-///   is re-applied by NativeBridgeModule.createComponents() — these compile-time values are
-///   only used until that point.
-/// - lg_tcache_max: NOT dynamically tunable by jemalloc — init-time only, requires process restart to change.
+/// jemalloc init-time options are compiled in via `JEMALLOC_SYS_WITH_MALLOC_CONF`
+/// (`--with-malloc-conf`), set by the Gradle `buildRustLibrary` task — see
+/// `sandbox/libs/dataformat-native/build.gradle` for the option list and rationale.
 ///
-/// NOTE on heap profiling:
-/// `prof:true` is baked into jemalloc at compile time via JEMALLOC_SYS_WITH_MALLOC_CONF
-/// set by the Gradle buildRustLibrary task (release builds only) and the `profiling`
-/// feature on tikv-jemallocator. This is required because:
-///   1. prof:true is init-time only — cannot be enabled after process start
-///   2. The malloc_conf symbol is not read by jemalloc for dlopen'd libraries
+/// An exported `malloc_conf` static used to live here carrying
+/// `dirty_decay_ms`/`muzzy_decay_ms`/`lg_tcache_max:16`. It was removed on the theory that a
+/// `_rjem_`-prefixed jemalloc only resolves `_rjem_malloc_conf` and never an unprefixed
+/// `malloc_conf` — but removing it made every aggregate query 4-9% slower with identical plans and
+/// identical planning time, so it was demonstrably live. Those options now live in the
+/// compile-time conf instead (see `build.gradle`), which is the mechanism that is definitely read.
+/// Do not add such a static back without also removing them there, or they will be set twice.
 ///
-/// With `prof_active:false`, profiling infrastructure is initialized but **inactive** —
-/// zero CPU overhead and negligible memory overhead. Profiling is activated on-demand
-/// via cluster settings at runtime. Dev/test builds (cargo build without --release)
-/// do not include profiling support.
-#[export_name = "malloc_conf"]
-pub static MALLOC_CONF: &[u8] = b"dirty_decay_ms:30000,muzzy_decay_ms:30000,lg_tcache_max:16\0";
-
+/// Runtime-tunable options (`dirty_decay_ms`, `muzzy_decay_ms`, `prof_active`, …) are
+/// applied through `mallctl` by NativeBridgeModule from cluster settings, which is
+/// unaffected by the above. Options that are init-time only — `prof`, `lg_tcache_max`,
+/// `thp` — can only come from the compile-time conf.
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

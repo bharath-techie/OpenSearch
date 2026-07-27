@@ -8,8 +8,11 @@
 
 package org.opensearch.analytics.planner;
 
+import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.AggregateCall;
+import org.apache.calcite.rel.logical.LogicalProject;
+import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.ImmutableBitSet;
@@ -210,28 +213,32 @@ public class AggregatePlanShapeTests extends PlanShapeTestBase {
         );
     }
 
-    // ---- COUNT(DISTINCT x) → APPROX_COUNT_DISTINCT(x) (engine-native HLL sketch merge) ----
+    // ---- Grouped COUNT(DISTINCT x) → exact two-level aggregation (dedup, then plain COUNT). ----
+    // ---- HLL sketches cost 16KB per group (ClickBench q14, ~6M groups → ~96GB, OOM); the ----
+    // ---- exact expansion is the plan DataFusion's own optimizer produces for SQL. HLL is ----
+    // ---- kept only for ungrouped/mixed shapes and the explicit distinct_count_approx(). ----
 
     /**
-     * 1-shard {@code COUNT(DISTINCT x)} — the HEP {@code OpenSearchDistinctCountRule} rewrites to
-     * {@code APPROX_COUNT_DISTINCT(x)}, then no split (single shard). SINGLE at the shard.
+     * 1-shard grouped {@code COUNT(DISTINCT x)} — {@code OpenSearchExpandDistinctCountRule}
+     * expands to dedup-then-count; both aggregates stay SINGLE at the shard.
      */
     public void testCountDistinct_1shard() {
         RelNode scan = stubScan(mockTable("test_index", "status", "size"));
         RelNode plan = makeAggregate(scan, countDistinctCall(scan));
         RelNode result = runPlanner(plan, singleShardContext());
         assertPlanShape("""
-            OpenSearchAggregate(group=[{0}], dc=[APPROX_COUNT_DISTINCT($1)], mode=[SINGLE], viableBackends=[[mock-parquet]])
-              OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
+            OpenSearchAggregate(group=[{0}], dc=[COUNT($1)], mode=[SINGLE], viableBackends=[[mock-parquet]])
+              OpenSearchAggregate(group=[{0, 1}], mode=[SINGLE], viableBackends=[[mock-parquet]])
+                OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
             """, result);
     }
 
     /**
-     * Multi-shard {@code COUNT(DISTINCT x)} — rewritten to {@code APPROX_COUNT_DISTINCT(x)} and then
-     * split via {@link org.opensearch.analytics.planner.rules.OpenSearchAggregateSplitRule}. FINAL
-     * keeps the {@code APPROX_COUNT_DISTINCT} operator (engine-native merge: reducer == self), reads
-     * column $1 of the gathered exchange. {@code DistributedAggregateRewriter} retypes the exchange
-     * column to {@code VARBINARY} (HLL sketch state) downstream during DAG-cut + fragment conversion.
+     * Multi-shard grouped {@code COUNT(DISTINCT x)} — after the exact expansion, the dedup
+     * aggregate (no agg calls, merge-idempotent) splits PARTIAL/FINAL through
+     * {@link org.opensearch.analytics.planner.rules.OpenSearchAggregateSplitRule}: shards ship
+     * deduped {@code (key, x)} pairs — not 16KB HLL sketches per key — and the coordinator
+     * re-dedups across shards, then counts.
      */
     public void testCountDistinct_2shard() {
         RelNode scan = stubScan(mockTable("test_index", "status", "size"));
@@ -239,12 +246,80 @@ public class AggregatePlanShapeTests extends PlanShapeTestBase {
         RelNode result = runPlanner(plan, multiShardContext());
         assertPlanShape(
             """
-                OpenSearchAggregate(group=[{0}], dc=[APPROX_COUNT_DISTINCT($1)], mode=[FINAL], viableBackends=[[mock-parquet]])
-                  OpenSearchExchangeReducer(viableBackends=[[mock-parquet]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
-                    OpenSearchAggregate(group=[{0}], dc=[APPROX_COUNT_DISTINCT($1)], mode=[PARTIAL], viableBackends=[[mock-parquet]])
-                      OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
+                OpenSearchAggregate(group=[{0}], dc=[COUNT($1)], mode=[SINGLE], viableBackends=[[mock-parquet]])
+                  OpenSearchAggregate(group=[{0, 1}], mode=[FINAL], viableBackends=[[mock-parquet]])
+                    OpenSearchExchangeReducer(viableBackends=[[mock-parquet]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
+                      OpenSearchAggregate(group=[{0, 1}], mode=[PARTIAL], viableBackends=[[mock-parquet]])
+                        OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
                 """,
             result
+        );
+    }
+
+    /**
+     * Ungrouped {@code COUNT(DISTINCT x)} keeps the HLL rewrite: one group means one 16KB
+     * sketch, and the exact alternative would ship every distinct value to the coordinator
+     * (ClickBench q05: 17.6M UserIDs vs one sketch).
+     */
+    public void testCountDistinct_ungrouped_staysApprox() {
+        RelNode scan = stubScan(mockTable("test_index", "status", "size"));
+        RelNode plan = makeAggregate(scan, ImmutableBitSet.of(), countDistinctCall(scan));
+        RelNode result = runPlanner(plan, singleShardContext());
+        assertPlanShape("""
+            OpenSearchAggregate(group=[{}], dc=[APPROX_COUNT_DISTINCT($1)], mode=[SINGLE], viableBackends=[[mock-parquet]])
+              OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
+            """, result);
+    }
+
+    /**
+     * Mixed {@code dc(x)} + another aggregate is out of the exact expansion's gate (would need
+     * a grouping-set/join expansion the fragment convertor doesn't support) — stays HLL.
+     */
+    public void testCountDistinct_mixedWithCount_staysApprox() {
+        RelNode scan = stubScan(mockTable("test_index", "status", "size"));
+        RelNode plan = makeAggregate(scan, countDistinctCall(scan), countStarCall(scan));
+        RelNode result = runPlanner(plan, singleShardContext());
+        assertPlanShape("""
+            OpenSearchAggregate(group=[{0}], dc=[APPROX_COUNT_DISTINCT($1)], cnt=[COUNT()], mode=[SINGLE], viableBackends=[[mock-parquet]])
+              OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
+            """, result);
+    }
+
+    // ---- Constant group keys: PPL's `eval c = 1 | stats count() by c, URL` materialises the ----
+    // ---- literal into a Project column, so the aggregate groups on a column *reference* and ----
+    // ---- DataFusion can no longer tell it is constant. The literal then rides through the ----
+    // ---- hash-partitioning, group key and sort. AGGREGATE_PROJECT_PULL_UP_CONSTANTS drops it ----
+    // ---- from the group set and re-attaches it above. ClickBench q35: 3.07s -> see report. ----
+
+    public void testConstantGroupKeyIsPulledUp() {
+        RelOptTable table = mockTable("test_index", "status", "size");
+        RelNode scan = stubScan(table);
+        RelDataType intType = typeFactory.createSqlType(SqlTypeName.INTEGER);
+        // Project(const=1, status) — mirrors `eval const = 1 | stats count() by const, status`
+        LogicalProject project = LogicalProject.create(
+            scan,
+            List.of(),
+            List.of(rexBuilder.makeExactLiteral(java.math.BigDecimal.ONE, intType), rexBuilder.makeInputRef(intType, 0)),
+            List.of("const", "status")
+        );
+        AggregateCall count = AggregateCall.create(
+            SqlStdOperatorTable.COUNT,
+            false,
+            List.of(),
+            -1,
+            project,
+            typeFactory.createSqlType(SqlTypeName.BIGINT),
+            "c"
+        );
+        RelNode agg = makeAggregate(project, ImmutableBitSet.of(0, 1), count);
+
+        RelNode result = runPlanner(agg, singleShardContext());
+
+        String plan = result.explain();
+        assertFalse("constant must not remain a group key:\n" + plan, plan.contains("group=[{0, 1}]"));
+        assertTrue(
+            "aggregate should group on the non-constant key only:\n" + plan,
+            plan.contains("group=[{0}]") || plan.contains("group=[{1}]")
         );
     }
 }

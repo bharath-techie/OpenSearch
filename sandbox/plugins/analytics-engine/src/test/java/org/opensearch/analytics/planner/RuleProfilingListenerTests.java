@@ -48,15 +48,11 @@ public class RuleProfilingListenerTests extends BasePlannerRulesTests {
         runAndAssertRules(
             1,
             "SELECT URL FROM hits",
-            Map.of(
-                "ReduceExpressionsRule(Project)",
-                0L,
-                "OpenSearchProjectRule",
-                1L,
-                "OpenSearchTableScanRule",
-                1L,
-                "ExpandConversionRule",
-                1L
+            Map.ofEntries(
+                Map.entry("ReduceExpressionsRule(Project)", 0L),
+                Map.entry("OpenSearchProjectRule", 1L),
+                Map.entry("OpenSearchTableScanRule", 1L),
+                Map.entry("ExpandConversionRule", 1L)
             )
         );
     }
@@ -96,6 +92,9 @@ public class RuleProfilingListenerTests extends BasePlannerRulesTests {
                 Map.entry("OpenSearchAggregateRule", 1L),
                 Map.entry("OpenSearchAggregateSplitRule", 1L),
                 Map.entry("OpenSearchAggLiteralArgProjectSplitRule", 0L),
+                // Registered in aggregate-decompose for PPL's constant group keys
+                // (`eval c = 1 | stats ... by c, x`); no constant keys here, so it never fires.
+                Map.entry("AggregateProjectPullUpConstantsRule", 0L),
                 Map.entry("OpenSearchDistributionDeriveRule", 3L),
                 Map.entry("ExpandConversionRule", 5L)
             )
@@ -107,27 +106,19 @@ public class RuleProfilingListenerTests extends BasePlannerRulesTests {
         runAndAssertRules(
             5,
             "SELECT l.CounterID, COUNT(*) AS cnt FROM hits l JOIN hits r ON l.CounterID = r.CounterID GROUP BY l.CounterID",
-            Map.of(
-                "ExtractLiteralAggRule",
-                0L,
-                "ReduceExpressionsRule(Project)",
-                0L,
-                "OpenSearchTableScanRule",
-                1L,
-                "OpenSearchProjectRule",
-                1L,
-                "OpenSearchJoinRule",
-                1L,
-                "OpenSearchAggregateRule",
-                1L,
-                "OpenSearchAggregateSplitRule",
-                1L,
-                "OpenSearchJoinSplitRule",
-                1L,
-                "OpenSearchAggLiteralArgProjectSplitRule",
-                0L,
-                "ExpandConversionRule",
-                2L
+            Map.ofEntries(
+                Map.entry("ExtractLiteralAggRule", 0L),
+                Map.entry("ReduceExpressionsRule(Project)", 0L),
+                Map.entry("OpenSearchTableScanRule", 1L),
+                Map.entry("OpenSearchProjectRule", 1L),
+                Map.entry("OpenSearchJoinRule", 1L),
+                Map.entry("OpenSearchAggregateRule", 1L),
+                Map.entry("OpenSearchAggregateSplitRule", 1L),
+                Map.entry("OpenSearchJoinSplitRule", 1L),
+                Map.entry("OpenSearchAggLiteralArgProjectSplitRule", 0L),
+                // See the note in the aggregate fixture above — no constant group keys here.
+                Map.entry("AggregateProjectPullUpConstantsRule", 0L),
+                Map.entry("ExpandConversionRule", 2L)
             )
         );
     }

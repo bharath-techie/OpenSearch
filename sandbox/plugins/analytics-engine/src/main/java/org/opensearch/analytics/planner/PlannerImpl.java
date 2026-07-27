@@ -23,12 +23,10 @@ import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.Sort;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.rules.CoreRules;
-import org.apache.calcite.rel.rules.FilterProjectTransposeRule;
 import org.apache.calcite.rel.rules.ReduceExpressionsRule;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexShuttle;
 import org.apache.calcite.rex.RexSubQuery;
-import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql2rel.RelDecorrelator;
 import org.apache.calcite.tools.RelBuilder;
@@ -42,6 +40,8 @@ import org.opensearch.analytics.planner.rules.OpenSearchAggregateRule;
 import org.opensearch.analytics.planner.rules.OpenSearchAggregateSplitRule;
 import org.opensearch.analytics.planner.rules.OpenSearchDistinctCountRule;
 import org.opensearch.analytics.planner.rules.OpenSearchDistributionDeriveRule;
+import org.opensearch.analytics.planner.rules.OpenSearchExpandDistinctCountRule;
+import org.opensearch.analytics.planner.rules.OpenSearchFilterProjectTransposeRule;
 import org.opensearch.analytics.planner.rules.OpenSearchFilterRule;
 import org.opensearch.analytics.planner.rules.OpenSearchJoinRule;
 import org.opensearch.analytics.planner.rules.OpenSearchJoinSplitRule;
@@ -84,30 +84,6 @@ import java.util.Optional;
 public class PlannerImpl {
 
     private static final Logger LOGGER = LogManager.getLogger(PlannerImpl.class);
-
-    /**
-     * Like {@link CoreRules#FILTER_PROJECT_TRANSPOSE} but refuses to push a Filter below a Project
-     * that computes any non-deterministic expression (e.g. {@code eval r = rand() | where r > 0}).
-     *
-     * <p>This is a <b>semantic-correctness</b> guard, not a delegation/performance one. The stock
-     * rule only guards against window functions ({@code !containsOver()}); pushing a Filter past a
-     * {@code rand()} Project inlines {@code RAND()} into the predicate, so a reference to one
-     * already-computed random value ({@code $ref > literal}) becomes a fresh {@code RAND() > literal}
-     * evaluated again at scan time. That re-evaluates / duplicates the non-deterministic expression
-     * and changes results, so the Filter must stay above the Project regardless of backend.
-     *
-     * <p>(Aside: such an inlined {@code RAND() > literal} predicate is also what gets incorrectly
-     * marked Lucene-delegation-viable today — a separate filter-viability gap where a field-less
-     * predicate inherits its child's viable backends instead of validating its scalar calls. That is
-     * tracked/fixed separately; it is not the reason for this rule.)
-     */
-    private static final FilterProjectTransposeRule FILTER_PROJECT_TRANSPOSE_DETERMINISTIC = FilterProjectTransposeRule.Config.DEFAULT
-        .withOperandFor(
-            Filter.class,
-            filter -> true,
-            Project.class,
-            project -> project.getProjects().stream().allMatch(RexUtil::isDeterministic)
-        ).toRule();
 
     public static RelNode createPlan(RelNode rawRelNode, PlannerContext context) {
         return runAllOptimizations(rawRelNode, context);
@@ -339,7 +315,7 @@ public class PlannerImpl {
             // fixpoint so stacked limits collapse first, then any now-redundant Sort is removed.
             .addRuleCollection(
                 List.of(
-                    FILTER_PROJECT_TRANSPOSE_DETERMINISTIC,
+                    OpenSearchFilterProjectTransposeRule.INSTANCE,
                     CoreRules.FILTER_AGGREGATE_TRANSPOSE,
                     CoreRules.FILTER_INTO_JOIN,
                     CoreRules.PROJECT_MERGE,
@@ -356,19 +332,47 @@ public class PlannerImpl {
      * Runs before {@link OpenSearchAggregateRule} marks the aggregate so the marking phase, the
      * Volcano split rule, and the {@code DistributedAggregateRewriter} see the rewritten shape:
      * <ul>
-     *   <li>{@link OpenSearchDistinctCountRule} — single-arg {@code COUNT(DISTINCT x)} →
-     *       {@code APPROX_COUNT_DISTINCT(x)} so distinct counts engage the engine-native
-     *       HLL sketch merge instead of additive SUM-of-counts.</li>
+     *   <li>{@link OpenSearchExpandDistinctCountRule} — grouped uniform single-arg
+     *       {@code COUNT(DISTINCT x)} → exact two-level aggregation (dedup {@code (keys, x)}
+     *       pairs, then plain {@code COUNT}). DataFusion's HLL accumulator costs a dense
+     *       16&nbsp;KB register array per group, so ClickBench q14 (~6M groups) needed ~96&nbsp;GB
+     *       of sketch state and OOM-killed the node; the exact plan completes it in ~3.5&nbsp;GB
+     *       and matches PPL's documentation of {@code dc()} as a distinct count.</li>
+     *   <li>{@link OpenSearchDistinctCountRule} — the remaining {@code COUNT(DISTINCT x)} shapes
+     *       (ungrouped, mixed with other aggregates, multi-distinct) and the explicit
+     *       {@code distinct_count_approx(x)} marker → {@code APPROX_COUNT_DISTINCT(x)}, engaging
+     *       the engine-native HLL sketch merge. The two rules' gates are disjoint; see their
+     *       javadocs for the shape partition.</li>
      *   <li>{@link OpenSearchAggregateReduceRule} — {@code AVG} / {@code STDDEV} / {@code VAR} →
      *       primitive {@code SUM} / {@code COUNT} (+ {@code SUM_SQ} for variance) plus a scalar
      *       {@link org.apache.calcite.rel.logical.LogicalProject} computing the quotient.</li>
+     *   <li>{@link CoreRules#AGGREGATE_PROJECT_PULL_UP_CONSTANTS} — drop group keys that are
+     *       constant and re-attach them in a Project above the aggregate. PPL's {@code eval c = 1 |
+     *       stats count() by c, URL} materialises the literal into a column, so the aggregate groups
+     *       on a column <em>reference</em> and DataFusion can no longer see it is constant; the
+     *       literal then rides through the hash-partitioning, the group key and the sort. On
+     *       ClickBench q35 (100M rows) that cost 3.07s vs 2.09s for the equivalent SQL, where
+     *       DataFusion's own optimiser reduces the keys to {@code gby=[URL]}.</li>
      * </ul>
+     *
+     * <p>Not registered: {@code AGGREGATE_PROJECT_MERGE}. ClickBench q30
+     * ({@code stats sum(ResolutionWidth), sum(ResolutionWidth+1), ... +9}) keeps 10 independent
+     * accumulators where the equivalent SQL collapses to {@code sum(x)} + {@code count(x)} via
+     * DataFusion's {@code simplify_expressions} (which applies {@code SUM(x+k) = SUM(x)+k*COUNT(x)}
+     * once there are 3+ such sums; DF CLI 0.047s vs 0.229s for PPL). Merging the Project into the
+     * aggregate does NOT fix it: the Project survives because each expression is wrapped in
+     * {@code ANNOTATED_PROJECT_EXPR}, and that marker is itself what hides {@code +(x, 1)} from
+     * DataFusion's simplifier. A fix has to strip or see through the annotation wrapper at the
+     * substrait boundary, not reshape the aggregate. (Measured: adding a RexOver-guarded merge rule
+     * left q30 at 224ms, unchanged.)
      */
     private static RelNode decomposeAggregates(RelNode input, RuleProfilingListener listener) {
         return HepPhase.named("aggregate-decompose")
             .bottomUp()
+            .addRuleInstance(new OpenSearchExpandDistinctCountRule())
             .addRuleInstance(new OpenSearchDistinctCountRule())
             .addRuleInstance(new OpenSearchAggregateReduceRule())
+            .addRuleInstance(CoreRules.AGGREGATE_PROJECT_PULL_UP_CONSTANTS)
             .run(input, listener);
     }
 

@@ -19,6 +19,8 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.opensearch.analytics.planner.rel.OpenSearchFilter;
+import org.opensearch.analytics.planner.rel.OpenSearchProject;
 
 import java.util.List;
 import java.util.Set;
@@ -84,6 +86,63 @@ public class FilterPlanShapeTests extends PlanShapeTestBase {
                 """,
             result
         );
+    }
+
+    /**
+     * A generated non-null guard on a computed aggregation key must stay above the Project so the
+     * expression is evaluated once. Independent predicates should still push below the Project.
+     */
+    public void testComputedAliasNullGuard_staysAboveProject() {
+        RelOptTable table = mockTable("test_index", "status", "size");
+        RelNode scan = stubScan(table);
+        RelDataType intType = typeFactory.createSqlType(SqlTypeName.INTEGER);
+        RexNode status = rexBuilder.makeInputRef(intType, 0);
+        RexNode size = rexBuilder.makeInputRef(intType, 1);
+        RexNode computedSize = rexBuilder.makeCall(
+            SqlStdOperatorTable.CASE,
+            makeEquals(0, SqlTypeName.INTEGER, 1),
+            size,
+            rexBuilder.makeNullLiteral(intType)
+        );
+        LogicalProject project = LogicalProject.create(scan, List.of(), List.of(status, computedSize), List.of("status_out", "size_ceil"));
+        RexNode condition = rexBuilder.makeCall(
+            SqlStdOperatorTable.AND,
+            makeEquals(0, SqlTypeName.INTEGER, 200),
+            rexBuilder.makeCall(SqlStdOperatorTable.IS_NOT_NULL, rexBuilder.makeInputRef(computedSize.getType(), 1))
+        );
+
+        RelNode result = runPlanner(makeFilter(project, condition), singleShardContext());
+
+        assertTrue(result instanceof OpenSearchFilter);
+        OpenSearchFilter nullGuard = (OpenSearchFilter) result;
+        assertTrue(nullGuard.getCondition().toString(), nullGuard.getCondition().toString().contains("IS NOT NULL($1)"));
+        assertFalse(nullGuard.getCondition().toString(), nullGuard.getCondition().toString().contains("CASE"));
+        assertTrue(nullGuard.getInput() instanceof OpenSearchProject);
+        OpenSearchProject computedProject = (OpenSearchProject) nullGuard.getInput();
+        assertTrue(computedProject.getProjects().get(1).toString().contains("CASE"));
+        assertTrue(computedProject.getInput() instanceof OpenSearchFilter);
+        OpenSearchFilter pushedFilter = (OpenSearchFilter) computedProject.getInput();
+        assertTrue(pushedFilter.getCondition().toString().contains("=($0, 200)"));
+    }
+
+    public void testNullPropagatingComputedAliasGuard_becomesInputGuard() {
+        RelOptTable table = mockTable("test_index", "status", "size");
+        RelNode scan = stubScan(table);
+        RelDataType intType = typeFactory.createTypeWithNullability(typeFactory.createSqlType(SqlTypeName.INTEGER), true);
+        RexNode size = rexBuilder.makeInputRef(intType, 1);
+        RexNode absoluteSize = rexBuilder.makeCall(SqlStdOperatorTable.ABS, size);
+        LogicalProject project = LogicalProject.create(scan, List.of(), List.of(absoluteSize), List.of("absolute_size"));
+        RexNode condition = rexBuilder.makeCall(SqlStdOperatorTable.IS_NOT_NULL, rexBuilder.makeInputRef(absoluteSize.getType(), 0));
+
+        RelNode result = runPlanner(makeFilter(project, condition), singleShardContext());
+
+        assertTrue(result instanceof OpenSearchProject);
+        OpenSearchProject computedProject = (OpenSearchProject) result;
+        assertTrue(computedProject.getProjects().getFirst().toString().contains("ABS"));
+        assertTrue(computedProject.getInput() instanceof OpenSearchFilter);
+        OpenSearchFilter inputGuard = (OpenSearchFilter) computedProject.getInput();
+        assertTrue(inputGuard.getCondition().toString(), inputGuard.getCondition().toString().contains("IS NOT NULL($1)"));
+        assertFalse(inputGuard.getCondition().toString(), inputGuard.getCondition().toString().contains("ABS"));
     }
 
     /**
@@ -177,5 +236,32 @@ public class FilterPlanShapeTests extends PlanShapeTestBase {
                 """,
             result
         );
+    }
+
+    /**
+     * q36 shape: `eval a = ClientIP - 1, b = ClientIP - 2 | stats count() by ClientIP, a, b` injects a
+     * null guard per computed alias, and the stock transpose rule expands each into the filter with
+     * the arithmetic re-evaluated. {@code x - k} is null only when {@code x} is, so all the derived
+     * guards must collapse onto the base column instead of recomputing.
+     */
+    public void testArithmeticNullGuardsCollapseToBaseColumn() {
+        RelOptTable table = mockTable("test_index", "status", "size");
+        RelNode scan = stubScan(table);
+        RelDataType intType = typeFactory.createTypeWithNullability(typeFactory.createSqlType(SqlTypeName.INTEGER), true);
+        RexNode size = rexBuilder.makeInputRef(intType, 1);
+        RexNode minus1 = rexBuilder.makeCall(SqlStdOperatorTable.MINUS, size, rexBuilder.makeExactLiteral(java.math.BigDecimal.ONE));
+        RexNode minus2 = rexBuilder.makeCall(SqlStdOperatorTable.MINUS, size, rexBuilder.makeExactLiteral(java.math.BigDecimal.valueOf(2)));
+        LogicalProject project = LogicalProject.create(scan, List.of(), List.of(size, minus1, minus2), List.of("size", "size_1", "size_2"));
+        RexNode condition = rexBuilder.makeCall(
+            SqlStdOperatorTable.AND,
+            rexBuilder.makeCall(SqlStdOperatorTable.IS_NOT_NULL, rexBuilder.makeInputRef(minus1.getType(), 1)),
+            rexBuilder.makeCall(SqlStdOperatorTable.IS_NOT_NULL, rexBuilder.makeInputRef(minus2.getType(), 2))
+        );
+
+        RelNode result = runPlanner(makeFilter(project, condition), singleShardContext());
+
+        String plan = result.explain();
+        assertFalse("arithmetic must not be re-evaluated inside the guard:\n" + plan, plan.contains("IS NOT NULL(-("));
+        assertTrue("guard should collapse onto the base column:\n" + plan, plan.contains("IS NOT NULL($1)"));
     }
 }

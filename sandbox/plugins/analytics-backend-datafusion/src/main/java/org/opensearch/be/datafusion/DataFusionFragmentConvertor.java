@@ -117,6 +117,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         FunctionMappings.s(DelegationPossibleFunction.FUNCTION, DelegationPossibleFunction.NAME),
         FunctionMappings.s(SqlStdOperatorTable.ASCII, "ascii"),
         FunctionMappings.s(SqlStdOperatorTable.CHAR_LENGTH, "length"),
+        FunctionMappings.s(SqlStdOperatorTable.OCTET_LENGTH, "octet_length"),
         FunctionMappings.s(SqlLibraryOperators.CONCAT_FUNCTION, "concat"),
         FunctionMappings.s(SqlLibraryOperators.CONCAT_WS, "concat_ws"),
         FunctionMappings.s(SqlLibraryOperators.REGEXP_LIKE, "regexp_like"),

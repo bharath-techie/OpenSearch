@@ -33,11 +33,34 @@ public class NativeBridgeModuleTests extends OpenSearchTestCase {
     public void testGetSettingsReturnsAllSettings() {
         NativeBridgeModule module = new NativeBridgeModule();
         List<Setting<?>> settings = module.getSettings();
-        assertEquals(4, settings.size());
-        assertEquals("native.jemalloc.dirty_decay_ms", settings.get(0).getKey());
-        assertEquals("native.jemalloc.muzzy_decay_ms", settings.get(1).getKey());
-        assertEquals("native.jemalloc.purge_interval", settings.get(2).getKey());
-        assertEquals("native.jemalloc.purge_threshold_percent", settings.get(3).getKey());
+        assertEquals(6, settings.size());
+        assertEquals("native.jemalloc.background_thread", settings.get(0).getKey());
+        assertEquals("native.jemalloc.dirty_decay_ms", settings.get(1).getKey());
+        assertEquals("native.jemalloc.muzzy_decay_ms", settings.get(2).getKey());
+        assertEquals("native.jemalloc.oversize_threshold", settings.get(3).getKey());
+        assertEquals("native.jemalloc.purge_interval", settings.get(4).getKey());
+        assertEquals("native.jemalloc.purge_threshold_percent", settings.get(5).getKey());
+    }
+
+    public void testOversizeThresholdSettingDefaults() {
+        // Must match the boot default compiled into the native lib's malloc conf
+        // (dataformat-native/build.gradle: oversize_threshold:1073741824).
+        assertEquals(1024L * 1024 * 1024, NativeBridgeModule.JEMALLOC_OVERSIZE_THRESHOLD.getDefault(Settings.EMPTY).getBytes());
+        assertTrue(NativeBridgeModule.JEMALLOC_OVERSIZE_THRESHOLD.isDynamic());
+        Settings s = Settings.builder().put("native.jemalloc.oversize_threshold", "256mb").build();
+        assertEquals(256L * 1024 * 1024, NativeBridgeModule.JEMALLOC_OVERSIZE_THRESHOLD.get(s).getBytes());
+    }
+
+    public void testBackgroundThreadSettingDefaultsToDisabled() {
+        // Matches jemalloc's own default; measured to have no effect on the analytics query path
+        // (the eager oversize-extent purge bypasses decay and is not offloaded by these threads).
+        assertFalse(NativeBridgeModule.JEMALLOC_BACKGROUND_THREAD.getDefault(Settings.EMPTY));
+        Settings on = Settings.builder().put("native.jemalloc.background_thread", true).build();
+        assertTrue(NativeBridgeModule.JEMALLOC_BACKGROUND_THREAD.get(on));
+    }
+
+    public void testBackgroundThreadSettingIsDynamic() {
+        assertTrue(NativeBridgeModule.JEMALLOC_BACKGROUND_THREAD.isDynamic());
     }
 
     public void testMemoryStatsMethodExists() {

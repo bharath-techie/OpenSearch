@@ -123,3 +123,7 @@ harness = false
 [[bench]]
 name = "row_id_bench"
 harness = false
+
+[[bench]]
+name = "fault_probe"
+harness = false

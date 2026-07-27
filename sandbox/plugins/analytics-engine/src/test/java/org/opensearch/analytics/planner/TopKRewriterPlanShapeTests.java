@@ -179,7 +179,14 @@ public class TopKRewriterPlanShapeTests extends PlanShapeTestBase {
         assertEquals("expected 2 Sorts (coord + per-partition)", 2, sortCount);
     }
 
-    /** dc(x) by group + sort + head: APPROX_COUNT_DISTINCT splits with TopK reduce_eval. */
+    /**
+     * dc(x) by group + sort + head — ClickBench q14's shape. Grouped COUNT(DISTINCT) now expands
+     * to the exact two-level aggregation (dedup, then plain COUNT) instead of HLL, so the TopK
+     * reduce_eval oversampling — which pre-ranked shards by evaluating partial HLL sketches —
+     * no longer applies: a shard-local top-K over deduped pairs cannot bound the global distinct
+     * count, so the sort/limit correctly stays above the coordinator-side count. The dedup level
+     * still splits PARTIAL/FINAL, which is where the row-volume reduction happens.
+     */
     public void testRewrite_dcByGroup_splitAndTopK() {
         RelOptTable table = mockTable("test_index", "status", "size");
         RelNode scan = stubScan(table);
@@ -194,13 +201,11 @@ public class TopKRewriterPlanShapeTests extends PlanShapeTestBase {
         assertPlanShape(
             """
                 OpenSearchSort(sort0=[$1], dir0=[DESC], fetch=[10], viableBackends=[[mock-parquet]])
-                  OpenSearchAggregate(group=[{0}], dc=[APPROX_COUNT_DISTINCT($1)], mode=[FINAL], viableBackends=[[mock-parquet]])
-                    OpenSearchExchangeReducer(viableBackends=[[mock-parquet]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
-                      OpenSearchProject(status=[$0], dc=[$1], viableBackends=[[mock-parquet]])
-                        OpenSearchSort(sort0=[$2], dir0=[DESC], fetch=[30], viableBackends=[[mock-parquet]])
-                          OpenSearchProject(status=[$0], dc=[$1], __reduce_eval_1=[reduce_eval('approx_distinct', $1)], viableBackends=[[mock-parquet]])
-                            OpenSearchAggregate(group=[{0}], dc=[APPROX_COUNT_DISTINCT($1)], mode=[PARTIAL], viableBackends=[[mock-parquet]])
-                              OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
+                  OpenSearchAggregate(group=[{0}], dc=[COUNT($1)], mode=[SINGLE], viableBackends=[[mock-parquet]])
+                    OpenSearchAggregate(group=[{0, 1}], mode=[FINAL], viableBackends=[[mock-parquet]])
+                      OpenSearchExchangeReducer(viableBackends=[[mock-parquet]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
+                        OpenSearchAggregate(group=[{0, 1}], mode=[PARTIAL], viableBackends=[[mock-parquet]])
+                          OpenSearchTableScan(table=[[test_index]], viableBackends=[[mock-parquet]])
                 """,
             result
         );

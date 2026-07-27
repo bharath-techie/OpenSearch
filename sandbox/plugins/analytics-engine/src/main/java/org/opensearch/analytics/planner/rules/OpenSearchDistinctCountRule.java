@@ -28,8 +28,25 @@ import java.util.List;
 /**
  * Rewrites single-arg {@code COUNT(DISTINCT x)} and PPL's {@code distinct_count_approx(x)} UDAF
  * marker to {@link SqlStdOperatorTable#APPROX_COUNT_DISTINCT} before the aggregate is marked by
- * {@link OpenSearchAggregateRule}, so substrait dispatch resolves by operator identity. Multi-arg
- * distinct falls through to coordinator-gather in {@link OpenSearchAggregateSplitRule}.
+ * {@link OpenSearchAggregateRule}, so substrait dispatch resolves by operator identity —
+ * <b>except</b> for the grouped shapes that
+ * {@link OpenSearchExpandDistinctCountRule#expandsExactly} claims, which become exact two-level
+ * aggregations instead.
+ *
+ * <p>The two rules partition {@code COUNT(DISTINCT)} by group count, because DataFusion's HLL
+ * accumulator keeps a dense 16&nbsp;KB register array <em>per group</em>:
+ * <ul>
+ *   <li><b>Grouped, uniform single-arg</b> (e.g. ClickBench q14: {@code stats dc(UserID) by
+ *       SearchPhrase}, ~6M groups → ~96&nbsp;GB of sketches, OOM): exact expansion wins by ~600×
+ *       on aggregate state — handled by {@link OpenSearchExpandDistinctCountRule}, skipped here.</li>
+ *   <li><b>Ungrouped</b> (q05: {@code stats dc(UserID)}, one group, 17.6M distinct values): one
+ *       16&nbsp;KB sketch beats shipping every distinct value to the coordinator — rewritten to
+ *       HLL here.</li>
+ *   <li><b>Mixed / multi-distinct</b> shapes the expansion doesn't support: HLL here (multi-arg
+ *       distinct still falls through to coordinator-gather in
+ *       {@link OpenSearchAggregateSplitRule}).</li>
+ * </ul>
+ * {@code distinct_count_approx()} is always HLL — the user asked for the sketch explicitly.
  *
  * @opensearch.internal
  */
@@ -42,6 +59,11 @@ public class OpenSearchDistinctCountRule extends RelOptRule {
     @Override
     public boolean matches(RelOptRuleCall ruleCall) {
         LogicalAggregate agg = ruleCall.rel(0);
+        // Grouped uniform-single-arg COUNT(DISTINCT) becomes an exact two-level aggregation
+        // instead of HLL — never race that expansion (see class javadoc for the partition).
+        if (OpenSearchExpandDistinctCountRule.expandsExactly(agg)) {
+            return false;
+        }
         return agg.getAggCallList().stream().anyMatch(OpenSearchDistinctCountRule::needsRewriteToApprox);
     }
 
