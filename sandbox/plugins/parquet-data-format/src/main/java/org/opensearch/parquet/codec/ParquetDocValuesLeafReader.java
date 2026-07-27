@@ -8,6 +8,7 @@
 
 package org.opensearch.parquet.codec;
 
+import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.DocValuesSkipIndexType;
@@ -28,6 +29,7 @@ import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.store.IOContext;
 import org.opensearch.common.lucene.Lucene;
+import org.opensearch.common.lucene.index.SequentialStoredFieldsLeafReader;
 import org.opensearch.index.engine.dataformat.DocumentInput;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.MapperService;
@@ -65,8 +67,19 @@ import java.util.Map;
  *
  * <p>One producer is built lazily per segment and closed when this reader closes. Not shared
  * across segments.
+ *
+ * <p>Extends {@link SequentialStoredFieldsLeafReader} (rather than plain {@link FilterLeafReader})
+ * so the fetch phase can retrieve {@code _source}/stored fields on {@code size > 0} queries. On a
+ * Parquet-primary index derived source is force-enabled, so the reader stack is
+ * {@code DerivedSourceLeafReader -> ParquetDocValuesLeafReader -> SegmentReader}. When the fetch
+ * phase asks the outer {@code DerivedSourceLeafReader} for a sequential stored-fields reader, it
+ * unwraps to this reader; a plain {@code FilterLeafReader} is neither a {@code CodecReader} nor a
+ * {@code SequentialStoredFieldsLeafReader}, so the unwrap threw and only {@code size:0} worked.
+ * As a {@code SequentialStoredFieldsLeafReader} this reader is transparent to that unwrap: it
+ * passes the underlying segment's stored-fields reader straight through, and the derived-source
+ * layer still synthesizes {@code _source} from doc values on top of it.
  */
-public final class ParquetDocValuesLeafReader extends FilterLeafReader {
+public final class ParquetDocValuesLeafReader extends SequentialStoredFieldsLeafReader {
 
     private final MapperService mapperService;
 
@@ -107,8 +120,7 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
      * segment and the mapping declares at least one Parquet-codec-supported field that is missing
      * doc values in the Lucene segment. Otherwise returns {@code in} unwrapped.
      */
-    public static LeafReader wrapIfApplicable(LeafReader in, MapperService mapperService, QueryParquetStats queryStats)
-        throws IOException {
+    public static LeafReader wrapIfApplicable(LeafReader in, MapperService mapperService, QueryParquetStats queryStats) throws IOException {
         SegmentReader segmentReader;
         try {
             segmentReader = Lucene.segmentReader(in);
@@ -392,6 +404,18 @@ public final class ParquetDocValuesLeafReader extends FilterLeafReader {
         if (first != null) {
             throw first;
         }
+    }
+
+    /**
+     * This reader serves no stored fields itself — it only overlays Parquet doc values. The
+     * underlying segment reader holds the real stored fields, so return its sequential reader
+     * unchanged. {@link SequentialStoredFieldsLeafReader#getSequentialStoredFieldsReader()} already
+     * unwrapped {@code in} (a {@code CodecReader}/segment reader) down to {@code reader}; the
+     * derived-source layer above wraps the result to synthesize {@code _source}.
+     */
+    @Override
+    protected StoredFieldsReader doGetSequentialStoredFieldsReader(StoredFieldsReader reader) {
+        return reader;
     }
 
     // Cache helpers must delegate to the underlying reader so query/segment caches stay coherent.
