@@ -347,11 +347,20 @@ public final class ParquetColumnReader implements Closeable {
         int rows = (int) pageIndex.numRowsOf(pageIdx);
         int presenceWords = (rows + 63) >>> 6;
 
-        // Rotate between two slot families so this decode never overwrites the segments the
-        // still-resident PageCache is serving (its views point at the OTHER family's slots).
-        String valueSlot = "pageValue" + decodeSlot;
-        String offsetsSlot = "pageOffsets" + decodeSlot;
-        String presenceSlot = "pagePresence" + decodeSlot;
+        // Slot naming carries TWO independent guarantees, both required for correctness:
+        // 1. Per-column ("...:" + column): the PageCache serves values/presence as in-place
+        // off-heap views of these slots, so two columns aggregated in the SAME query (e.g.
+        // sum(age) + avg(score)) must NOT share a slot — otherwise the second column's decode
+        // overwrites the first column's still-resident cached page. A shared slot corrupts
+        // cross-column reads (age would read score's bits).
+        // 2. Rotating (+ decodeSlot, flipped after each successful decode): within ONE column,
+        // the next page decode must not overwrite the segments the current resident page still
+        // serves; alternating two families keeps the resident view untouched until page-after-next.
+        // Both are needed: (1) alone leaves a single column clobbering its own resident page; (2)
+        // alone (the state before this fix) leaves two columns colliding on the same family.
+        String valueSlot = "pageValue:" + column + decodeSlot;
+        String offsetsSlot = "pageOffsets:" + column + decodeSlot;
+        String presenceSlot = "pagePresence:" + column + decodeSlot;
 
         long valueCap = (long) rows * ValueLayout.JAVA_LONG.byteSize();
         long offsetsCap = type.isPrimitive() ? 0 : (rows + 1);
