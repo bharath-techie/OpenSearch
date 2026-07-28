@@ -11,6 +11,7 @@
 //! `create_session_context` creates a fully configured SessionContext with
 //! the default ListingTable registered. Called by ShardScanInstruction handler.
 
+use datafusion::common::config::ConfigNonZeroUsize;
 use std::sync::Arc;
 
 use datafusion::{
@@ -18,7 +19,7 @@ use datafusion::{
     datasource::file_format::parquet::ParquetFormat,
     datasource::listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     execution::cache::cache_manager::CachedFileList,
-    execution::cache::{CacheAccessor, DefaultListFilesCache},
+    execution::cache::Cache,
     execution::context::SessionContext,
     execution::memory_pool::MemoryPool,
     execution::runtime_env::RuntimeEnvBuilder,
@@ -175,7 +176,7 @@ pub async unsafe fn create_session_context(
         .memory_pool()
         .map(|p| p as Arc<dyn MemoryPool>);
 
-    let list_file_cache = Arc::new(DefaultListFilesCache::default());
+    let list_file_cache = Arc::new(crate::cache::new_list_files_cache());
     list_file_cache.put(
         &datafusion::execution::cache::TableScopedPath {
             table: None,
@@ -234,7 +235,13 @@ pub async unsafe fn create_session_context(
             .skip_partial_aggregation_probe_ratio_threshold = 1.0;
     }
     config.options_mut().execution.target_partitions = effective_partitions;
-    config.options_mut().execution.batch_size = effective_batch_size;
+    // `batch_size` is a `ConfigNonZeroUsize` since DataFusion moved the
+    // non-zero invariant into the type. Clamp rather than propagate an error:
+    // a zero batch size can only come from a misconfigured cluster setting, and
+    // failing the query would be a worse outcome than using 1.
+    config.options_mut().execution.batch_size =
+        ConfigNonZeroUsize::try_new(effective_batch_size.max(1))
+            .expect("batch size clamped to >= 1");
     // When the index has `index.sort.field`, ask DataFusion to use the sort-aware
     // file-group partitioner so `output_ordering` can propagate from the scan.
     if !shard_view.sort_fields.is_empty() {
@@ -278,15 +285,15 @@ pub async unsafe fn create_session_context(
 
     // Register default ListingTable for parquet scans.
     //
-    // `target_partitions` on the listing options drives the sort-aware bin-packer in
-    // `split_groups_by_statistics_with_target_partitions`. We set it to the session's
-    // effective partition count so the bin-packer produces up to N groups (one file per
-    // group when min/max ranges can't chain). The session-state's `target_partitions`
-    // controls EnforceDistribution; this one is independent.
-    let mut listing_options = ListingOptions::new(Arc::new(ParquetFormat::default()))
-        .with_file_extension(".parquet")
-        .with_collect_stat(true)
-        .with_target_partitions(effective_partitions);
+    // `target_partitions` drives the sort-aware bin-packer in
+    // `split_groups_by_statistics_with_target_partitions`, and statistics
+    // collection gates the statistics the bin-packer needs. Both used to be set
+    // per-listing-table; DataFusion #22969 removed those setters as redundant
+    // and now reads them from the session config, which is set above
+    // (`execution.target_partitions = effective_partitions`) and below
+    // (`with_collect_statistics`).
+    let mut listing_options =
+        ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
 
     if let Some(sort_exprs) =
         build_file_sort_order(&shard_view.sort_fields, &shard_view.sort_orders)
@@ -356,11 +363,19 @@ pub async unsafe fn create_session_context(
     // failing with "Cannot merge statistics with different number of columns". Non-widened
     // (single-index) scans keep full stats.
     // TODO: re-enable once DataFusion's Statistics::try_merge tolerates a column-count delta.
-    let listing_options = if resolved_schema.fields().len() != inferred_field_count {
-        listing_options.with_collect_stat(false)
-    } else {
-        listing_options
-    };
+    //
+    // DataFusion #22969 removed `ListingOptions::with_collect_stat`; the flag now
+    // lives on the session config. The widening decision is only known here,
+    // after the context exists, so flip it on the live session state rather than
+    // at builder time.
+    if resolved_schema.fields().len() != inferred_field_count {
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .collect_statistics = false;
+    }
 
     let table_config = ListingTableConfig::new(shard_view.table_path.clone())
         .with_listing_options(listing_options)
@@ -576,7 +591,7 @@ fn try_acquire_budget(
     config: &DatafusionQueryConfig,
 ) -> Option<crate::query_budget::QueryMemoryBudget> {
     use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
-    use datafusion::execution::cache::CacheAccessor;
+    use datafusion::execution::cache::Cache;
     use parquet::arrow::parquet_to_arrow_schema;
 
     let first_meta = shard_view.object_metas.first()?;
@@ -846,7 +861,8 @@ mod tests {
         use datafusion::datasource::listing::{
             ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
         };
-        use datafusion::execution::cache::file_statistics_cache::DefaultFileStatisticsCache;
+        use datafusion::execution::cache::cache_manager::{CachedFileMetadata, TableScopedPath};
+        use datafusion::execution::cache::default_cache::DefaultCache;
         use datafusion::parquet::arrow::ArrowWriter;
 
         fn write_parquet(
@@ -888,14 +904,16 @@ mod tests {
         let table_url =
             ListingTableUrl::parse(format!("file://{}", dir.path().to_str().unwrap())).unwrap();
         // Shared, runtime-global stats cache — the crux of the bug.
-        let stats_cache = Arc::new(DefaultFileStatisticsCache::default());
+        let stats_cache = Arc::new(DefaultCache::<TableScopedPath, CachedFileMetadata>::new(
+            64 * 1024 * 1024,
+        ));
 
         // 1. NARROW read first: registers the table at the narrow (1-col) schema and, with
-        //    collect_stat(true), seeds the shared cache with a 1-column Statistics for narrow.parquet.
+        //    statistics collection on (the session-config default), seeds the shared cache with
+        //    a 1-column Statistics for narrow.parquet.
         let ctx = SessionContext::new();
-        let narrow_opts = ListingOptions::new(Arc::new(ParquetFormat::default()))
-            .with_file_extension(".parquet")
-            .with_collect_stat(true);
+        let narrow_opts =
+            ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
         let narrow_cfg = ListingTableConfig::new(table_url.clone())
             .with_listing_options(narrow_opts)
             .with_schema(Arc::clone(&narrow));
@@ -914,11 +932,18 @@ mod tests {
             .unwrap();
 
         // 2. WIDENED read reusing the SAME cache. This is what create_session_context does after
-        //    widen_schema_from_plan. The fix sets collect_stat(false) because the schema was widened;
-        //    without it, merging the cached 1-col Statistics against a 2-col one fails planning.
-        let widened_opts = ListingOptions::new(Arc::new(ParquetFormat::default()))
-            .with_file_extension(".parquet")
-            .with_collect_stat(false); // mirrors the fix in create_session_context for widened tables
+        //    widen_schema_from_plan: it turns statistics collection OFF because the schema was
+        //    widened. Without that, merging the cached 1-col Statistics against a 2-col one fails
+        //    planning. Since DataFusion #22969 the flag lives on the session config, so set it
+        //    there — mirroring create_session_context.
+        ctx.state_ref()
+            .write()
+            .config_mut()
+            .options_mut()
+            .execution
+            .collect_statistics = false;
+        let widened_opts =
+            ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
         let widened_cfg = ListingTableConfig::new(table_url)
             .with_listing_options(widened_opts)
             .with_schema(Arc::clone(&wide));

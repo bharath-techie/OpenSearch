@@ -84,6 +84,9 @@ impl AnalyzerRule for ProjectRowIdAnalyzer {
                     projected_schema: Arc::new(new_projected_schema),
                     filters: scan.filters.clone(),
                     fetch: scan.fetch,
+                    // Preserve whatever statistics the planner asked the source
+                    // for; this rule only widens the projection.
+                    statistics_requests: scan.statistics_requests.clone(),
                 });
                 Ok(Transformed::yes(new_scan))
             }

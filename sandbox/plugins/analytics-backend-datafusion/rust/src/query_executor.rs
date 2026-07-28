@@ -8,8 +8,9 @@
 
 use std::sync::Arc;
 
+use crate::cache::{new_list_files_cache, DefaultListFilesCache};
 use datafusion::execution::cache::cache_manager::{CacheManagerConfig, CachedFileList};
-use datafusion::execution::cache::{CacheAccessor, DefaultListFilesCache};
+use datafusion::execution::cache::Cache;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::{col, lit};
 use datafusion::{
@@ -410,7 +411,7 @@ pub fn build_query_runtime_env(
     table_path: &ListingTableUrl,
     object_metas: &[ObjectMeta],
 ) -> Result<Arc<datafusion::execution::runtime_env::RuntimeEnv>, DataFusionError> {
-    let list_file_cache = Arc::new(DefaultListFilesCache::default());
+    let list_file_cache = Arc::new(new_list_files_cache());
     let table_scoped_path = datafusion::execution::cache::TableScopedPath {
         table: None,
         path: table_path.prefix().clone(),

@@ -1132,8 +1132,9 @@ pub async unsafe fn fetch_by_row_ids(
     let listing_options = datafusion::datasource::listing::ListingOptions::new(Arc::new(
         datafusion::datasource::file_format::parquet::ParquetFormat::new(),
     ))
-    .with_file_extension(".parquet")
-    .with_collect_stat(true);
+    // Statistics collection is on by default in the session config;
+    // DataFusion #22969 removed the per-listing-table setter.
+    .with_file_extension(".parquet");
     let resolved_schema = listing_options
         .infer_schema(&ctx.state(), &shard_view.table_path)
         .await?;
@@ -1297,7 +1298,7 @@ fn try_acquire_budget_from_cache(
     pool: &Arc<dyn MemoryPool>,
     config: &DatafusionQueryConfig,
 ) -> Option<crate::query_budget::QueryMemoryBudget> {
-    use datafusion::execution::cache::CacheAccessor;
+    use datafusion::execution::cache::Cache;
     use parquet::arrow::parquet_to_arrow_schema;
     use parquet::file::metadata::ParquetMetaData;
 
@@ -1522,10 +1523,11 @@ pub unsafe fn sql_to_substrait(
     runtime_ptr: i64,
     manager: &RuntimeManager,
 ) -> Result<Vec<u8>, DataFusionError> {
+    use crate::cache::new_list_files_cache;
     use datafusion::datasource::file_format::parquet::ParquetFormat;
     use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
     use datafusion::execution::cache::cache_manager::CachedFileList;
-    use datafusion::execution::cache::{CacheAccessor, DefaultListFilesCache};
+    use datafusion::execution::cache::Cache;
     use datafusion_substrait::logical_plan::producer::to_substrait_plan;
     use prost::Message;
 
@@ -1536,7 +1538,7 @@ pub unsafe fn sql_to_substrait(
     let table_name = table_name.to_string();
 
     manager.io_runtime.block_on(async {
-        let list_file_cache = Arc::new(DefaultListFilesCache::default());
+        let list_file_cache = Arc::new(new_list_files_cache());
         list_file_cache.put(
             &datafusion::execution::cache::TableScopedPath {
                 table: None,
@@ -1556,9 +1558,8 @@ pub unsafe fn sql_to_substrait(
         crate::udf::register_all(&ctx);
         crate::udaf::register_all(&ctx);
 
-        let listing_options = ListingOptions::new(Arc::new(ParquetFormat::new()))
-            .with_file_extension(".parquet")
-            .with_collect_stat(true);
+        let listing_options =
+            ListingOptions::new(Arc::new(ParquetFormat::new())).with_file_extension(".parquet");
         let schema = listing_options
             .infer_schema(&ctx.state(), &table_path)
             .await?;

@@ -1183,33 +1183,33 @@ mod tests {
             .bloom_filter_properties(&parquet::schema::types::ColumnPath::from("name"))
             .unwrap();
         assert!(
-            (name_bf.fpp - 0.01).abs() < 1e-9,
+            (name_bf.fpp() - 0.01).abs() < 1e-9,
             "name fpp should be 0.01, got {}",
-            name_bf.fpp
+            name_bf.fpp()
         );
-        assert_eq!(name_bf.ndv, 200_000, "name ndv should be 200000");
+        assert_eq!(name_bf.ndv(), 200_000, "name ndv should be 200000");
 
         // "title": field-level enabled but no fpp/ndv -> falls to type utf8 fpp=0.05, ndv=50000
         let title_bf = props
             .bloom_filter_properties(&parquet::schema::types::ColumnPath::from("title"))
             .unwrap();
         assert!(
-            (title_bf.fpp - 0.05).abs() < 1e-9,
+            (title_bf.fpp() - 0.05).abs() < 1e-9,
             "title fpp should be 0.05, got {}",
-            title_bf.fpp
+            title_bf.fpp()
         );
-        assert_eq!(title_bf.ndv, 50_000, "title ndv should be 50000");
+        assert_eq!(title_bf.ndv(), 50_000, "title ndv should be 50000");
 
         // "age": int32 type-level enabled but no fpp/ndv -> falls to global fpp=0.1, ndv=100000
         let age_bf = props
             .bloom_filter_properties(&parquet::schema::types::ColumnPath::from("age"))
             .unwrap();
         assert!(
-            (age_bf.fpp - 0.1).abs() < 1e-9,
+            (age_bf.fpp() - 0.1).abs() < 1e-9,
             "age fpp should be 0.1, got {}",
-            age_bf.fpp
+            age_bf.fpp()
         );
-        assert_eq!(age_bf.ndv, 100_000, "age ndv should be 100000");
+        assert_eq!(age_bf.ndv(), 100_000, "age ndv should be 100000");
     }
 
     #[test]

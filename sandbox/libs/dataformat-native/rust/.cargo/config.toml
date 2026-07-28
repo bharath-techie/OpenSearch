@@ -1,6 +1,26 @@
 [build]
 rustflags = ["--cfg", "tokio_unstable", "-C", "force-frame-pointers=yes", "-C", "symbol-mangling-version=v0"]
 
+# LOCAL DEVELOPMENT ONLY — remove before merging.
+#
+# Redirects the `datafusion*` git dependencies (pinned to a revision in
+# Cargo.toml) at a local checkout, so the indexed scan path can build against
+# `RowGroupAccessProvider` before that change is merged upstream.
+#
+# Once the upstream PR lands, delete this block and bump the `rev` in
+# Cargo.toml to the merge commit. Every `datafusion*` crate must be redirected
+# together: a mix of local and git copies yields two incompatible versions of
+# the same Arrow-facing types.
+[patch."https://github.com/apache/datafusion.git"]
+datafusion = { path = "../../../../../datafusion/datafusion/core" }
+datafusion-expr = { path = "../../../../../datafusion/datafusion/expr" }
+datafusion-datasource = { path = "../../../../../datafusion/datafusion/datasource" }
+datafusion-common = { path = "../../../../../datafusion/datafusion/common" }
+datafusion-execution = { path = "../../../../../datafusion/datafusion/execution" }
+datafusion-physical-expr = { path = "../../../../../datafusion/datafusion/physical-expr" }
+datafusion-physical-expr-adapter = { path = "../../../../../datafusion/datafusion/physical-expr-adapter" }
+datafusion-substrait = { path = "../../../../../datafusion/datafusion/substrait" }
+
 [env]
 # Enable jemalloc heap profiling support in all builds. prof:true is init-time only and
 # cannot be enabled post-start, so it must be compiled in. prof_active:false ensures zero

@@ -8,6 +8,7 @@
 
 //! Small shared helpers for the query execution paths.
 
+use datafusion::common::config::ConfigNonZeroUsize;
 use std::sync::Arc;
 
 use datafusion::common::DataFusionError;
@@ -112,9 +113,10 @@ pub async fn register_listing_table(
     sort_fields: &[String],
     sort_orders: &[String],
 ) -> Result<(), DataFusionError> {
-    let mut listing_options = ListingOptions::new(Arc::new(ParquetFormat::new()))
-        .with_file_extension(".parquet")
-        .with_collect_stat(true);
+    // Statistics collection is on by default in the session config;
+    // DataFusion #22969 removed the per-listing-table setter.
+    let mut listing_options =
+        ListingOptions::new(Arc::new(ParquetFormat::new())).with_file_extension(".parquet");
     if let Some(sort_exprs) = build_file_sort_order(sort_fields, sort_orders) {
         listing_options = listing_options.with_file_sort_order(vec![sort_exprs]);
     }
@@ -167,7 +169,9 @@ pub fn build_query_session_context(
     config.options_mut().execution.parquet.pushdown_filters =
         query_config.listing_table_pushdown_filters;
     config.options_mut().execution.target_partitions = target_partitions.max(1);
-    config.options_mut().execution.batch_size = query_config.batch_size;
+    config.options_mut().execution.batch_size =
+        ConfigNonZeroUsize::try_new(query_config.batch_size.max(1))
+            .expect("batch size clamped to >= 1");
 
     let mut builder = SessionStateBuilder::new()
         .with_config(config)

@@ -136,7 +136,19 @@ mod tests {
         // the aggregator is pushed to spill rather than failing outright.
         let mut config = SessionConfig::new();
         config.options_mut().execution.target_partitions = 2;
-        config.options_mut().execution.batch_size = 1024;
+        config.options_mut().execution.batch_size =
+            datafusion::common::config::ConfigNonZeroUsize::try_new(1024).unwrap();
+        // Spilling is what this test asserts, so pin the aggregation to the
+        // implementation that supports it.
+        //
+        // DataFusion is migrating grouped aggregation to new Partial/Final hash
+        // streams (apache/datafusion#22710) which do not implement spilling yet —
+        // they build a `SpillMetrics` and drop it as `_spill_metrics`. With the
+        // migration enabled (the default), a high-cardinality GROUP BY under a
+        // small pool fails with ResourcesExhausted instead of spilling, so no
+        // pool size can satisfy this test. Opt out until the migrated streams
+        // spill, then delete this line.
+        config.options_mut().execution.enable_migration_aggregate = false;
 
         let state = SessionStateBuilder::new()
             .with_config(config)
