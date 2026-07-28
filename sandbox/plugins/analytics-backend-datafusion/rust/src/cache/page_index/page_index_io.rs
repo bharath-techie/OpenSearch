@@ -25,11 +25,10 @@ use datafusion::parquet::file::metadata::{
     ColumnChunkMetaData, OffsetIndexBuilder, ParquetColumnIndex, ParquetMetaData,
     ParquetOffsetIndex,
 };
+use datafusion::parquet::file::metadata::{PageIndexPolicy, ParquetMetaDataPushDecoder};
 use datafusion::parquet::file::page_index::column_index::ColumnIndexMetaData;
-use datafusion::parquet::file::page_index::index_reader::{
-    read_columns_indexes, read_offset_indexes,
-};
 use datafusion::parquet::file::reader::{ChunkReader, Length};
+use datafusion::parquet::DecodeResult;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
 use datafusion::scalar::ScalarValue;
@@ -259,19 +258,25 @@ async fn build_column_index_cells(
 
     let mut out: Vec<CiCell> = Vec::with_capacity(col_rg_matrix.len());
     for (i, p) in plan.iter().enumerate() {
-        // Deprecated but the only PUBLIC column-subset decoder (arrow-rs#8643).
-        #[allow(deprecated)]
-        let decoded = read_columns_indexes(&buffers.reader(i), &p.chunks).ok()??;
-        if decoded.len() != p.cols.len() {
-            return None;
-        }
+        let decoded = decode_row_group_page_index(
+            footer_meta,
+            p.rg,
+            &p.cols,
+            &buffers.reader(i),
+            PageIndexKind::ColumnIndex,
+        )?;
+        // One trimmed row group in the scoped footer, so its entry is indexed by
+        // position within `p.cols` rather than by real column index.
+        // One row group in the scoped footer, full width: entries are indexed by
+        // real column index, with unrequested columns left as `NONE`.
+        let per_column = decoded.column_index()?.first()?;
         let rgm = footer_meta.row_group(p.rg);
-        for (entry, &col) in decoded.into_iter().zip(p.cols.iter()) {
+        for &col in &p.cols {
             let size = rgm.column(col).column_index_length().unwrap_or(0).max(0) as usize;
             out.push(CiCell {
                 col,
                 rg: p.rg,
-                data: entry,
+                data: per_column.get(col)?.clone(),
                 size,
             });
         }
@@ -451,13 +456,18 @@ async fn build_offset_index_columns(
     // Per-column accumulator: one OiColumn slot per requested col, filled RG by RG.
     let mut columns: Vec<OiColumn> = cols.iter().map(|_| Vec::with_capacity(num_rgs)).collect();
     for (i, p) in plan.iter().enumerate() {
-        #[allow(deprecated)]
-        let decoded = read_offset_indexes(&buffers.reader(i), &p.chunks).ok()??;
-        if decoded.len() != cols.len() {
-            return None;
-        }
-        for (k, entry) in decoded.into_iter().enumerate() {
-            columns[k].push(entry);
+        let decoded = decode_row_group_page_index(
+            footer_meta,
+            p.rg,
+            &p.cols,
+            &buffers.reader(i),
+            PageIndexKind::OffsetIndex,
+        )?;
+        // One row group in the scoped footer, full width: indexed by real column
+        // index, with unrequested columns left empty.
+        let per_column = decoded.offset_index()?.first()?;
+        for (k, &col) in cols.iter().enumerate() {
+            columns[k].push(per_column.get(col)?.clone());
         }
     }
 
@@ -606,6 +616,141 @@ fn merge(acc: Option<Range<u64>>, r: Range<u64>) -> Range<u64> {
     }
 }
 
+/// Decode the page index for one row group from an already-fetched buffer,
+/// scoped to `cols`.
+///
+/// Replaces arrow-rs's `read_columns_indexes` / `read_offset_indexes`, which
+/// were deprecated in 55.2 and removed in Parquet 59 (arrow-rs #10035) with the
+/// guidance "use `ParquetMetaDataReader` instead". Those were the only public
+/// byte-level column-subset decoders, so scoping now has to be expressed through
+/// the metadata handed to the decoder rather than through a `&[ColumnChunkMetaData]`
+/// argument.
+///
+/// The decoder derives the byte range it needs by unioning the index extents of
+/// every column in the footer it is given (`range_for_page_index`). So to keep
+/// the read scoped we hand it a one-row-group footer in which the columns we did
+/// *not* ask for have their index offset/length cleared: their extents drop out
+/// of the union, which then equals exactly the extent this buffer was fetched
+/// for. Column count is preserved, because `RowGroupMetaDataBuilder::build`
+/// validates it against the schema descriptor.
+///
+/// The returned metadata is indexed by real column index (unrequested columns
+/// hold `NONE` / an empty entry), matching the input footer's width.
+fn decode_row_group_page_index(
+    footer_meta: &Arc<ParquetMetaData>,
+    rg: usize,
+    cols: &[usize],
+    reader: &BufferChunkReader,
+    kind: PageIndexKind,
+) -> Option<ParquetMetaData> {
+    let rgm = footer_meta.row_group(rg);
+    let wanted: HashSet<usize> = cols.iter().copied().collect();
+
+    // Neutralize the columns we did not ask for so their extents drop out of the
+    // range the decoder demands. The two index kinds need different treatment
+    // because the parser handles a missing range differently for each
+    // (parquet/src/file/metadata/parser.rs):
+    //
+    //   ColumnIndex: a column with no range decodes to
+    //     `Ok(ColumnIndexMetaData::NONE)` — exactly the placeholder we want, and
+    //     no error. So we simply clear the range.
+    //
+    //   OffsetIndex: a column with no range is an `Err("missing offset index")`,
+    //     and under `Optional` a single such column makes the parser discard the
+    //     *entire* decoded index. So the range must stay non-empty and point at
+    //     bytes inside this buffer. We reuse a requested column's offset-index
+    //     bytes; `decode_offset_index(bytes)` takes no column type (an offset
+    //     index is only page locations), so borrowing across columns is
+    //     type-safe. The caller overwrites every non-requested slot with its own
+    //     `placeholder_for` value before use, so the borrowed page locations are
+    //     never read.
+    //
+    // Note the asymmetry is not cosmetic: `decode_column_index` DOES take
+    // `column.column_type()`, so donating bytes between columns of different
+    // types would reinterpret min/max values — either erroring out (and losing
+    // the whole index) or silently producing wrong statistics. Never donate for
+    // ColumnIndex.
+    let oi_donor = match kind {
+        PageIndexKind::ColumnIndex => None,
+        PageIndexKind::OffsetIndex => {
+            let donor = *cols.first()?;
+            Some((
+                rgm.column(donor).offset_index_offset()?,
+                rgm.column(donor).offset_index_length()?,
+            ))
+        }
+    };
+
+    let scoped_columns: Vec<ColumnChunkMetaData> = (0..rgm.columns().len())
+        .map(|c| {
+            let chunk = rgm.column(c).clone();
+            if wanted.contains(&c) {
+                return Ok(chunk);
+            }
+            // Only the index kind being decoded needs neutralizing; the other
+            // kind is `Skip` in the policies below.
+            let builder = chunk.into_builder();
+            let builder = match oi_donor {
+                None => builder
+                    .set_column_index_offset(None)
+                    .set_column_index_length(None),
+                Some((offset, len)) => builder
+                    .set_offset_index_offset(Some(offset))
+                    .set_offset_index_length(Some(len)),
+            };
+            builder.build()
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+
+    let scoped_rg = rgm
+        .clone()
+        .into_builder()
+        .set_column_metadata(scoped_columns)
+        .build()
+        .ok()?;
+    let scoped_footer = ParquetMetaData::new(footer_meta.file_metadata().clone(), vec![scoped_rg]);
+
+    // Ask only for the index kind being populated: requesting both would widen
+    // the required byte range beyond what this buffer holds.
+    //
+    // `Optional`, not `Required`: the columns blanked above legitimately have no
+    // index offset now, and `Required` treats that as a "missing offset index"
+    // error for the whole row group.
+    let (column_index, offset_index) = match kind {
+        PageIndexKind::ColumnIndex => (PageIndexPolicy::Optional, PageIndexPolicy::Skip),
+        PageIndexKind::OffsetIndex => (PageIndexPolicy::Skip, PageIndexPolicy::Optional),
+    };
+
+    // Use the push decoder rather than `ParquetMetaDataReader::read_page_indexes_sized`:
+    // the latter assumes the supplied reader is the file's *tail*
+    // (`file_range = file_size - reader.len() .. file_size`) and rejects
+    // anything else, whereas these buffers are arbitrary mid-file slices
+    // covering just one row group's index extent. The push decoder takes
+    // explicit absolute ranges, which is exactly what we have.
+    let end = reader.base + reader.bytes.len() as u64;
+    let mut decoder = ParquetMetaDataPushDecoder::try_new_with_metadata(end, scoped_footer)
+        .ok()?
+        .with_column_index_policy(column_index)
+        .with_offset_index_policy(offset_index);
+    decoder
+        .push_range(reader.base..end, reader.bytes.clone())
+        .ok()?;
+    match decoder.try_decode() {
+        Ok(DecodeResult::Data(metadata)) => Some(metadata),
+        // Needs bytes outside this buffer, or nothing to decode — either way the
+        // caller falls back to footer-only pruning.
+        _ => None,
+    }
+}
+
+/// Which page-index structure a scoped decode should produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageIndexKind {
+    ColumnIndex,
+    OffsetIndex,
+}
+
 /// A [`ChunkReader`] over an in-memory byte buffer representing the file region
 /// `[base, base + bytes.len())`. The arrow-rs page-index readers call
 /// `get_bytes(absolute_offset, len)`; we translate into the buffer.
@@ -615,8 +760,17 @@ struct BufferChunkReader {
 }
 
 impl Length for BufferChunkReader {
+    /// Length of the buffer itself, not the file offset it ends at.
+    ///
+    /// `ParquetMetaDataReader::read_page_indexes_sized` treats the reader as a
+    /// *tail* of the file: it derives `file_range = file_size - reader.len()
+    /// .. file_size` and then calls `get_bytes` with **range-relative** offsets.
+    /// Returning `base + bytes.len()` here (the file offset the buffer ends at,
+    /// which is what the removed `read_columns_indexes` wanted) makes that
+    /// arithmetic compute a range starting at 0 and the decode fails with
+    /// "Parquet file too small".
     fn len(&self) -> u64 {
-        self.base + self.bytes.len() as u64
+        self.bytes.len() as u64
     }
 }
 
@@ -635,19 +789,15 @@ impl ChunkReader for BufferChunkReader {
 }
 
 impl BufferChunkReader {
-    /// Translate an absolute file offset `start` to a buffer-relative index.
-    /// The fork's `read_columns_indexes`/`read_offset_indexes` call `get_bytes`
-    /// with absolute file offsets (from chunk metadata); `self.base` is the
-    /// absolute start of the fetched buffer, so `start - base` gives the
-    /// position within `self.bytes`.
+    /// Bounds-check an incoming buffer-relative offset.
+    ///
+    /// `read_page_indexes_sized` computes `file_range = file_size -
+    /// reader.len() .. file_size` and calls `get_bytes` with offsets relative to
+    /// `file_range.start`. Since [`decode_row_group_page_index`] passes
+    /// `file_size = base + bytes.len()`, `file_range.start == base` and the
+    /// offsets arrive already relative to the buffer — no translation needed.
     fn rel(&self, start: u64, length: usize) -> ParquetResult<usize> {
-        let rel = start.checked_sub(self.base).ok_or_else(|| {
-            ParquetError::General(format!(
-                "page-index read offset {start} precedes buffer base {}",
-                self.base
-            ))
-        })?;
-        let rel = usize::try_from(rel)
+        let rel = usize::try_from(start)
             .map_err(|e| ParquetError::General(format!("offset overflow: {e}")))?;
         if rel + length > self.bytes.len() {
             return Err(ParquetError::General(format!(
@@ -982,6 +1132,45 @@ mod tests {
             !o[0][0].page_locations().is_empty(),
             "col 0 OffsetIndex real (always unioned)"
         );
+    }
+
+    /// A scoped ColumnIndex load must produce byte-identical statistics to the
+    /// full index for the requested column, even when the file mixes physical
+    /// types.
+    ///
+    /// `decode_column_index` decodes with the *destination* column's type, so any
+    /// scheme that lets one column's index bytes be parsed on behalf of a
+    /// different-typed column silently reinterprets min/max (or errors and drops
+    /// the whole index). `wide4` is Int32,Int32,Utf8,Utf8 — requesting a single
+    /// Utf8 column forces the two Int32 columns to be neutralized, which is
+    /// exactly the case that must not borrow bytes.
+    #[tokio::test]
+    async fn scoped_column_index_is_type_safe_across_mixed_types() {
+        let _g = CACHE_TEST_GUARD.lock().unwrap();
+        clear_scoped_cache_for_test();
+        let (bytes, schema) = wide4_parquet();
+        let (store, loc) = stage(bytes.clone()).await;
+        let fo = footer_only(&bytes);
+        let full = full_index(&bytes);
+
+        // One Utf8 column (index 2) while columns 0/1 are Int32.
+        for (name, col) in [("s0", 2usize), ("n0", 0usize)] {
+            clear_scoped_cache_for_test();
+            let pred = resolve_predicate_parquet_columns(&schema, &fo, &[name.to_string()]);
+            assert_eq!(pred, vec![col], "fixture column layout changed");
+
+            let aug = load_scoped_page_index_cols(&store, &loc, &fo, &pred, &[])
+                .await
+                .expect("scoped load must succeed for a mixed-type file");
+
+            let scoped_ci = &aug.column_index().expect("column index present")[0][col];
+            let full_ci = &full.column_index().unwrap()[0][col];
+            assert_eq!(
+                format!("{scoped_ci:?}"),
+                format!("{full_ci:?}"),
+                "scoped ColumnIndex for {name} must match the full index exactly"
+            );
+        }
     }
 
     #[tokio::test]

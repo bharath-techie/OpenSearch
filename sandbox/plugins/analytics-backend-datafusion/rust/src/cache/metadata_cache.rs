@@ -8,17 +8,25 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::parquet_page_cache::is_scoped_page_index_enabled;
+use datafusion::common::TableReference;
 use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
-use datafusion::execution::cache::cache_manager::{
-    CachedFileMetadataEntry, FileMetadataCache, FileMetadataCacheEntry,
-};
-use datafusion::execution::cache::CacheAccessor;
-use datafusion::execution::cache::DefaultFilesMetadataCache;
+use datafusion::execution::cache::cache_manager::CachedFileMetadataEntry;
+use datafusion::execution::cache::default_cache::DefaultCache;
+use datafusion::execution::cache::{Cache, CacheEntryInfo};
 use datafusion::parquet::file::metadata::ParquetMetaData;
 use native_bridge_common::log_error;
 use object_store::path::Path;
+
+/// The concrete metadata cache this wrapper delegates to.
+///
+/// DataFusion replaced its purpose-built `DefaultFilesMetadataCache` with the
+/// generic [`DefaultCache`], and folded `CacheAccessor` + `FileMetadataCache`
+/// into the single [`Cache`] trait. Keeping the old name as an alias localizes
+/// that rename to this module.
+pub type DefaultFilesMetadataCache = DefaultCache<Path, CachedFileMetadataEntry>;
 
 // Cache type constants
 pub const CACHE_TYPE_METADATA: &str = "METADATA";
@@ -114,7 +122,7 @@ impl MutexFileMetadataCache {
     }
 }
 
-impl CacheAccessor<Path, CachedFileMetadataEntry> for MutexFileMetadataCache {
+impl Cache<Path, CachedFileMetadataEntry> for MutexFileMetadataCache {
     fn get(&self, k: &Path) -> Option<CachedFileMetadataEntry> {
         match self.inner.lock() {
             Ok(cache) => {
@@ -202,9 +210,7 @@ impl CacheAccessor<Path, CachedFileMetadataEntry> for MutexFileMetadataCache {
             }
         }
     }
-}
 
-impl FileMetadataCache for MutexFileMetadataCache {
     fn cache_limit(&self) -> usize {
         match self.inner.lock() {
             Ok(cache) => cache.cache_limit(),
@@ -222,12 +228,41 @@ impl FileMetadataCache for MutexFileMetadataCache {
         }
     }
 
-    fn list_entries(&self) -> std::collections::HashMap<Path, FileMetadataCacheEntry> {
+    fn cache_ttl(&self) -> Option<Duration> {
+        match self.inner.lock() {
+            Ok(cache) => cache.cache_ttl(),
+            Err(e) => {
+                log_cache_error("cache_ttl", &e.to_string());
+                None
+            }
+        }
+    }
+
+    fn update_cache_ttl(&self, ttl: Option<Duration>) {
+        match self.inner.lock() {
+            Ok(cache) => cache.update_cache_ttl(ttl),
+            Err(e) => log_cache_error("update_cache_ttl", &e.to_string()),
+        }
+    }
+
+    fn drop_table_entries(&self, table_ref: &TableReference) -> datafusion::common::Result<()> {
+        match self.inner.lock() {
+            Ok(cache) => cache.drop_table_entries(table_ref),
+            Err(e) => {
+                log_cache_error("drop_table_entries", &e.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    fn list_entries(
+        &self,
+    ) -> datafusion::common::HashMap<Path, CacheEntryInfo<CachedFileMetadataEntry>> {
         match self.inner.lock() {
             Ok(cache) => cache.list_entries(),
             Err(e) => {
                 log_cache_error("list_entries", &e.to_string());
-                std::collections::HashMap::new()
+                datafusion::common::HashMap::default()
             }
         }
     }

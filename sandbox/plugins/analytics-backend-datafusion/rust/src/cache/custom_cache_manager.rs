@@ -15,10 +15,10 @@ use crate::cache::{metadata_cache, page_index};
 use crate::indexed_table::parquet_bridge;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::execution::cache::cache_manager::{
-    CacheManagerConfig, FileMetadataCache, FileStatisticsCache,
+    CacheManagerConfig, CachedFileMetadata, FileMetadataCache, FileStatisticsCache, TableScopedPath,
 };
-use datafusion::execution::cache::file_statistics_cache::DefaultFileStatisticsCache;
-use datafusion::execution::cache::CacheAccessor;
+use datafusion::execution::cache::default_cache::DefaultCache;
+use datafusion::execution::cache::Cache;
 use log::{debug, error};
 use native_bridge_common::log_debug;
 use object_store::path::Path;
@@ -26,6 +26,14 @@ use object_store::ObjectMeta;
 use object_store::ObjectStore;
 use opensearch_tiered_storage::tiered_object_store::MetadataCachingStore;
 use std::sync::Arc;
+
+/// Byte budget for the fallback statistics cache used when no
+/// `CustomStatisticsCache` has been installed.
+///
+/// Matches DataFusion's own `DEFAULT_FILE_STATISTICS_MEMORY_LIMIT`. Previously
+/// implicit in `DefaultFileStatisticsCache::default()`, which DataFusion
+/// removed in favour of the generic `DefaultCache`.
+const DEFAULT_STATISTICS_CACHE_LIMIT: usize = 20 * 1024 * 1024;
 
 /// Compute the page-index regions to warm, as SEPARATE column-index (CI) and
 /// offset-index (OI) whole regions — matching exactly how the query-time
@@ -187,11 +195,11 @@ impl CustomCacheManager {
         self.statistics_cache.clone()
     }
 
-    /// Get the file metadata cache as Arc<dyn FileMetadataCache> for DataFusion
-    pub fn get_file_metadata_cache_for_datafusion(&self) -> Option<Arc<dyn FileMetadataCache>> {
+    /// Get the file metadata cache as Arc<FileMetadataCache> for DataFusion
+    pub fn get_file_metadata_cache_for_datafusion(&self) -> Option<Arc<FileMetadataCache>> {
         self.file_metadata_cache
             .as_ref()
-            .map(|cache| cache.clone() as Arc<dyn FileMetadataCache>)
+            .map(|cache| cache.clone() as Arc<FileMetadataCache>)
     }
 
     /// Build a CacheManagerConfig from the caches stored in this CustomCacheManager
@@ -207,12 +215,15 @@ impl CustomCacheManager {
 
         // Add statistics cache if available - use CustomStatisticsCache directly
         if let Some(stats_cache) = &self.statistics_cache {
-            config = config.with_file_statistics_cache(Some(
-                stats_cache.clone() as Arc<dyn FileStatisticsCache>
-            ));
+            config = config
+                .with_file_statistics_cache(Some(stats_cache.clone() as Arc<FileStatisticsCache>));
         } else {
             // Default statistics cache if none set
-            let default_stats = Arc::new(DefaultFileStatisticsCache::default());
+            // DataFusion no longer ships a purpose-built statistics cache; the
+            // generic `DefaultCache` requires an explicit byte budget.
+            let default_stats = Arc::new(DefaultCache::<TableScopedPath, CachedFileMetadata>::new(
+                DEFAULT_STATISTICS_CACHE_LIMIT,
+            ));
             config = config.with_file_statistics_cache(Some(default_stats));
         }
 
@@ -257,7 +268,12 @@ impl CustomCacheManager {
                                         e_tag: None,
                                         version: None,
                                     };
-                                    stats_cache.put_statistics(&path, Arc::new(stats), &meta);
+                                    stats_cache.put_statistics(
+                                        &path,
+                                        Arc::new(stats),
+                                        &meta,
+                                        &schema,
+                                    );
                                 }
                                 Err(e) => {
                                     errors.push(format!("Statistics cache: {}", e));
@@ -548,7 +564,7 @@ impl CustomCacheManager {
             .file_metadata_cache
             .as_ref()
             .ok_or_else(|| "No file metadata cache configured".to_string())?
-            .clone() as Arc<dyn FileMetadataCache>;
+            .clone() as Arc<FileMetadataCache>;
 
         let location = object_meta.location.clone();
         let meta = object_meta.clone();
@@ -699,7 +715,7 @@ impl CustomCacheManager {
             .file_metadata_cache
             .as_ref()
             .ok_or_else(|| "No file metadata cache configured".to_string())?;
-        let metadata_cache = cache_ref.clone() as Arc<dyn FileMetadataCache>;
+        let metadata_cache = cache_ref.clone() as Arc<FileMetadataCache>;
 
         // Do NOT pass file_metadata_cache here — that triggers PageIndexPolicy::Optional
         // which loads page indexes into the heap struct. Instead, load footer only
@@ -716,7 +732,6 @@ impl CustomCacheManager {
         // Put lightweight footer-only metadata into heap cache
         use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
         use datafusion::execution::cache::cache_manager::CachedFileMetadataEntry;
-        use datafusion::execution::cache::CacheAccessor;
         let cached_entry = CachedFileMetadataEntry::new(
             object_meta.clone(),
             Arc::new(CachedParquetMetaData::new(Arc::clone(&parquet_metadata))),
@@ -766,7 +781,7 @@ impl CustomCacheManager {
 
         // Compute statistics
         match compute_parquet_statistics(file_path) {
-            Ok(stats) => {
+            Ok((stats, schema)) => {
                 let meta = ObjectMeta {
                     location: path.clone(),
                     last_modified: chrono::Utc::now(),
@@ -775,7 +790,7 @@ impl CustomCacheManager {
                     version: None,
                 };
 
-                cache.put_statistics(&path, Arc::new(stats), &meta);
+                cache.put_statistics(&path, Arc::new(stats), &meta, &schema);
                 Ok(true)
             }
             Err(e) => Err(format!(
@@ -825,7 +840,7 @@ impl CustomCacheManager {
         let stats = DFParquetMetadata::statistics_from_parquet_metadata(parquet_metadata, &schema)
             .map_err(|e| format!("failed to compute statistics for {}: {}", file_path, e))?;
 
-        cache.put_statistics(&path, Arc::new(stats), object_meta);
+        cache.put_statistics(&path, Arc::new(stats), object_meta, &schema);
         Ok(true)
     }
 
@@ -851,7 +866,7 @@ impl CustomCacheManager {
             }
 
             match compute_parquet_statistics(file_path) {
-                Ok(stats) => {
+                Ok((stats, schema)) => {
                     let meta = ObjectMeta {
                         location: path.clone(),
                         last_modified: chrono::Utc::now(),
@@ -860,7 +875,7 @@ impl CustomCacheManager {
                         version: None,
                     };
 
-                    cache.put_statistics(&path, Arc::new(stats), &meta);
+                    cache.put_statistics(&path, Arc::new(stats), &meta, &schema);
                     success_count += 1;
                 }
                 Err(e) => {
@@ -929,7 +944,7 @@ impl CustomCacheManager {
     pub fn statistics_cache_entry_count(&self) -> usize {
         self.statistics_cache
             .as_ref()
-            .map(|cache| <CustomStatisticsCache as CacheAccessor<_, _>>::len(cache))
+            .map(|cache| <CustomStatisticsCache as Cache<_, _>>::len(cache))
             .unwrap_or(0)
     }
 
@@ -968,7 +983,7 @@ impl CustomCacheManager {
     pub fn metadata_cache_entry_count(&self) -> usize {
         self.file_metadata_cache
             .as_ref()
-            .map(|cache| <MutexFileMetadataCache as CacheAccessor<_, _>>::len(cache))
+            .map(|cache| <MutexFileMetadataCache as Cache<_, _>>::len(cache))
             .unwrap_or(0)
     }
 

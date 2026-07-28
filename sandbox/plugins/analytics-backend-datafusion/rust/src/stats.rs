@@ -473,8 +473,8 @@ mod tests {
     fn test_pack_cache_stats_reflects_underlying_counters() {
         use std::sync::Arc;
 
-        use datafusion::execution::cache::CacheAccessor;
-        use datafusion::execution::cache::DefaultFilesMetadataCache;
+        use crate::cache::DefaultFilesMetadataCache;
+        use datafusion::execution::cache::Cache;
         use object_store::path::Path;
 
         use crate::cache::MutexFileMetadataCache;

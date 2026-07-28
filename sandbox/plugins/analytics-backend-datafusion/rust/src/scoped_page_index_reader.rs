@@ -92,7 +92,7 @@ use crate::indexed_table::parquet_bridge::load_parquet_metadata_with_meta;
 #[derive(Debug)]
 pub struct ScopedPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
-    metadata_cache: Arc<dyn FileMetadataCache>,
+    metadata_cache: Arc<FileMetadataCache>,
     /// File-column names referenced by the query predicate. Empty means "no
     /// scoping" — `get_metadata` returns footer-only and the opener loads the
     /// page index on demand as usual.
@@ -113,7 +113,7 @@ pub struct ScopedPageIndexReaderFactory {
 impl ScopedPageIndexReaderFactory {
     pub fn new(
         store: Arc<dyn ObjectStore>,
-        metadata_cache: Arc<dyn FileMetadataCache>,
+        metadata_cache: Arc<FileMetadataCache>,
         predicate_column_names: Vec<String>,
         projection_column_names: Vec<String>,
         predicate: Option<Arc<dyn PhysicalExpr>>,
@@ -158,7 +158,7 @@ impl ParquetFileReaderFactory for ScopedPageIndexReaderFactory {
 
 struct ScopedPageIndexReader {
     store: Arc<dyn ObjectStore>,
-    metadata_cache: Arc<dyn FileMetadataCache>,
+    metadata_cache: Arc<FileMetadataCache>,
     predicate_column_names: Arc<Vec<String>>,
     projection_column_names: Arc<Vec<String>>,
     file_schema: SchemaRef,
@@ -317,9 +317,9 @@ mod tests {
         (store, loc, size)
     }
 
-    fn fresh_cache() -> Arc<dyn FileMetadataCache> {
+    fn fresh_cache() -> Arc<FileMetadataCache> {
         Arc::new(crate::cache::MutexFileMetadataCache::new(
-            datafusion::execution::cache::DefaultFilesMetadataCache::new(64 * 1024 * 1024),
+            crate::cache::DefaultFilesMetadataCache::new(64 * 1024 * 1024),
         ))
     }
 

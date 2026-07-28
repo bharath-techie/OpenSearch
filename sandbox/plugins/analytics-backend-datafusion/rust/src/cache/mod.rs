@@ -34,7 +34,33 @@ pub mod statistics_cache;
 pub use custom_cache_manager::CustomCacheManager;
 pub use eviction_policy::{create_policy, CachePolicy, CacheResult, PolicyType};
 pub use metadata_cache::{
-    MutexFileMetadataCache, CACHE_TYPE_COLUMN_INDEX, CACHE_TYPE_METADATA, CACHE_TYPE_OFFSET_INDEX,
-    CACHE_TYPE_STATS,
+    DefaultFilesMetadataCache, MutexFileMetadataCache, CACHE_TYPE_COLUMN_INDEX,
+    CACHE_TYPE_METADATA, CACHE_TYPE_OFFSET_INDEX, CACHE_TYPE_STATS,
 };
 pub use statistics_cache::{compute_parquet_statistics, CustomStatisticsCache};
+
+use datafusion::execution::cache::cache_manager::{CachedFileList, TableScopedPath};
+use datafusion::execution::cache::default_cache::DefaultCache;
+
+/// Per-query cache of the `ObjectMeta`s produced by listing a table path.
+///
+/// DataFusion replaced its purpose-built `DefaultListFilesCache` with the
+/// generic [`DefaultCache`]; this alias keeps the old name at OpenSearch call
+/// sites so the rename lives in one place.
+pub type DefaultListFilesCache = DefaultCache<TableScopedPath, CachedFileList>;
+
+/// Byte budget for a per-query list-files cache.
+///
+/// These caches hold exactly one entry — the listing snapshot for the shard's
+/// table path, pushed in by the caller — and live only as long as the query, so
+/// the budget just has to be large enough not to evict that entry. It is not a
+/// tuning knob.
+const LIST_FILES_CACHE_LIMIT: usize = 64 * 1024 * 1024;
+
+/// Create an empty per-query list-files cache.
+///
+/// Replaces the `DefaultListFilesCache::default()` calls that the generic
+/// [`DefaultCache`] no longer offers, since it requires an explicit budget.
+pub fn new_list_files_cache() -> DefaultListFilesCache {
+    DefaultCache::new(LIST_FILES_CACHE_LIMIT).with_name("OpenSearchListFilesCache")
+}

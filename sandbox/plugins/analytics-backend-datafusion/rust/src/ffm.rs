@@ -53,7 +53,7 @@ use crate::runtime_manager::RuntimeManager;
 use crate::statistics_cache::CustomStatisticsCache;
 
 use crate::cache::page_index;
-use datafusion::execution::cache::DefaultFilesMetadataCache;
+use crate::cache::DefaultFilesMetadataCache;
 
 static TOKIO_RUNTIME_MANAGER: RwLock<Option<Arc<RuntimeManager>>> = RwLock::new(None);
 

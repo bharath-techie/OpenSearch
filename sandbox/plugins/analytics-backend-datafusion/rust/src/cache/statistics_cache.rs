@@ -12,18 +12,16 @@ use dashmap::DashMap;
 use datafusion::common::stats::{ColumnStatistics, Precision};
 use datafusion::common::ScalarValue;
 use datafusion::common::TableReference;
-use datafusion::execution::cache::cache_manager::{
-    CachedFileMetadata, FileStatisticsCache, FileStatisticsCacheEntry,
-};
-use datafusion::execution::cache::CacheAccessor;
+use datafusion::execution::cache::cache_manager::CachedFileMetadata;
 use datafusion::execution::cache::TableScopedPath;
+use datafusion::execution::cache::{Cache, CacheEntryInfo, SchemaFingerprint};
 use datafusion::physical_plan::Statistics;
 use object_store::{path::Path, ObjectMeta};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{Schema, SchemaRef};
 use parquet::file::metadata::ParquetMetaData;
 use std::fs::File;
 
@@ -313,13 +311,26 @@ impl CustomStatisticsCache {
     }
 
     /// Convenience method: put statistics with associated metadata (replaces old put_with_extra)
+    ///
+    /// `file_schema` is the schema the statistics were computed over. DataFusion
+    /// fingerprints it and checks it in
+    /// [`CachedFileMetadata::is_valid_for`], so an entry cached for a narrow
+    /// schema is no longer served to a reader expecting a widened one. That is
+    /// the exact mismatch `create_session_context` disables statistics
+    /// collection to avoid; the fingerprint makes the cache self-correcting.
     pub fn put_statistics(
         &self,
         k: &Path,
         stats: Arc<Statistics>,
         meta: &ObjectMeta,
+        file_schema: &Schema,
     ) -> Option<CachedFileMetadata> {
-        let cached = CachedFileMetadata::new(meta.clone(), stats, None);
+        let cached = CachedFileMetadata::new(
+            meta.clone(),
+            Arc::new(SchemaFingerprint::from_schema(file_schema)),
+            stats,
+            None,
+        );
         self.put(k, cached)
     }
 
@@ -457,10 +468,10 @@ impl CustomStatisticsCache {
     }
 }
 
-// DF54 `FileStatisticsCache: CacheAccessor<TableScopedPath, CachedFileMetadata>`.
-// Storage stays Path-keyed (see inherent methods above); this delegates via
-// `&key.path`. The table scope is not used by this cache.
-impl CacheAccessor<TableScopedPath, CachedFileMetadata> for CustomStatisticsCache {
+// `FileStatisticsCache` is an alias for `dyn Cache<TableScopedPath,
+// CachedFileMetadata>`. Storage stays Path-keyed (see inherent methods above);
+// this delegates via `&key.path`. The table scope is not used by this cache.
+impl Cache<TableScopedPath, CachedFileMetadata> for CustomStatisticsCache {
     fn get(&self, k: &TableScopedPath) -> Option<CachedFileMetadata> {
         CustomStatisticsCache::get(self, &k.path)
     }
@@ -488,23 +499,28 @@ impl CacheAccessor<TableScopedPath, CachedFileMetadata> for CustomStatisticsCach
     fn name(&self) -> String {
         CustomStatisticsCache::name(self)
     }
-}
 
-impl FileStatisticsCache for CustomStatisticsCache {
     fn cache_limit(&self) -> usize {
         self.size_limit.load(Ordering::Relaxed)
     }
 
     fn update_cache_limit(&self, _limit: usize) {}
 
-    fn list_entries(&self) -> std::collections::HashMap<TableScopedPath, FileStatisticsCacheEntry> {
-        std::collections::HashMap::new()
+    fn cache_ttl(&self) -> Option<std::time::Duration> {
+        // Entries are evicted by size and by `ObjectMeta` validation, never by
+        // age.
+        None
     }
 
-    fn drop_table_entries(
+    fn update_cache_ttl(&self, _ttl: Option<std::time::Duration>) {}
+
+    fn list_entries(
         &self,
-        _table_ref: &Option<TableReference>,
-    ) -> datafusion::common::Result<()> {
+    ) -> datafusion::common::HashMap<TableScopedPath, CacheEntryInfo<CachedFileMetadata>> {
+        datafusion::common::HashMap::default()
+    }
+
+    fn drop_table_entries(&self, _table_ref: &TableReference) -> datafusion::common::Result<()> {
         // This cache does not track table scope, so there are no per-table
         // entries to drop. No-op.
         Ok(())
@@ -532,10 +548,14 @@ pub fn compute_parquet_statistics_from_metadata(
     Ok(statistics)
 }
 
-/// Compute statistics from a parquet file using DataFusion's built-in functionality
+/// Compute statistics from a parquet file using DataFusion's built-in functionality.
+///
+/// Returns the schema alongside the statistics: the statistics cache
+/// fingerprints the schema they were computed over (see
+/// [`CustomStatisticsCache::put_statistics`]), so callers need both.
 pub fn compute_parquet_statistics(
     file_path: &str,
-) -> Result<Statistics, Box<dyn std::error::Error>> {
+) -> Result<(Statistics, SchemaRef), Box<dyn std::error::Error>> {
     use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
     use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use object_store::local::LocalFileSystem;
@@ -561,7 +581,7 @@ pub fn compute_parquet_statistics(
     // Use DataFusion's method to extract statistics from parquet metadata
     // statistics_from_parquet_metadata is an associated function that takes metadata and schema
     let statistics = DFParquetMetadata::statistics_from_parquet_metadata(metadata, &schema)?;
-    Ok(statistics)
+    Ok((statistics, schema))
 }
 
 #[cfg(test)]
@@ -576,6 +596,17 @@ mod tests {
             total_byte_size: Precision::Exact(50000),
             column_statistics: vec![],
         }
+    }
+
+    /// Schema the cached statistics are nominally computed over. These tests
+    /// exercise eviction and accounting, not schema validation, so one shared
+    /// schema keeps every entry mutually valid.
+    fn test_schema() -> Schema {
+        Schema::new(vec![arrow_schema::Field::new(
+            "a",
+            arrow_schema::DataType::Int64,
+            true,
+        )])
     }
 
     fn create_test_path(name: &str) -> Path {
@@ -609,7 +640,7 @@ mod tests {
         let path = create_test_path("file1");
         let meta = create_test_meta(&path);
         let stats = Arc::new(create_test_statistics());
-        cache.put_statistics(&path, stats, &meta);
+        cache.put_statistics(&path, stats, &meta, &test_schema());
 
         assert!(cache.memory_consumed() > 0);
         assert_eq!(cache.len(), 1);
@@ -623,7 +654,7 @@ mod tests {
             let path = create_test_path(&format!("file{}", i));
             let meta = create_test_meta(&path);
             let stats = Arc::new(create_test_statistics());
-            cache.put_statistics(&path, stats, &meta);
+            cache.put_statistics(&path, stats, &meta, &test_schema());
         }
         assert!(cache.memory_consumed() <= 1000);
         assert!(cache.len() > 0);
@@ -636,7 +667,7 @@ mod tests {
             let path = create_test_path(&format!("file{}", i));
             let meta = create_test_meta(&path);
             let stats = Arc::new(create_test_statistics());
-            cache.put_statistics(&path, stats, &meta);
+            cache.put_statistics(&path, stats, &meta, &test_schema());
         }
         let memory_before = cache.memory_consumed();
         assert!(memory_before > 0);
@@ -652,7 +683,7 @@ mod tests {
             let path = create_test_path(&format!("file{}", i));
             let meta = create_test_meta(&path);
             let stats = Arc::new(create_test_statistics());
-            cache.put_statistics(&path, stats, &meta);
+            cache.put_statistics(&path, stats, &meta, &test_schema());
         }
         let memory_before = cache.memory_consumed();
         assert_eq!(cache.policy_name().unwrap(), "lru");
@@ -670,8 +701,8 @@ mod tests {
         let meta2 = create_test_meta(&path2);
         let stats = Arc::new(create_test_statistics());
 
-        cache.put_statistics(&path1, stats.clone(), &meta1);
-        cache.put_statistics(&path2, stats, &meta2);
+        cache.put_statistics(&path1, stats.clone(), &meta1, &test_schema());
+        cache.put_statistics(&path2, stats, &meta2, &test_schema());
         let memory_with_two = cache.memory_consumed();
         assert_eq!(cache.len(), 2);
 
@@ -691,7 +722,7 @@ mod tests {
             let path = create_test_path(&format!("file{}", i));
             let meta = create_test_meta(&path);
             let stats = Arc::new(create_test_statistics());
-            cache.put_statistics(&path, stats, &meta);
+            cache.put_statistics(&path, stats, &meta, &test_schema());
         }
         assert!(cache.memory_consumed() > 0);
         cache.clear();
@@ -705,7 +736,7 @@ mod tests {
         let path = create_test_path("file1");
         let meta = create_test_meta(&path);
         let stats = Arc::new(create_test_statistics());
-        cache.put_statistics(&path, stats, &meta);
+        cache.put_statistics(&path, stats, &meta, &test_schema());
 
         assert!(cache.get(&path).is_some());
         assert_eq!(cache.hit_count(), 1);
@@ -733,7 +764,7 @@ mod tests {
         let path1 = create_test_path("file1");
         let meta1 = create_test_meta(&path1);
         let stats = Arc::new(create_test_statistics());
-        cache.put_statistics(&path1, stats, &meta1);
+        cache.put_statistics(&path1, stats, &meta1, &test_schema());
 
         cache.get(&path1); // hit
         cache.get(&path1); // hit
@@ -750,7 +781,7 @@ mod tests {
         let path = create_test_path("file1");
         let meta = create_test_meta(&path);
         let stats = Arc::new(create_test_statistics());
-        cache.put_statistics(&path, stats, &meta);
+        cache.put_statistics(&path, stats, &meta, &test_schema());
 
         cache.get(&path);
         let path2 = create_test_path("missing");
@@ -770,7 +801,7 @@ mod tests {
         let path = create_test_path("file1");
         let meta = create_test_meta(&path);
         let stats = Arc::new(create_test_statistics());
-        cache.put_statistics(&path, stats, &meta);
+        cache.put_statistics(&path, stats, &meta, &test_schema());
         cache.get(&path);
 
         cache.clear();
@@ -791,7 +822,7 @@ mod tests {
                 let path = create_test_path(&format!("concurrent{}", i));
                 let meta = create_test_meta(&path);
                 let stats = Arc::new(create_test_statistics());
-                cache_clone.put_statistics(&path, stats, &meta);
+                cache_clone.put_statistics(&path, stats, &meta, &test_schema());
                 assert!(cache_clone.get(&path).is_some());
             });
             handles.push(handle);
