@@ -6,139 +6,179 @@
  * compatible open source license.
  */
 
-//! Row ID computation for the fetch phase (QTF).
+//! Shard-global `__row_id__` for the fetch phase (QTF).
 //!
-//! Computes shard-global row IDs from position information and injects them
-//! into the output batch at the correct column index. Used by `IndexedStream`
-//! when `row_id_output_index` is set.
+//! `__row_id__` is a physical `INT64` column in every OpenSearch parquet file
+//! holding the row's position *within that file*. QTF needs values unique across
+//! the shard, so the stored value is offset by the segment's `global_base` (the
+//! cumulative row count of all preceding segments).
+//!
+//! This used to *compute* the value from delivery position via a `PositionMap`,
+//! which meant keeping that map in lockstep with whatever the decoder skipped.
+//! Reading the stored column makes the value correct by construction: it travels
+//! with the row, so a `RowSelection` or `RowFilter` dropping rows cannot shift it.
 
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Array, BooleanArray, Int64Array};
+use datafusion::arrow::array::{Array, ArrayRef, Int64Array};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
+use datafusion_common::DataFusionError;
 
-use super::row_selection::PositionMap;
-
-/// Pre-captured state needed for row ID computation.
-/// Captured BEFORE the filter mask is consumed (since mask consumption advances offsets).
-pub struct RowIdContext {
-    pub batch_offset: usize,
-    pub position_map: Option<PositionMap>,
-    pub base: u64,
-    pub eval_mask: Option<BooleanArray>,
-}
-
-/// Compute global row IDs for surviving rows and inject into the output batch.
+/// Rebase the batch's `__row_id__` to shard-global values and project to
+/// `output_schema`.
 ///
-/// # Arguments
-/// * `output` - The filtered batch (without `__row_id__` column)
-/// * `ctx` - Pre-captured position info from before filtering
-/// * `batch_len` - Original (pre-filter) batch length
-/// * `current_mask` - Candidate-stage mask (used when eval_mask is None)
-/// * `mask_offset_before` - mask_offset value before this batch was processed
-/// * `row_id_idx` - Column index in the output schema for `__row_id__`
-/// * `schema` - Output schema (includes `__row_id__` at `row_id_idx`)
-pub fn inject_row_ids(
-    output: &RecordBatch,
-    ctx: &RowIdContext,
-    batch_len: usize,
-    current_mask: Option<&BooleanArray>,
-    mask_offset_before: usize,
+/// `row_id_idx` is the column's position in `output_schema`. Remaining columns
+/// are reordered to match that schema, since the parquet reader delivers them in
+/// the file's physical order which need not agree.
+pub fn rebase_row_ids(
+    batch: &RecordBatch,
+    global_base: u64,
     row_id_idx: usize,
-    schema: &SchemaRef,
+    output_schema: &SchemaRef,
 ) -> Result<RecordBatch> {
-    let num_surviving = output.num_rows();
-
-    let row_id_array: Arc<dyn Array> = match num_surviving {
-        0 => Arc::new(Int64Array::from(Vec::<i64>::new())),
-        _ => {
-            let ids = compute_row_ids(
-                &ctx.eval_mask,
-                current_mask,
-                mask_offset_before,
-                batch_len,
-                ctx.batch_offset,
-                ctx.position_map.as_ref(),
-                ctx.base,
-            );
-            Arc::new(Int64Array::from_iter_values(
-                ids.into_iter().map(|id| id as i64),
+    let stored = batch
+        .column_by_name(crate::ROW_ID_COLUMN_NAME)
+        .ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "row-id output requested but {} is not in the delivered batch",
+                crate::ROW_ID_COLUMN_NAME
             ))
-        }
-    };
+        })?;
+    let stored_ids = stored
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "{} must be Int64, got {:?}",
+                crate::ROW_ID_COLUMN_NAME,
+                stored.data_type()
+            ))
+        })?;
 
-    let batch_schema = output.schema();
-    let columns: Vec<Arc<dyn Array>> = schema
+    let base = i64::try_from(global_base).map_err(|_| {
+        DataFusionError::Internal(format!("segment global_base {global_base} exceeds i64"))
+    })?;
+    // `__row_id__` is REQUIRED in the file schema, so there is no null mask to
+    // carry over and a plain values map suffices.
+    let rebased: ArrayRef = Arc::new(Int64Array::from_iter_values(
+        stored_ids.values().iter().map(|&v| v + base),
+    ));
+
+    let columns: Vec<ArrayRef> = output_schema
         .fields()
         .iter()
         .enumerate()
-        .map(|(i, field)| match i {
-            idx if idx == row_id_idx => Arc::clone(&row_id_array),
-            _ => batch_schema
-                .index_of(field.name())
-                .map(|col_idx| Arc::clone(output.column(col_idx)))
-                .unwrap_or_else(|_| {
-                    datafusion::arrow::array::new_null_array(field.data_type(), num_surviving)
-                }),
+        .map(|(i, field)| {
+            if i == row_id_idx {
+                return Ok(Arc::clone(&rebased));
+            }
+            let idx = batch.schema().index_of(field.name()).map_err(|_| {
+                DataFusionError::Internal(format!(
+                    "output column {} missing from the delivered batch",
+                    field.name()
+                ))
+            })?;
+            Ok(Arc::clone(batch.column(idx)))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    RecordBatch::try_new_with_options(
-        schema.clone(),
+    Ok(RecordBatch::try_new_with_options(
+        Arc::clone(output_schema),
         columns,
         &datafusion::arrow::record_batch::RecordBatchOptions::new()
-            .with_row_count(Some(num_surviving)),
-    )
-    .map_err(|e| datafusion::common::DataFusionError::ArrowError(Box::new(e), None))
+            .with_row_count(Some(batch.num_rows())),
+    )?)
 }
 
-/// Compute global row IDs from position info.
-fn compute_row_ids(
-    eval_mask: &Option<BooleanArray>,
-    current_mask: Option<&BooleanArray>,
-    mask_offset_before: usize,
-    batch_len: usize,
-    batch_start_delivered: usize,
-    pm: Option<&PositionMap>,
-    base: u64,
-) -> Vec<u64> {
-    match eval_mask {
-        Some(mask) => (0..batch_len)
-            .filter(|&i| mask.is_valid(i) && mask.value(i))
-            .map(|i| position_to_global_id(batch_start_delivered + i, pm, base))
-            .collect(),
-        None => match current_mask {
-            Some(candidate_mask) => (0..batch_len)
-                .filter(|&i| {
-                    let mi = mask_offset_before + i;
-                    mi < candidate_mask.len()
-                        && candidate_mask.is_valid(mi)
-                        && candidate_mask.value(mi)
-                })
-                .map(|i| position_to_global_id(batch_start_delivered + i, pm, base))
-                .collect(),
-            None => (0..batch_len)
-                .map(|i| position_to_global_id(batch_start_delivered + i, pm, base))
-                .collect(),
-        },
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::array::Int32Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    fn batch(row_ids: Vec<i64>, vals: Vec<i32>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int32, false),
+            Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vals)),
+                Arc::new(Int64Array::from(row_ids)),
+            ],
+        )
+        .unwrap()
     }
-}
 
-/// Convert a delivered-row index to a shard-global row ID.
-#[inline]
-fn position_to_global_id(delivered_idx: usize, pm: Option<&PositionMap>, base: u64) -> u64 {
-    let rg_pos = match pm {
-        Some(p) => p.rg_position(delivered_idx).unwrap_or(delivered_idx),
-        None => delivered_idx,
-    };
-    let id = base + rg_pos as u64;
-    debug_assert!(
-        id >= base,
-        "position_to_global_id: underflow base={} rg_pos={}",
-        base,
-        rg_pos
-    );
-    id
+    fn out_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int32, false),
+            Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
+        ]))
+    }
+
+    fn ids_of(batch: &RecordBatch, idx: usize) -> Vec<i64> {
+        batch
+            .column(idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec()
+    }
+
+    #[test]
+    fn adds_global_base_to_stored_ids() {
+        let b = batch(vec![0, 1, 2], vec![10, 11, 12]);
+        let out = rebase_row_ids(&b, 1_000, 1, &out_schema()).unwrap();
+        assert_eq!(ids_of(&out, 1), vec![1000, 1001, 1002]);
+    }
+
+    /// Gapped delivery is what the old position-derived implementation had to
+    /// work to get right: with rows skipped, delivered row `i` is not row `i` of
+    /// the row group. Reading the stored value makes it fall out for free.
+    #[test]
+    fn preserves_gaps_from_a_row_selection() {
+        let b = batch(vec![5, 9, 40], vec![1, 2, 3]);
+        let out = rebase_row_ids(&b, 100, 1, &out_schema()).unwrap();
+        assert_eq!(ids_of(&out, 1), vec![105, 109, 140]);
+    }
+
+    #[test]
+    fn zero_base_is_identity() {
+        let b = batch(vec![7, 8], vec![1, 2]);
+        let out = rebase_row_ids(&b, 0, 1, &out_schema()).unwrap();
+        assert_eq!(ids_of(&out, 1), vec![7, 8]);
+    }
+
+    #[test]
+    fn empty_batch_yields_empty_ids() {
+        let b = batch(vec![], vec![]);
+        let out = rebase_row_ids(&b, 42, 1, &out_schema()).unwrap();
+        assert_eq!(out.num_rows(), 0);
+        assert!(ids_of(&out, 1).is_empty());
+    }
+
+    #[test]
+    fn reorders_columns_to_output_schema() {
+        let b = batch(vec![0, 1], vec![10, 11]);
+        // Output wants row_id first — the reverse of the delivered order.
+        let schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let out = rebase_row_ids(&b, 5, 0, &schema).unwrap();
+        assert_eq!(ids_of(&out, 0), vec![5, 6]);
+        assert_eq!(out.schema().field(1).name(), "v");
+    }
+
+    #[test]
+    fn missing_column_errors_rather_than_guessing() {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let b = RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2]))]).unwrap();
+        assert!(rebase_row_ids(&b, 0, 1, &out_schema()).is_err());
+    }
 }

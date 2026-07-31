@@ -42,16 +42,21 @@ fn build_missing_col_fixture() -> MissingColFixture {
         name.push(if i % 2 == 0 { "foo" } else { "bar" });
         score.push((i as i32) % 1000);
     }
-    // Parquet schema intentionally excludes `missing_col`.
+    // Parquet schema intentionally excludes `missing_col` — that absence is the
+    // drift under test. `__row_id__` IS present, because production writers
+    // always append it; only user columns drift.
     let schema = Arc::new(Schema::new(vec![
         Field::new("name", DataType::Utf8, false),
         Field::new("score", DataType::Int32, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
+    let row_ids: Vec<i64> = (0..name.len() as i64).collect();
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
             Arc::new(StringArray::from(name.clone())),
             Arc::new(Int32Array::from(score.clone())),
+            Arc::new(datafusion::arrow::array::Int64Array::from(row_ids)),
         ],
     )
     .unwrap();
@@ -128,9 +133,7 @@ async fn run_missing_col_tree(tree_bool: BoolNode) -> usize {
     };
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -142,6 +145,7 @@ async fn run_missing_col_tree(tree_bool: BoolNode) -> usize {
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -169,6 +173,7 @@ fn schema_with_missing() -> SchemaRef {
         Field::new("name", DataType::Utf8, false),
         Field::new("score", DataType::Int32, false),
         Field::new("missing_col", DataType::Int32, true),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]))
 }
 
@@ -440,9 +445,7 @@ async fn query_with_mismatched_schema(
     };
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: table_schema,
@@ -454,6 +457,7 @@ async fn query_with_mismatched_schema(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -490,15 +494,20 @@ fn tautology_int(col: &str, col_idx: usize) -> BoolNode {
 // Without the stream.rs reprojection fix, columns would be swapped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reorder_columns_aligned_and_filtered() {
+    // User columns are deliberately in different orders between file and table —
+    // that reordering is what this test exercises. `__row_id__` is last in both,
+    // as production writers append it.
     let file_schema = Arc::new(Schema::new(vec![
         Field::new("name", DataType::Utf8, false),
         Field::new("score", DataType::Int32, false),
         Field::new("brand", DataType::Utf8, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
     let table_schema = Arc::new(Schema::new(vec![
         Field::new("brand", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
         Field::new("score", DataType::Int32, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
     let batch = RecordBatch::try_new(
         file_schema.clone(),
@@ -506,6 +515,9 @@ async fn reorder_columns_aligned_and_filtered() {
             Arc::new(StringArray::from(vec!["alice", "bob", "alice", "bob"])),
             Arc::new(Int32Array::from(vec![10, 20, 30, 40])),
             Arc::new(StringArray::from(vec!["acme", "globex", "acme", "globex"])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![
+                0i64, 1, 2, 3,
+            ])),
         ],
     )
     .unwrap();
@@ -519,13 +531,18 @@ async fn reorder_columns_aligned_and_filtered() {
 // Without force_view_types(false), panics with "byte view array".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn utf8view_schema_with_utf8_file_does_not_panic() {
+    // `city` drifts Utf8 (file) vs Utf8View (table) — that coercion is the point
+    // of this test. `__row_id__` is present and identical in both, as production
+    // writers append it to every file.
     let file_schema = Arc::new(Schema::new(vec![
         Field::new("city", DataType::Utf8, false),
         Field::new("pop", DataType::Int32, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
     let table_schema = Arc::new(Schema::new(vec![
         Field::new("city", DataType::Utf8View, false),
         Field::new("pop", DataType::Int32, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
     let batch = RecordBatch::try_new(
         file_schema.clone(),
@@ -534,6 +551,9 @@ async fn utf8view_schema_with_utf8_file_does_not_panic() {
                 "seattle", "portland", "denver", "austin",
             ])),
             Arc::new(Int32Array::from(vec![750_000, 650_000, 700_000, 980_000])),
+            Arc::new(datafusion::arrow::array::Int64Array::from(vec![
+                0i64, 1, 2, 3,
+            ])),
         ],
     )
     .unwrap();

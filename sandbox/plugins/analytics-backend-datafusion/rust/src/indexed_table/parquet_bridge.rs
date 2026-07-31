@@ -157,6 +157,105 @@ fn record_io(stats: &ReadIoStats, dur: Duration) {
     stats.count.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Configuration for a DataFusion-driven scan of one segment chunk.
+///
+/// Unlike [`RowGroupStreamConfig`], which builds one stream per row group, this
+/// builds a *single* scan over every row group in the chunk. DataFusion owns the
+/// decoder frontier; the indexed evaluator plugs in through two interfaces:
+///
+/// - [`RowGroupAccessProvider`] decides, at each row-group boundary, which rows
+///   of the next row group to read (the candidate stage), and
+/// - an [`ArrowPredicate`] refines the delivered rows during decode, so the
+///   projected columns are materialized only for rows that survive.
+///
+/// [`RowGroupAccessProvider`]: datafusion::datasource::physical_plan::parquet::RowGroupAccessProvider
+/// [`ArrowPredicate`]: datafusion::parquet::arrow::arrow_reader::ArrowPredicate
+pub struct ChunkScanConfig {
+    pub file_path: String,
+    pub file_size: u64,
+    pub store: Arc<dyn ObjectStore>,
+    pub store_url: ObjectStoreUrl,
+    pub full_schema: SchemaRef,
+    pub metadata: Arc<ParquetMetaData>,
+    pub projection: Option<Vec<usize>>,
+    /// Predicate for parquet-native pushdown. Ignored when the evaluator owns
+    /// exact filtering (`forbid_parquet_pushdown`).
+    pub predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    pub push_predicate: bool,
+    pub io_stats: Arc<ReadIoStats>,
+    pub batch_size: usize,
+    /// Row groups of this chunk, in read order.
+    pub row_group_indexes: Vec<usize>,
+}
+
+/// Build one DataFusion scan covering an entire chunk.
+///
+/// `access_provider_factory` supplies the candidate stage;
+/// `arrow_predicate_factory` supplies decode-time refinement. Either may be
+/// `None`: without the first, every row group is read whole; without the
+/// second, no refinement happens during decode.
+pub fn create_chunk_scan(
+    config: &ChunkScanConfig,
+    access_provider_factory: Option<
+        Arc<dyn datafusion::datasource::physical_plan::parquet::RowGroupAccessProviderFactory>,
+    >,
+    arrow_predicate_factory: Option<
+        Arc<dyn datafusion::datasource::physical_plan::parquet::ArrowPredicateFactory>,
+    >,
+) -> Result<(SendableRecordBatchStream, Arc<dyn ExecutionPlan>)> {
+    // Restrict the scan to this chunk's row groups. The provider narrows
+    // further, per row group, as the scan runs.
+    let num_rgs = config.metadata.num_row_groups();
+    let mut access_plan = ParquetAccessPlan::new_none(num_rgs);
+    for &rg_index in &config.row_group_indexes {
+        access_plan.set(rg_index, RowGroupAccess::Scan);
+    }
+
+    let partitioned_file = PartitionedFile::new(config.file_path.clone(), config.file_size)
+        .with_extensions(Arc::new(access_plan));
+
+    let reader_factory = Arc::new(CachedMetadataReaderFactory::new(
+        Arc::clone(&config.store),
+        Arc::clone(&config.metadata),
+        Arc::clone(&config.io_stats),
+    )) as Arc<dyn ParquetFileReaderFactory>;
+
+    let mut parquet_source = ParquetSource::new(config.full_schema.clone())
+        .with_parquet_file_reader_factory(reader_factory)
+        // Collector matches are invisible to parquet statistics, so page-index
+        // pruning cannot see them; the evaluator supplies the selection instead.
+        .with_enable_page_index(false);
+
+    if config.push_predicate {
+        if let Some(ref predicate) = config.predicate {
+            parquet_source = parquet_source
+                .with_predicate(Arc::clone(predicate))
+                .with_pushdown_filters(true)
+                .with_reorder_filters(true);
+        }
+    }
+    if let Some(factory) = access_provider_factory {
+        parquet_source = parquet_source.with_row_group_access_provider_factory(factory);
+    }
+    if let Some(factory) = arrow_predicate_factory {
+        parquet_source = parquet_source.with_arrow_predicate_factory(factory);
+    }
+
+    let mut config_builder =
+        FileScanConfigBuilder::new(config.store_url.clone(), Arc::new(parquet_source))
+            .with_file(partitioned_file)
+            .with_batch_size(Some(config.batch_size));
+
+    if let Some(ref projection) = config.projection {
+        config_builder = config_builder.with_projection_indices(Some(projection.clone()))?;
+    }
+
+    let exec: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(config_builder.build());
+    let ctx = Arc::new(datafusion::execution::TaskContext::default());
+    let stream = exec.execute(0, ctx)?;
+    Ok((stream, exec))
+}
+
 /// Configuration for creating a per-row-group parquet stream.
 pub struct RowGroupStreamConfig {
     /// Object-store-relative path to the parquet file.

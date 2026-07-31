@@ -81,13 +81,19 @@ fn build_large_fixture() -> LargeFixture {
         let _ = i;
     }
 
+    // `__row_id__` mirrors production: the parquet writer appends it to every
+    // file (see parquet-data-format `merge/schema.rs`), holding the row's
+    // position within the file. Refinement reads it to map delivered rows back
+    // to row-group positions, so fixtures must carry it too.
     let schema = Arc::new(Schema::new(vec![
         Field::new("brand", DataType::Utf8, false),
         Field::new("price", DataType::Int32, false),
         Field::new("status", DataType::Utf8, false),
         Field::new("category", DataType::Utf8, false),
         Field::new("qty", DataType::Int32, true),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
+    let row_ids: Vec<i64> = (0..brands.len() as i64).collect();
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -96,6 +102,7 @@ fn build_large_fixture() -> LargeFixture {
             Arc::new(StringArray::from(statuses.clone())),
             Arc::new(StringArray::from(categories.clone())),
             Arc::new(Int32Array::from(qtys.clone())),
+            Arc::new(datafusion::arrow::array::Int64Array::from(row_ids)),
         ],
     )
     .unwrap();
@@ -445,7 +452,6 @@ async fn run_large(
 
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
@@ -458,6 +464,7 @@ async fn run_large(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -905,7 +912,6 @@ async fn run_large_partitioned(
     };
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(partitions)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
@@ -918,6 +924,7 @@ async fn run_large_partitioned(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],

@@ -449,10 +449,6 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_delegation_tree(
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(corpus.config.target_partitions.max(1))
         .indexed_pushdown_filters(true)
-        .indexed_multi_rg_decode(true)
-        .force_strategy(Some(
-            crate::indexed_table::stream::FilterStrategy::RowSelection,
-        ))
         .batch_size(1024)
         .build();
 
@@ -478,6 +474,7 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_delegation_tree(
         pushdown_predicate: Some(Arc::clone(&residual_physical)),
         query_config: Arc::new(qc),
         predicate_columns: pred_cols,
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],

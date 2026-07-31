@@ -55,9 +55,11 @@
 //!   into Java (provider/collector lifetime wrappers + registration)
 //! - `page_pruner`, `partitioning`, `parquet_bridge`, `metrics`, `segment_info` — support
 
+mod access_provider;
 pub mod bloom_pruner;
 pub mod bool_tree;
-mod decoder_stream;
+mod chunk_stream;
+
 pub mod dense_bits;
 pub mod dynamic_filter;
 pub mod eval;

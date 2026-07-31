@@ -15,11 +15,13 @@
 //!
 //! 1. Call the single collector → bitset.
 //! 2. Apply page pruning (AND/OR mode depending on how the query combined them).
-//! 3. Hand the bitset offsets to `IndexedStream` as a RowSelection.
-//! 4. `on_batch_mask` returns `None` — DataFusion's
-//!    `with_predicate(residual).with_pushdown_filters(true)` applies the
-//!    residual predicates during decode, so indices stay aligned and no
-//!    post-filtering is needed.
+//! 3. Hand the bitset offsets to the access provider as a `RowSelection`, which
+//!    may coalesce short skip runs when candidates are dense.
+//! 4. `on_batch_mask` maps each delivered row back to its RG position and tests
+//!    collector membership, ANDing the residual when there is one. That is what
+//!    licenses coalescing in step 3: rows the selection over-read are rejected
+//!    here. It returns `None` only when there is nothing to reject — a
+//!    row-granular selection with no residual, or a scan without `__row_id__`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,12 +31,13 @@ use datafusion::arrow::array::BooleanArray;
 use datafusion::arrow::record_batch::RecordBatch;
 use native_bridge_common::log_debug;
 
+use super::RowPositions;
 use super::{PrefetchedRg, PrefetchedRgRows, RowGroupBitsetSource};
 use crate::indexed_table::dense_bits::{DenseBitset, DenseBitsetBuilder};
 use crate::indexed_table::ffm_callbacks::{create_provider, FfmSegmentCollector, ProviderHandle};
 use crate::indexed_table::index::RowGroupDocsCollector;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
-use crate::indexed_table::row_selection::{packed_bits_to_boolean_array, PositionMap};
+use crate::indexed_table::row_selection::packed_bits_to_boolean_array;
 use datafusion::parquet::file::metadata::ParquetMetaData;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 use std::time::Instant;
@@ -106,52 +109,46 @@ struct SingleCollectorState {
     candidates: Arc<DenseBitset>,
 }
 
+/// Project the RG-wide candidate bitset onto the rows actually delivered.
+///
+/// Delivered row `i` is a candidate iff `candidates` has the bit for that row's
+/// RG position, which comes from the projected `__row_id__` column. Two shapes:
+///
+/// - **Contiguous** delivery (the whole row group, or a leading run) — the
+///   candidate bits for `[first_pos, first_pos + len)` are already laid out
+///   consecutively, so this is a zero-copy packed-word slice.
+/// - **Gapped** delivery (a `RowSelection` skipped rows) — one bit test per
+///   delivered row. Still no per-bit scan of the row group.
 fn candidate_mask_for_batch(
     candidates: &DenseBitset,
-    position_map: &PositionMap,
-    batch_offset: usize,
-    batch_len: usize,
+    row_positions: &RowPositions,
 ) -> BooleanArray {
-    if matches!(
-        position_map,
-        PositionMap::Bitmap { .. } | PositionMap::DenseBitmap { .. }
-    ) {
-        return BooleanArray::new(
-            datafusion::arrow::buffer::BooleanBuffer::new_set(batch_len),
-            None,
-        );
+    let len = row_positions.len();
+    if len == 0 {
+        return BooleanArray::new(datafusion::arrow::buffer::BooleanBuffer::new_unset(0), None);
     }
 
-    match position_map {
-        // Identity: delivered row i == RG position batch_offset + i.
-        // Zero-copy slice over the packed candidate words.
-        PositionMap::Identity { .. } => candidates.boolean_slice(batch_offset, batch_len),
-        PositionMap::Runs { runs, .. } => {
-            let mut out = vec![0u64; batch_len.div_ceil(64)];
-            let batch_end = batch_offset.saturating_add(batch_len);
-            for &(rg_start, delivered_start, run_len) in runs {
-                let delivered_end = delivered_start.saturating_add(run_len);
-                let overlap_start = delivered_start.max(batch_offset);
-                let overlap_end = delivered_end.min(batch_end);
-                if overlap_start >= overlap_end {
-                    continue;
-                }
-                let rg_overlap_start = rg_start + overlap_start - delivered_start;
-                // Word-copy the overlapping candidate bits to their local
-                // batch positions; no per-bit iteration.
-                candidates.copy_bits_into(
-                    rg_overlap_start,
-                    overlap_end - overlap_start,
-                    &mut out,
-                    overlap_start - batch_offset,
-                );
-            }
-            packed_bits_to_boolean_array(out, batch_len)
-        }
-        PositionMap::Bitmap { .. } | PositionMap::DenseBitmap { .. } => {
-            unreachable!("handled above")
+    // Fast path: rows delivered back-to-back from some RG position onward.
+    let first = row_positions.rg_position(0);
+    if let Some(first) = first {
+        let last_is_contiguous = row_positions
+            .rg_position(len - 1)
+            .is_some_and(|last| last == first + len - 1);
+        if last_is_contiguous && row_positions.is_contiguous_run() {
+            return candidates.boolean_slice(first, len);
         }
     }
+
+    let mut out = vec![0u64; len.div_ceil(64)];
+    for i in 0..len {
+        let Some(pos) = row_positions.rg_position(i) else {
+            continue;
+        };
+        if candidates.get(pos) {
+            out[i >> 6] |= 1u64 << (i & 63);
+        }
+    }
+    packed_bits_to_boolean_array(out, len)
 }
 
 /// Evaluator holding one collector and applying per-RG page pruning.
@@ -174,20 +171,13 @@ pub struct SingleCollectorEvaluator {
     /// Raw residual expression (non-Collector children of the top-level
     /// AND, converted to a single `PhysicalExpr`).
     ///
-    /// Used in two modes:
+    /// When present, this evaluator owns its evaluation: `on_batch_mask` applies
+    /// it to the decoded batch and AND-combines with the collector-membership
+    /// mask, and `forbid_parquet_pushdown` keeps parquet from evaluating it a
+    /// second time as a `RowFilter`.
     ///
-    /// - **Row-granular** (`min_skip_run = 1`): the same expression is
-    ///   stashed on `IndexedTableConfig.pushdown_predicate` and handed
-    ///   to parquet's `with_predicate` for decode-time filtering.
-    ///   Combined with the Collector-bitmap `RowSelection`, parquet
-    ///   delivers exact `Collector ∧ residual` rows. `on_batch_mask`
-    ///   returns `None` (nothing left to do).
-    ///
-    /// - **Block-granular** (`min_skip_run > 1`): pushdown is OFF
-    ///   (alignment risk with coalesced selection). `on_batch_mask`
-    ///   evaluates this expression against the decoded batch and
-    ///   AND-combines with the Collector bitmap mask to produce the
-    ///   exact result.
+    /// `None` is the bare-collector shape, where the collector bitmap is the
+    /// entire filter and membership alone decides each row.
     residual_expr: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     /// Counters recorded by `page_pruner.prune_rg`. Built from the
     /// stream's `PartitionMetrics` at evaluator construction.
@@ -535,17 +525,15 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         }
 
         // Keep one authoritative candidate representation. Row-selection
-        // planning and optional residual refinement share it by Arc; packed
-        // Arrow masks are materialized only by the block/batch path that
-        // consumes them.
+        // planning and refinement share it by Arc; packed Arrow masks are
+        // materialized only by the block/batch path that consumes them.
+        //
+        // Published even with no residual: refinement still needs the bitmap to
+        // reject rows a coalesced selection over-read. Costs one `Arc` clone.
         let candidates = Arc::new(candidates);
-        let context: Box<dyn std::any::Any + Send + Sync> = if self.residual_expr.is_some() {
-            Box::new(SingleCollectorState {
-                candidates: Arc::clone(&candidates),
-            })
-        } else {
-            Box::new(())
-        };
+        let context: Box<dyn std::any::Any + Send + Sync> = Box::new(SingleCollectorState {
+            candidates: Arc::clone(&candidates),
+        });
         Ok(Some(PrefetchedRg {
             rows: PrefetchedRgRows::DenseBitmap(candidates),
             eval_nanos: t.elapsed().as_nanos() as u64,
@@ -557,16 +545,17 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         &self,
         rg_state: &dyn std::any::Any,
         _rg_first_row: i64,
-        position_map: &PositionMap,
-        batch_offset: usize,
-        batch_len: usize,
+        row_positions: &RowPositions,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String> {
-        // No residual → no post-decode work. Stream's current_mask
-        // (if built) handles Collector narrowing.
-        let Some(ref residual) = self.residual_expr else {
+        // Without positions there is no way to test collector membership. Only
+        // reachable with no residual — the residual path declares
+        // `needs_row_positions`, which the caller enforces — and then the
+        // selection was forced row-granular, so it already delivers exactly the
+        // candidates and there is nothing to reject.
+        if !row_positions.are_available() {
             return Ok(None);
-        };
+        }
 
         let state = rg_state
             .downcast_ref::<SingleCollectorState>()
@@ -574,11 +563,20 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 "SingleCollectorEvaluator: rg_state is not SingleCollectorState".to_string()
             })?;
 
-        let collector_mask =
-            candidate_mask_for_batch(&state.candidates, position_map, batch_offset, batch_len);
+        let collector_mask = candidate_mask_for_batch(&state.candidates, row_positions);
+
+        // No residual: the collector membership test is the whole refinement.
+        // Report it only when it actually drops something — a row-granular
+        // selection delivers exactly the candidates, so the mask is all-true and
+        // `None` saves the caller a `filter_record_batch` over a full batch.
+        let Some(ref residual) = self.residual_expr else {
+            let drops_nothing = collector_mask.true_count() == collector_mask.len();
+            return Ok((!drops_nothing).then_some(collector_mask));
+        };
 
         // Evaluate residual against the batch.
-        let residual_mask = super::eval_helpers::evaluate_residual(residual, batch, batch_len)?;
+        let residual_mask =
+            super::eval_helpers::evaluate_residual(residual, batch, row_positions.len())?;
 
         // AND with kleene semantics (NULL → exclude).
         let combined = datafusion::arrow::compute::kernels::boolean::and_kleene(
@@ -591,7 +589,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
 
     /// With a residual, `on_batch_mask` owns exact filtering (collector
     /// candidates ∧ residual) over the RowSelection-delivered rowset and
-    /// looks up RG positions via `PositionMap` in block-granular mode.
+    /// looks up RG positions from the delivered `__row_id__` column.
     /// A parquet RowFilter would (a) drop rows mid-decode and misalign
     /// those lookups, and (b) evaluate the same residual a second time in
     /// row-granular mode. Forbid it and evaluate the residual exactly once
@@ -601,13 +599,58 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         self.residual_expr.is_some()
     }
 
-    /// With a residual, `on_batch_mask` returns `Some` for every batch and
-    /// `finalize_batch` applies that mask exclusively — a stream-built
-    /// `current_mask` would be constructed and then ignored (it measured
-    /// ~140 ms per non-selective query). Only without a residual does the
-    /// stream's `current_mask` perform the collector narrowing.
-    fn needs_row_mask(&self) -> bool {
-        self.residual_expr.is_none()
+    /// Refine during decode when there is a residual to refine with.
+    ///
+    /// The candidate stage already restricted the scan to collector matches via
+    /// a `RowSelection`, so the residual is applied to a set that is usually far
+    /// smaller than the row group — and it reads only its own columns. Deciding
+    /// it during decode keeps the projected columns from being materialized for
+    /// rows the residual is about to reject.
+    ///
+    /// Without a residual `on_batch_mask` returns `None`, so there is nothing to
+    /// decide and a `RowFilter` would be pure overhead.
+    fn refines_during_decode(&self) -> bool {
+        self.residual_expr.is_some()
+    }
+
+    /// The residual's columns. Collector candidates come from row positions, so
+    /// they add nothing here.
+    fn refinement_columns(&self) -> Vec<String> {
+        self.residual_expr
+            .as_ref()
+            .map(|residual| {
+                datafusion::physical_expr::utils::collect_columns(residual)
+                    .into_iter()
+                    .map(|column| column.name().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The residual path *requires* positions: it must know which delivered rows
+    /// are collector candidates before ANDing, and guessing would silently drop
+    /// or admit rows. The bare-collector path only uses them opportunistically —
+    /// it degrades to `None` when the scan did not project `__row_id__`, which is
+    /// sound because coalescing is then disabled too (see
+    /// [`Self::masks_non_candidates`]).
+    fn needs_row_positions(&self) -> bool {
+        self.residual_expr.is_some()
+    }
+
+    /// `on_batch_mask` tests each delivered row's collector membership by row
+    /// position, so a row the candidate stage did not select is rejected whether
+    /// or not a residual is present. The selection may therefore coalesce short
+    /// skip runs on both shapes — provided the scan actually delivers positions,
+    /// which the caller checks.
+    ///
+    /// This is what makes coalescing available to the bare-collector shape —
+    /// `where match(URL, …) | stats count()` and friends, where the collector
+    /// bitmap is the entire filter. That shape is the common one, and it is also
+    /// the one where selector-list cost dominates: with no residual the candidate
+    /// stage is exact, so refinement drops nothing and every skip in the selector
+    /// list is pure decoder overhead.
+    fn masks_non_candidates(&self) -> bool {
+        true
     }
 }
 
@@ -685,43 +728,49 @@ mod tests {
         b.freeze()
     }
 
-    #[test]
-    fn candidate_batch_mask_slices_identity_positions() {
-        let candidates = dense_from_bits(&[1, 3, 4, 8], 10);
-        let position_map = PositionMap::from_selection(&RowSelection::from(vec![
-            datafusion::parquet::arrow::arrow_reader::RowSelector::select(10),
-        ]));
+    fn row_ids(values: Vec<i64>) -> datafusion::arrow::array::Int64Array {
+        datafusion::arrow::array::Int64Array::from(values)
+    }
 
-        let mask = candidate_mask_for_batch(&candidates, &position_map, 2, 4);
+    /// Contiguous delivery takes the zero-copy packed-word slice path.
+    #[test]
+    fn candidate_batch_mask_slices_contiguous_positions() {
+        let candidates = dense_from_bits(&[1, 3, 4, 8], 10);
+        // Delivered rows are RG positions 2..6; candidates there are {3, 4}.
+        let ids = row_ids(vec![2, 3, 4, 5]);
+        let mask = candidate_mask_for_batch(&candidates, &RowPositions::new(&ids, 0));
         assert_eq!(mask_values(&mask), vec![false, true, true, false]);
     }
 
+    /// When the decoder delivered exactly the candidate rows, every delivered
+    /// row is a candidate — this is the row-granular `RowSelection` case.
     #[test]
-    fn candidate_batch_mask_is_true_for_exact_bitmap_selection() {
-        let candidates = Arc::new(dense_from_bits(&[1, 3, 8], 10));
-        let position_map = PositionMap::DenseBitmap {
-            delivered_count: candidates.count_ones(),
-            bits: Arc::clone(&candidates),
-        };
-
-        let mask = candidate_mask_for_batch(&candidates, &position_map, 1, 2);
+    fn candidate_batch_mask_is_all_true_for_exact_selection() {
+        let candidates = dense_from_bits(&[1, 3, 8], 10);
+        let ids = row_ids(vec![3, 8]);
+        let mask = candidate_mask_for_batch(&candidates, &RowPositions::new(&ids, 0));
         assert_eq!(mask_values(&mask), vec![true, true]);
     }
 
+    /// Gapped delivery falls back to per-row bit tests.
     #[test]
-    fn candidate_batch_mask_maps_across_selection_runs() {
-        use datafusion::parquet::arrow::arrow_reader::RowSelector;
-
+    fn candidate_batch_mask_maps_gapped_delivery() {
         let candidates = dense_from_bits(&[4, 8, 9], 11);
-        let position_map = PositionMap::from_selection(&RowSelection::from(vec![
-            RowSelector::skip(2),
-            RowSelector::select(4),
-            RowSelector::skip(2),
-            RowSelector::select(3),
-        ]));
-
-        let mask = candidate_mask_for_batch(&candidates, &position_map, 2, 4);
+        // Delivered RG positions 4, 6, 8, 9 → candidates at 4, 8, 9.
+        let ids = row_ids(vec![4, 6, 8, 9]);
+        let mask = candidate_mask_for_batch(&candidates, &RowPositions::new(&ids, 0));
         assert_eq!(mask_values(&mask), vec![true, false, true, true]);
+    }
+
+    /// Positions are rebased by the row group's first row, so a non-zero
+    /// `rg_first_row` still indexes the RG-relative candidate bitset.
+    #[test]
+    fn candidate_batch_mask_rebases_by_row_group_start() {
+        let candidates = dense_from_bits(&[0, 2], 4);
+        // RG starts at file row 100; delivered file rows 100..104.
+        let ids = row_ids(vec![100, 101, 102, 103]);
+        let mask = candidate_mask_for_batch(&candidates, &RowPositions::new(&ids, 100));
+        assert_eq!(mask_values(&mask), vec![true, false, true, false]);
     }
 
     #[test]
@@ -757,9 +806,14 @@ mod tests {
         assert_eq!(got, vec![0u32, 3, 7]);
     }
 
+    /// Without a residual the collector membership test is the whole refinement,
+    /// and it is reported only when it rejects something. A coalesced selection
+    /// delivers non-candidates, so the mask must appear and drop them; a
+    /// row-granular one delivers exactly the candidates, so `None` skips a
+    /// pointless all-true `filter_record_batch`.
     #[test]
-    fn on_batch_mask_returns_none_for_path_b() {
-        let collector = Arc::new(StubCollector { docs: vec![0] }) as Arc<dyn RowGroupDocsCollector>;
+    fn bare_collector_masks_only_the_rows_it_over_read() {
+        let collector = Arc::new(StubCollector { docs: vec![0, 2] }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
         let eval = SingleCollectorEvaluator::new(
             Some(collector),
@@ -777,22 +831,40 @@ mod tests {
             None,
             HashMap::new(),
         );
+
+        let rg = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 3,
+        };
+        let state = eval.prefetch_rg(&rg, 0, 3).unwrap().expect("has matches");
+
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let batch = datafusion::arrow::record_batch::RecordBatch::try_new(
-            schema,
-            vec![Arc::new(datafusion::arrow::array::Int32Array::from(vec![
-                1, 2, 3,
-            ]))],
-        )
-        .unwrap();
-        // Empty position map is fine; SingleCollectorEvaluator ignores it.
-        let pm = PositionMap::from_selection(
-            &datafusion::parquet::arrow::arrow_reader::RowSelection::from(Vec::<
-                datafusion::parquet::arrow::arrow_reader::RowSelector,
-            >::new()),
+        let batch = |n: usize| {
+            datafusion::arrow::record_batch::RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(datafusion::arrow::array::Int32Array::from(
+                    (0..n as i32).collect::<Vec<_>>(),
+                ))],
+            )
+            .unwrap()
+        };
+
+        // Coalesced: row 1 was over-read and must be masked off.
+        let ids = row_ids(vec![0, 1, 2]);
+        let mask = eval
+            .on_batch_mask(state.context.as_ref(), 0, &RowPositions::new(&ids, 0), &batch(3))
+            .unwrap()
+            .expect("over-read rows must be masked");
+        assert_eq!(
+            mask.iter().collect::<Vec<_>>(),
+            vec![Some(true), Some(false), Some(true)]
         );
+
+        // Row-granular: only candidates delivered, so nothing to mask.
+        let ids = row_ids(vec![0, 2]);
         assert!(eval
-            .on_batch_mask(&(), 0, &pm, 0, 3, &batch)
+            .on_batch_mask(state.context.as_ref(), 0, &RowPositions::new(&ids, 0), &batch(2))
             .unwrap()
             .is_none());
     }
@@ -829,15 +901,17 @@ mod tests {
             None,
             HashMap::new(),
         );
-        assert!(!eval.needs_row_mask());
         assert!(eval.forbid_parquet_pushdown());
     }
 
+    /// A bare collector — `where match(URL, …) | stats count()`, the dominant
+    /// ClickBench shape — must license coalescing. It refines by collector
+    /// membership rather than by a residual, so gating the opt-in on
+    /// `residual_expr` left exactly this shape row-granular and cost it up to
+    /// +68% wall. Positions are still not *required*: the mask degrades to `None`
+    /// when `__row_id__` is absent, and the caller disables coalescing to match.
     #[test]
-    fn single_collector_needs_row_mask() {
-        // Without a residual, on_batch_mask returns None, so IndexedStream
-        // must build current_mask from candidate offsets (it's the only
-        // post-decode filter on this path) and pushdown stays permitted.
+    fn bare_collector_licenses_coalescing_without_requiring_positions() {
         let collector = Arc::new(StubCollector { docs: vec![0] }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
         let eval = SingleCollectorEvaluator::new(
@@ -856,8 +930,11 @@ mod tests {
             None,
             HashMap::new(),
         );
-        assert!(eval.needs_row_mask());
+        assert!(eval.masks_non_candidates());
+        assert!(!eval.needs_row_positions());
+        // Nothing to push and nothing to refine during decode without a residual.
         assert!(!eval.forbid_parquet_pushdown());
+        assert!(!eval.refines_during_decode());
     }
 
     #[test]

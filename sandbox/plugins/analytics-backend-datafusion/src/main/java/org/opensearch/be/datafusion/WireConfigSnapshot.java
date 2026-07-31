@@ -28,26 +28,46 @@ public final class WireConfigSnapshot {
     /** Total byte size of the wire struct ({@code WireDatafusionQueryConfig}). */
     public static final long BYTE_SIZE = 64;
 
+    /**
+     * FFM layout version written at offset 0 and verified by Rust.
+     * <p>
+     * The struct crosses the boundary as raw bytes with no negotiation, so a
+     * Java plugin and a Rust {@code .so} from different builds would silently
+     * misread every field rather than fail. Bump this on both sides whenever a
+     * field is added, removed, reordered, or resized — it must stay in lockstep
+     * with {@code WIRE_CONFIG_ABI_VERSION} in {@code datafusion_query_config.rs}.
+     * <p>
+     * Layouts before this field existed were unversioned, so there is no
+     * version 0 to stay compatible with — a mismatched pair simply fails the
+     * assertion on the Rust side.
+     */
+    public static final int ABI_VERSION = 3;
+
+    /** {@link #forceStrategy()} sentinel: let candidate selectivity decide. */
+    public static final int FORCE_STRATEGY_NONE = -1;
+    /** {@link #forceStrategy()} sentinel: always row-granular. */
+    public static final int FORCE_STRATEGY_ROW_SELECTION = 0;
+    /** {@link #forceStrategy()} sentinel: always one whole-row-group select. */
+    public static final int FORCE_STRATEGY_BOOLEAN_MASK = 1;
+
     private final int batchSize;
     private final int targetPartitions;
     private final boolean listingTablePushdownFilters;
+    private final boolean indexedPushdownFilters;
     private final int minSkipRunDefault;
     private final double minSkipRunSelectivityThreshold;
-    private final boolean indexedPushdownFilters;
     private final int forceStrategy;
-    private final boolean indexedMultiRgDecode;
-    private final boolean routePureParquetThroughIndexed;
+    private final boolean indexedDecodeTimeRefinement;
 
     private WireConfigSnapshot(Builder builder) {
         this.batchSize = builder.batchSize;
         this.targetPartitions = builder.targetPartitions;
         this.listingTablePushdownFilters = builder.listingTablePushdownFilters;
+        this.indexedPushdownFilters = builder.indexedPushdownFilters;
         this.minSkipRunDefault = builder.minSkipRunDefault;
         this.minSkipRunSelectivityThreshold = builder.minSkipRunSelectivityThreshold;
-        this.indexedPushdownFilters = builder.indexedPushdownFilters;
         this.forceStrategy = builder.forceStrategy;
-        this.indexedMultiRgDecode = builder.indexedMultiRgDecode;
-        this.routePureParquetThroughIndexed = builder.routePureParquetThroughIndexed;
+        this.indexedDecodeTimeRefinement = builder.indexedDecodeTimeRefinement;
     }
 
     public static Builder builder() {
@@ -62,12 +82,11 @@ public final class WireConfigSnapshot {
         return new Builder().batchSize(current.batchSize)
             .targetPartitions(current.targetPartitions)
             .listingTablePushdownFilters(current.listingTablePushdownFilters)
+            .indexedPushdownFilters(current.indexedPushdownFilters)
             .minSkipRunDefault(current.minSkipRunDefault)
             .minSkipRunSelectivityThreshold(current.minSkipRunSelectivityThreshold)
-            .indexedPushdownFilters(current.indexedPushdownFilters)
             .forceStrategy(current.forceStrategy)
-            .indexedMultiRgDecode(current.indexedMultiRgDecode)
-            .routePureParquetThroughIndexed(current.routePureParquetThroughIndexed);
+            .indexedDecodeTimeRefinement(current.indexedDecodeTimeRefinement);
     }
 
     public int batchSize() {
@@ -82,29 +101,46 @@ public final class WireConfigSnapshot {
         return listingTablePushdownFilters;
     }
 
-    public int minSkipRunDefault() {
-        return minSkipRunDefault;
-    }
-
-    public double minSkipRunSelectivityThreshold() {
-        return minSkipRunSelectivityThreshold;
-    }
-
     public boolean indexedPushdownFilters() {
         return indexedPushdownFilters;
     }
 
-    /** -1 = None (selectivity heuristic), 0 = RowSelection, 1 = BooleanMask. */
+    /**
+     * Skip runs shorter than this are absorbed into the surrounding {@code select},
+     * trading a few over-read rows for a shorter selector list. {@code 1} disables
+     * coalescing. Applied only at or above {@link #minSkipRunSelectivityThreshold()}.
+     */
+    public int minSkipRunDefault() {
+        return minSkipRunDefault;
+    }
+
+    /**
+     * Candidate selectivity (matched rows / row-group rows) below which the
+     * selection stays row-granular: sparse candidates make long skips, so each
+     * one saves real bytes and coalescing would over-read for nothing.
+     */
+    public double minSkipRunSelectivityThreshold() {
+        return minSkipRunSelectivityThreshold;
+    }
+
+    /**
+     * Pins the granularity decision instead of letting selectivity choose.
+     * Diagnostics only. One of {@link #FORCE_STRATEGY_NONE},
+     * {@link #FORCE_STRATEGY_ROW_SELECTION}, {@link #FORCE_STRATEGY_BOOLEAN_MASK}.
+     */
     public int forceStrategy() {
         return forceStrategy;
     }
 
-    public boolean indexedMultiRgDecode() {
-        return indexedMultiRgDecode;
-    }
-
-    public boolean routePureParquetThroughIndexed() {
-        return routePureParquetThroughIndexed;
+    /**
+     * Whether refinement runs as a parquet {@code ArrowPredicate} during decode
+     * rather than on the fully decoded batch. Decode-time refinement is two decode
+     * passes — the refinement's own columns for every candidate, then the projection
+     * for the survivors — so it pays off only when refinement rejects most
+     * candidates.
+     */
+    public boolean indexedDecodeTimeRefinement() {
+        return indexedDecodeTimeRefinement;
     }
 
     /**
@@ -119,62 +155,69 @@ public final class WireConfigSnapshot {
      * <pre>
      * Offset  Size  Field                                Type     Source
      * ──────  ────  ─────────────────────────────────    ──────   ───────────
-     * 0       8     batch_size                           i64      from snapshot
-     * 8       8     target_partitions                    i64      from snapshot
-     * 16      8     min_skip_run_default                 i64      from snapshot
-     * 24      8     min_skip_run_selectivity_threshold   f64      from snapshot
-     * 32      4     listing_table_pushdown_filters       i32      from snapshot (0/1)
-     * 36      4     indexed_pushdown_filters             i32      from snapshot (0/1)
-     * 40      4     force_strategy                       i32      from snapshot (-1/0/1)
-     * 44      4     cost_predicate                       i32      hardcoded 1
-     * 48      4     cost_collector                       i32      hardcoded 10
-     * 52      4     indexed_multi_rg_decode              i32      from snapshot (0/1)
-     * 56      4     route_pure_parquet_through_indexed   i32      from snapshot (0/1)
+     * 0       4     abi_version                          i32      {@link #ABI_VERSION}
+     * 4       4     (padding)                            i32      zero
+     * 8       8     batch_size                           i64      from snapshot
+     * 16      8     target_partitions                    i64      from snapshot
+     * 24      4     listing_table_pushdown_filters       i32      from snapshot (0/1)
+     * 28      4     indexed_pushdown_filters             i32      from snapshot (0/1)
+     * 32      4     cost_predicate                       i32      hardcoded 1
+     * 36      4     cost_collector                       i32      hardcoded 10
+     * 40      8     min_skip_run_default                 i64      from snapshot
+     * 48      8     min_skip_run_selectivity_threshold   f64      from snapshot
+     * 56      4     force_strategy                       i32      from snapshot (-1/0/1)
+     * 60      4     indexed_decode_time_refinement       i32      from snapshot (0/1)
      * ──────  ────
-     * Total: 60 bytes of payload, padded to 64 (8-byte aligned, repr(C))
+     * Total: 64 bytes, 8-byte aligned (repr(C), no tail padding needed)
      * </pre>
+     *
+     * <p>{@code indexed_multi_rg_decode} and {@code route_pure_parquet_through_indexed}
+     * were removed with the legacy per-row-group driver: the indexed scan now always
+     * runs a single DataFusion scan per chunk, and routing is decided by delegation
+     * and the {@code __row_id__} projection alone.
      *
      * @param segment the target memory segment (at least {@link #BYTE_SIZE} bytes)
      */
     public void writeTo(MemorySegment segment) {
-        // Offset 0: batch_size (i64)
-        segment.set(ValueLayout.JAVA_LONG, 0, (long) batchSize);
-        // Offset 8: target_partitions (i64)
-        segment.set(ValueLayout.JAVA_LONG, 8, (long) targetPartitions);
-        // Offset 16: min_skip_run_default (i64)
-        segment.set(ValueLayout.JAVA_LONG, 16, (long) minSkipRunDefault);
-        // Offset 24: min_skip_run_selectivity_threshold (f64)
-        segment.set(ValueLayout.JAVA_DOUBLE, 24, minSkipRunSelectivityThreshold);
-        // Offset 32: listing_table_pushdown_filters (i32) — 0 = false, 1 = true
-        segment.set(ValueLayout.JAVA_INT, 32, listingTablePushdownFilters ? 1 : 0);
-        // Offset 36: indexed_pushdown_filters (i32) — 0 = false, 1 = true
-        segment.set(ValueLayout.JAVA_INT, 36, indexedPushdownFilters ? 1 : 0);
-        // Offset 40: force_strategy (i32) — -1 = None, 0 = RowSelection, 1 = BooleanMask
-        segment.set(ValueLayout.JAVA_INT, 40, forceStrategy);
-        // Offset 44: cost_predicate (i32) — hardcoded 1
-        segment.set(ValueLayout.JAVA_INT, 44, 1);
-        // Offset 48: cost_collector (i32) — hardcoded 10
-        segment.set(ValueLayout.JAVA_INT, 48, 10);
-        // Offset 52: indexed_multi_rg_decode (i32) — 0 = false, 1 = true
-        segment.set(ValueLayout.JAVA_INT, 52, indexedMultiRgDecode ? 1 : 0);
-        // Offset 56: route_pure_parquet_through_indexed (i32) — 0 = false, 1 = true
-        segment.set(ValueLayout.JAVA_INT, 56, routePureParquetThroughIndexed ? 1 : 0);
+        // Offset 0: abi_version (i32) — Rust asserts this matches its own constant
+        segment.set(ValueLayout.JAVA_INT, 0, ABI_VERSION);
+        // Offset 4: explicit padding, zeroed so the bytes are deterministic
+        segment.set(ValueLayout.JAVA_INT, 4, 0);
+        // Offset 8: batch_size (i64)
+        segment.set(ValueLayout.JAVA_LONG, 8, (long) batchSize);
+        // Offset 16: target_partitions (i64)
+        segment.set(ValueLayout.JAVA_LONG, 16, (long) targetPartitions);
+        // Offset 24: listing_table_pushdown_filters (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 24, listingTablePushdownFilters ? 1 : 0);
+        // Offset 28: indexed_pushdown_filters (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 28, indexedPushdownFilters ? 1 : 0);
+        // Offset 32: cost_predicate (i32) — hardcoded 1
+        segment.set(ValueLayout.JAVA_INT, 32, 1);
+        // Offset 36: cost_collector (i32) — hardcoded 10
+        segment.set(ValueLayout.JAVA_INT, 36, 10);
+        // Offset 40: min_skip_run_default (i64)
+        segment.set(ValueLayout.JAVA_LONG, 40, (long) minSkipRunDefault);
+        // Offset 48: min_skip_run_selectivity_threshold (f64)
+        segment.set(ValueLayout.JAVA_DOUBLE, 48, minSkipRunSelectivityThreshold);
+        // Offset 56: force_strategy (i32) — -1 = None, 0 = RowSelection, 1 = BooleanMask
+        segment.set(ValueLayout.JAVA_INT, 56, forceStrategy);
+        // Offset 60: indexed_decode_time_refinement (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 60, indexedDecodeTimeRefinement ? 1 : 0);
     }
 
     /**
      * Builder for {@link WireConfigSnapshot}. All fields have sensible defaults
-     * matching the Rust {@code DatafusionQueryConfig::default()}.
+     * matching the Rust {@code DatafusionQueryConfig::fallback()}.
      */
     public static final class Builder {
         private int batchSize = 8192;
         private int targetPartitions = 4;
         private boolean listingTablePushdownFilters = false;
+        private boolean indexedPushdownFilters = true;
         private int minSkipRunDefault = 1024;
         private double minSkipRunSelectivityThreshold = 0.03;
-        private boolean indexedPushdownFilters = true;
-        private int forceStrategy = -1;
-        private boolean indexedMultiRgDecode = false;
-        private boolean routePureParquetThroughIndexed = false;
+        private int forceStrategy = FORCE_STRATEGY_NONE;
+        private boolean indexedDecodeTimeRefinement = false;
 
         private Builder() {}
 
@@ -193,6 +236,11 @@ public final class WireConfigSnapshot {
             return this;
         }
 
+        public Builder indexedPushdownFilters(boolean indexedPushdownFilters) {
+            this.indexedPushdownFilters = indexedPushdownFilters;
+            return this;
+        }
+
         public Builder minSkipRunDefault(int minSkipRunDefault) {
             this.minSkipRunDefault = minSkipRunDefault;
             return this;
@@ -203,24 +251,14 @@ public final class WireConfigSnapshot {
             return this;
         }
 
-        public Builder indexedPushdownFilters(boolean indexedPushdownFilters) {
-            this.indexedPushdownFilters = indexedPushdownFilters;
-            return this;
-        }
-
         /** @param forceStrategy -1 = None (heuristic), 0 = RowSelection, 1 = BooleanMask. */
         public Builder forceStrategy(int forceStrategy) {
             this.forceStrategy = forceStrategy;
             return this;
         }
 
-        public Builder indexedMultiRgDecode(boolean indexedMultiRgDecode) {
-            this.indexedMultiRgDecode = indexedMultiRgDecode;
-            return this;
-        }
-
-        public Builder routePureParquetThroughIndexed(boolean routePureParquetThroughIndexed) {
-            this.routePureParquetThroughIndexed = routePureParquetThroughIndexed;
+        public Builder indexedDecodeTimeRefinement(boolean indexedDecodeTimeRefinement) {
+            this.indexedDecodeTimeRefinement = indexedDecodeTimeRefinement;
             return this;
         }
 

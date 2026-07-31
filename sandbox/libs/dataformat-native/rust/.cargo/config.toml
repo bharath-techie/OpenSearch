@@ -20,6 +20,25 @@ datafusion-execution = { path = "../../../../../datafusion/datafusion/execution"
 datafusion-physical-expr = { path = "../../../../../datafusion/datafusion/physical-expr" }
 datafusion-physical-expr-adapter = { path = "../../../../../datafusion/datafusion/physical-expr-adapter" }
 datafusion-substrait = { path = "../../../../../datafusion/datafusion/substrait" }
+datafusion-datasource-parquet = { path = "../../../../../datafusion/datafusion/datasource-parquet" }
+datafusion-physical-plan = { path = "../../../../../datafusion/datafusion/physical-plan" }
+datafusion-physical-optimizer = { path = "../../../../../datafusion/datafusion/physical-optimizer" }
+datafusion-functions = { path = "../../../../../datafusion/datafusion/functions" }
+
+# LOCAL DEVELOPMENT ONLY — remove before merging.
+#
+# Redirects `parquet` at a local arrow-rs checkout for `try_next_row_group` /
+# `RowGroupReaderResult`, which are not in the 59.1.0 release. They let a row
+# group eliminated by a row filter surface as an explicit boundary rather than
+# being skipped, so `RowGroupAccessProvider` gets consulted for the next row
+# group instead of the decoder running ahead unaddressed.
+#
+# The checkout is 59.0.0 with those APIs backported and its version bumped to
+# 59.1.0, so it links against the registry's arrow 59.1.0 crates without
+# duplicating them. Delete this block and drop back to the crates.io release
+# once the API lands upstream.
+[patch.crates-io]
+parquet = { path = "../../../../../arrow-rs/parquet" }
 
 [env]
 # Enable jemalloc heap profiling support in all builds. prof:true is init-time only and

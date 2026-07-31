@@ -40,17 +40,24 @@ fn write_segment_rg(
     rows: usize,
     max_rg_rows: usize,
 ) -> NamedTempFile {
+    // `__row_id__` last, mirroring production: the parquet writer appends it to
+    // every file (parquet-data-format `merge/schema.rs`) holding the row's
+    // position within the file. Refinement reads it to map delivered rows back
+    // to row-group positions.
     let schema = Arc::new(Schema::new(vec![
         Field::new("brand", DataType::Utf8, false),
         Field::new("price", DataType::Int32, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
     let brands: Vec<&str> = (0..rows).map(|_| brand).collect();
     let prices: Vec<i32> = (0..rows).map(|i| base_price + i as i32).collect();
+    let row_ids: Vec<i64> = (0..rows as i64).collect();
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
             Arc::new(StringArray::from(brands)),
             Arc::new(Int32Array::from(prices)),
+            Arc::new(datafusion::arrow::array::Int64Array::from(row_ids)),
         ],
     )
     .unwrap();
@@ -175,9 +182,7 @@ async fn run_two_segment_query(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(num_partitions)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -188,6 +193,7 @@ async fn run_two_segment_query(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -385,9 +391,7 @@ async fn run_two_segment_query_witness(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(num_partitions)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -398,6 +402,7 @@ async fn run_two_segment_query_witness(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -595,9 +600,7 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(num_partitions)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -608,6 +611,7 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -889,12 +893,17 @@ async fn six_segments_some_with_no_matches() {
 use datafusion::arrow::array::BooleanArray;
 
 fn wide_schema() -> SchemaRef {
+    // `__row_id__` last, mirroring production: the parquet writer appends it to
+    // every file (parquet-data-format `merge/schema.rs`) holding the row's
+    // position within the file. Refinement reads it to map delivered rows back
+    // to row-group positions.
     Arc::new(Schema::new(vec![
         Field::new("brand", DataType::Utf8, false),
         Field::new("price", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
         Field::new("region", DataType::Utf8, false),
         Field::new("active", DataType::Boolean, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]))
 }
 
@@ -956,6 +965,7 @@ fn write_wide_segment(brand: &'static str, rows: usize, max_rg_rows: usize) -> N
         })
         .collect();
     let actives: Vec<bool> = (0..rows).map(|i| i % 2 == 0).collect();
+    let row_ids: Vec<i64> = (0..rows as i64).collect();
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -964,6 +974,7 @@ fn write_wide_segment(brand: &'static str, rows: usize, max_rg_rows: usize) -> N
             Arc::new(Int32Array::from(qtys)),
             Arc::new(StringArray::from(regions)),
             Arc::new(BooleanArray::from(actives)),
+            Arc::new(datafusion::arrow::array::Int64Array::from(row_ids)),
         ],
     )
     .unwrap();
@@ -1106,9 +1117,7 @@ async fn run_wide_segments(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(num_partitions)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -1119,6 +1128,7 @@ async fn run_wide_segments(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -1470,9 +1480,7 @@ async fn run_wide_segments_with_stats_pruning(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(num_partitions)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(true)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -1483,6 +1491,7 @@ async fn run_wide_segments_with_stats_pruning(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: Some((
             Arc::clone(&tree),

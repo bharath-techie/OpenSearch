@@ -32,10 +32,6 @@ pub struct StreamMetrics {
     pub parquet_time: Option<Time>,
     pub rows_matched: Option<Count>,
     pub rows_pruned: Option<Count>,
-    /// RGs where `min_skip_run == 1` — row-granular RowSelection.
-    pub min_skip_run_row_granular: Option<Count>,
-    /// RGs where `min_skip_run > 1` — block-granular (coarser) RowSelection.
-    pub min_skip_run_block_granular: Option<Count>,
     pub rg_processed: Option<Count>,
     pub rg_skipped: Option<Count>,
     /// Row groups pruned by bloom filter (value proven absent).
@@ -63,15 +59,6 @@ pub struct StreamMetrics {
     /// Count of `RecordBatch`es received from the inner parquet stream,
     /// before mask filtering.
     pub parquet_batches_received: Option<Count>,
-    /// Number of RGs whose `PositionMap` was the `Identity` variant
-    /// (whole-RG selected, no skips).
-    pub position_map_identity: Option<Count>,
-    /// Number of RGs whose `PositionMap` was the `Bitmap` variant
-    /// (row-granular; row-to-rg-pos via `RoaringBitmap::select`).
-    pub position_map_bitmap: Option<Count>,
-    /// Number of RGs whose `PositionMap` was the `Runs` variant
-    /// (block-granular; explicit run table).
-    pub position_map_runs: Option<Count>,
     /// Wall-clock time the poll thread spent blocked on the oneshot
     /// receiver for a pending prefetch. Zero if prefetch fully overlapped
     /// with upstream work; non-zero indicates idle time.
@@ -137,8 +124,6 @@ impl StreamMetrics {
             parquet_time: None,
             rows_matched: None,
             rows_pruned: None,
-            min_skip_run_row_granular: None,
-            min_skip_run_block_granular: None,
             rg_processed: None,
             rg_skipped: None,
             rg_bloom_pruned: None,
@@ -149,9 +134,6 @@ impl StreamMetrics {
             ffm_collector_calls: None,
             batches_produced: None,
             parquet_batches_received: None,
-            position_map_identity: None,
-            position_map_bitmap: None,
-            position_map_runs: None,
             prefetch_wait_time: None,
             prefetch_wait_count: None,
             coalesce_time: None,
@@ -171,6 +153,18 @@ impl StreamMetrics {
             inner_parquet_metrics: None,
         }
     }
+
+    /// [`Self::empty`], but with the dynamic-filter prune counters live, for
+    /// tests that assert which phase a row-group prune was attributed to. Every
+    /// other handle stays `None`.
+    #[cfg(test)]
+    pub fn counting_dynamic_prunes() -> Self {
+        Self {
+            dynamic_filter_rg_pruned_at_prefetch: Some(Count::new()),
+            dynamic_filter_rg_pruned_at_poll: Some(Count::new()),
+            ..Self::empty()
+        }
+    }
 }
 
 /// Per-partition metrics registered against the parent `ExecutionPlanMetricsSet`.
@@ -181,8 +175,6 @@ pub struct PartitionMetrics {
     pub parquet_time: Time,
     pub rows_matched: Count,
     pub rows_pruned_by_page_index: Count,
-    pub min_skip_run_row_granular: Count,
-    pub min_skip_run_block_granular: Count,
     pub row_groups_processed: Count,
     pub row_groups_skipped: Count,
     pub rg_bloom_pruned: Count,
@@ -193,9 +185,6 @@ pub struct PartitionMetrics {
     pub ffm_collector_calls: Count,
     pub batches_produced: Count,
     pub parquet_batches_received: Count,
-    pub position_map_identity: Count,
-    pub position_map_bitmap: Count,
-    pub position_map_runs: Count,
     pub prefetch_wait_time: Time,
     pub prefetch_wait_count: Count,
     pub coalesce_time: Time,
@@ -223,8 +212,6 @@ impl PartitionMetrics {
             parquet_time: MetricBuilder::new(metrics).subset_time("parquet_read_time", partition),
             rows_matched: counter("rows_matched"),
             rows_pruned_by_page_index: counter("rows_pruned_by_page_index"),
-            min_skip_run_row_granular: counter("min_skip_run_row_granular"),
-            min_skip_run_block_granular: counter("min_skip_run_block_granular"),
             row_groups_processed: counter("row_groups_processed"),
             row_groups_skipped: counter("row_groups_skipped"),
             rg_bloom_pruned: counter("rg_bloom_pruned"),
@@ -236,9 +223,6 @@ impl PartitionMetrics {
             ffm_collector_calls: counter("ffm_collector_calls"),
             batches_produced: counter("batches_produced"),
             parquet_batches_received: counter("parquet_batches_received"),
-            position_map_identity: counter("position_map_identity"),
-            position_map_bitmap: counter("position_map_bitmap"),
-            position_map_runs: counter("position_map_runs"),
             prefetch_wait_time: MetricBuilder::new(metrics)
                 .subset_time("prefetch_wait_time", partition),
             prefetch_wait_count: counter("prefetch_wait_count"),
@@ -275,8 +259,6 @@ impl PartitionMetrics {
             parquet_time: Some(self.parquet_time),
             rows_matched: Some(self.rows_matched),
             rows_pruned: Some(self.rows_pruned_by_page_index),
-            min_skip_run_row_granular: Some(self.min_skip_run_row_granular),
-            min_skip_run_block_granular: Some(self.min_skip_run_block_granular),
             rg_processed: Some(self.row_groups_processed),
             rg_skipped: Some(self.row_groups_skipped),
             rg_bloom_pruned: Some(self.rg_bloom_pruned),
@@ -287,9 +269,6 @@ impl PartitionMetrics {
             ffm_collector_calls: Some(self.ffm_collector_calls),
             batches_produced: Some(self.batches_produced),
             parquet_batches_received: Some(self.parquet_batches_received),
-            position_map_identity: Some(self.position_map_identity),
-            position_map_bitmap: Some(self.position_map_bitmap),
-            position_map_runs: Some(self.position_map_runs),
             prefetch_wait_time: Some(self.prefetch_wait_time),
             prefetch_wait_count: Some(self.prefetch_wait_count),
             coalesce_time: Some(self.coalesce_time),

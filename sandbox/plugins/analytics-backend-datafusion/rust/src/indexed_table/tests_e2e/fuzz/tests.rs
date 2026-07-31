@@ -74,7 +74,7 @@ async fn fuzz_small() {
 
 /// Tight RG + page boundaries (16k rows, 1024 per RG, 64 per page,
 /// very sparse Collector matches to produce long skip-runs).
-/// Exercises `min_skip_run` + `PositionMap`.
+/// Exercises row-granular selection + row-position mapping.
 #[tokio::test(flavor = "multi_thread")]
 async fn fuzz_block_boundaries() {
     run_fuzz("fuzz_block_boundaries", 50, FixtureConfig::block_boundaries).await;
@@ -205,12 +205,10 @@ async fn fuzz_multi_column_or() {
     run_fuzz("fuzz_multi_column_or", 50, FixtureConfig::multi_column_or).await;
 }
 
-/// Block-granular dense: 200k rows in 100k-row RGs with 50% collector
-/// density. Auto strategy picks block-granular `min_skip_run` (selectivity
-/// well above 3% threshold), and the large RGs ensure real skip runs
-/// (> 1024 rows) survive coalescing. This is the production regime for
-/// wide-selectivity queries and catches mask-alignment bugs between
-/// the lazily built candidate mask and `PositionMap` in `finalize_batch`.
+/// Wide-selectivity dense: 200k rows in 100k-row RGs with 50% collector
+/// density. The production regime for broad queries — large row groups with
+/// long alternating select/skip runs, which stresses `refine_batch`'s mapping
+/// of delivered rows back to row-group positions via `__row_id__`.
 #[tokio::test(flavor = "multi_thread")]
 async fn fuzz_block_granular_dense() {
     run_fuzz(

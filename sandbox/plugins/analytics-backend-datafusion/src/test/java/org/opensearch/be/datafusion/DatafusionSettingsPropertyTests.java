@@ -36,7 +36,7 @@ public class DatafusionSettingsPropertyTests extends OpenSearchTestCase {
 
             WireConfigSnapshot before = datafusionSettings.getSnapshot();
 
-            int settingIndex = randomIntBetween(0, 5);
+            int settingIndex = randomIntBetween(0, 3);
             Settings newSettings;
 
             switch (settingIndex) {
@@ -48,8 +48,7 @@ public class DatafusionSettingsPropertyTests extends OpenSearchTestCase {
                     assertEquals(newBatchSize, afterBatch.batchSize());
                     assertEquals(before.targetPartitions(), afterBatch.targetPartitions());
                     assertEquals(before.listingTablePushdownFilters(), afterBatch.listingTablePushdownFilters());
-                    assertEquals(before.minSkipRunDefault(), afterBatch.minSkipRunDefault());
-                    assertEquals(before.minSkipRunSelectivityThreshold(), afterBatch.minSkipRunSelectivityThreshold(), 0.0);
+                    assertEquals(before.indexedPushdownFilters(), afterBatch.indexedPushdownFilters());
                     break;
 
                 case 1: // listing_table.pushdown_filters
@@ -60,35 +59,10 @@ public class DatafusionSettingsPropertyTests extends OpenSearchTestCase {
                     assertEquals(newPushdown, afterPushdown.listingTablePushdownFilters());
                     assertEquals(before.batchSize(), afterPushdown.batchSize());
                     assertEquals(before.targetPartitions(), afterPushdown.targetPartitions());
-                    assertEquals(before.minSkipRunDefault(), afterPushdown.minSkipRunDefault());
-                    assertEquals(before.minSkipRunSelectivityThreshold(), afterPushdown.minSkipRunSelectivityThreshold(), 0.0);
+                    assertEquals(before.indexedPushdownFilters(), afterPushdown.indexedPushdownFilters());
                     break;
 
-                case 2: // min_skip_run_default
-                    int newMinSkipRun = randomIntBetween(1, 100_000);
-                    newSettings = Settings.builder().put("datafusion.indexed.min_skip_run_default", newMinSkipRun).build();
-                    clusterSettings.applySettings(newSettings);
-                    WireConfigSnapshot afterSkipRun = datafusionSettings.getSnapshot();
-                    assertEquals(newMinSkipRun, afterSkipRun.minSkipRunDefault());
-                    assertEquals(before.batchSize(), afterSkipRun.batchSize());
-                    assertEquals(before.targetPartitions(), afterSkipRun.targetPartitions());
-                    assertEquals(before.listingTablePushdownFilters(), afterSkipRun.listingTablePushdownFilters());
-                    assertEquals(before.minSkipRunSelectivityThreshold(), afterSkipRun.minSkipRunSelectivityThreshold(), 0.0);
-                    break;
-
-                case 3: // min_skip_run_selectivity_threshold
-                    double newThreshold = randomDoubleBetween(0.0, 1.0, true);
-                    newSettings = Settings.builder().put("datafusion.indexed.min_skip_run_selectivity_threshold", newThreshold).build();
-                    clusterSettings.applySettings(newSettings);
-                    WireConfigSnapshot afterThreshold = datafusionSettings.getSnapshot();
-                    assertEquals(newThreshold, afterThreshold.minSkipRunSelectivityThreshold(), 1e-15);
-                    assertEquals(before.batchSize(), afterThreshold.batchSize());
-                    assertEquals(before.targetPartitions(), afterThreshold.targetPartitions());
-                    assertEquals(before.listingTablePushdownFilters(), afterThreshold.listingTablePushdownFilters());
-                    assertEquals(before.minSkipRunDefault(), afterThreshold.minSkipRunDefault());
-                    break;
-
-                case 4: // max_slice_count
+                case 2: // max_slice_count
                     int newSliceCount = randomIntBetween(1, 32);
                     newSettings = Settings.builder().put("search.concurrent.max_slice_count", newSliceCount).build();
                     clusterSettings.applySettings(newSettings);
@@ -96,19 +70,17 @@ public class DatafusionSettingsPropertyTests extends OpenSearchTestCase {
                     assertEquals(Math.min(newSliceCount, Runtime.getRuntime().availableProcessors()), afterSlice.targetPartitions());
                     assertEquals(before.batchSize(), afterSlice.batchSize());
                     assertEquals(before.listingTablePushdownFilters(), afterSlice.listingTablePushdownFilters());
-                    assertEquals(before.minSkipRunDefault(), afterSlice.minSkipRunDefault());
-                    assertEquals(before.minSkipRunSelectivityThreshold(), afterSlice.minSkipRunSelectivityThreshold(), 0.0);
+                    assertEquals(before.indexedPushdownFilters(), afterSlice.indexedPushdownFilters());
                     break;
 
-                case 5: // concurrent_search_mode
+                case 3: // concurrent_search_mode
                     newSettings = Settings.builder().put("search.concurrent_segment_search.mode", "none").build();
                     clusterSettings.applySettings(newSettings);
                     WireConfigSnapshot afterMode = datafusionSettings.getSnapshot();
                     assertEquals(1, afterMode.targetPartitions());
                     assertEquals(before.batchSize(), afterMode.batchSize());
                     assertEquals(before.listingTablePushdownFilters(), afterMode.listingTablePushdownFilters());
-                    assertEquals(before.minSkipRunDefault(), afterMode.minSkipRunDefault());
-                    assertEquals(before.minSkipRunSelectivityThreshold(), afterMode.minSkipRunSelectivityThreshold(), 0.0);
+                    assertEquals(before.indexedPushdownFilters(), afterMode.indexedPushdownFilters());
                     break;
 
                 default:
@@ -124,21 +96,21 @@ public class DatafusionSettingsPropertyTests extends OpenSearchTestCase {
             datafusionSettings.registerListeners(clusterSettings);
 
             int newBatchSize = randomIntBetween(1, 1_000_000);
-            double newThreshold = randomDoubleBetween(0.0, 1.0, true);
+            boolean newIndexedPushdown = randomBoolean();
 
             clusterSettings.applySettings(
                 Settings.builder()
                     .put("datafusion.batch_size", newBatchSize)
-                    .put("datafusion.indexed.min_skip_run_selectivity_threshold", newThreshold)
+                    .put("datafusion.indexed.pushdown_filters", newIndexedPushdown)
                     .build()
             );
 
             WireConfigSnapshot finalSnapshot = datafusionSettings.getSnapshot();
 
             assertEquals(newBatchSize, finalSnapshot.batchSize());
-            assertEquals(newThreshold, finalSnapshot.minSkipRunSelectivityThreshold(), 1e-15);
+            assertEquals(newIndexedPushdown, finalSnapshot.indexedPushdownFilters());
+            // Untouched settings keep their defaults.
             assertEquals(false, finalSnapshot.listingTablePushdownFilters());
-            assertEquals(1024, finalSnapshot.minSkipRunDefault());
         }
     }
 }

@@ -40,7 +40,7 @@ use crate::indexed_table::eval::bitmap_tree::BitmapTreeEvaluator;
 use crate::indexed_table::eval::{RowGroupBitsetSource, TreeBitsetSource};
 use crate::indexed_table::index::RowGroupDocsCollector;
 use crate::indexed_table::page_pruner::PagePruner;
-use crate::indexed_table::stream::{FilterStrategy, RowGroupInfo};
+use crate::indexed_table::stream::RowGroupInfo;
 use crate::indexed_table::table_provider::{
     IndexedTableConfig, IndexedTableProvider, SegmentFileInfo,
 };
@@ -225,7 +225,6 @@ async fn collect_row_ids(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
@@ -237,6 +236,7 @@ async fn collect_row_ids(
         pushdown_predicate: None,
         query_config: Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: true,
         prune_tree_config: None,
         sort_fields: vec![],

@@ -39,6 +39,7 @@
 //! Swapping impls requires only passing different `Arc`s at construction.
 
 pub mod bitmap_tree;
+pub mod decode_predicate;
 pub mod eval_helpers;
 pub mod predicate_evaluator;
 pub mod single_collector;
@@ -84,7 +85,6 @@ use super::bool_tree::ResolvedNode;
 use super::page_pruner::PagePruneMetrics;
 use super::page_pruner::PagePruner;
 use super::page_pruner::StatsPruneTree;
-use super::row_selection::PositionMap;
 use super::stream::RowGroupInfo;
 use datafusion::parquet::arrow::arrow_reader::RowSelection;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
@@ -108,6 +108,116 @@ pub enum CollectorCallStrategy {
     PageRangeSplit,
 }
 
+/// RG-relative positions of the rows in one delivered batch.
+///
+/// Backed by the `__row_id__` column the indexed scan projects. `__row_id__` is
+/// a physical `INT64 REQUIRED` column that every OpenSearch parquet writer
+/// appends, holding the row's position within the file (see
+/// `parquet-data-format`'s `merge/schema.rs` and the sorting writer's
+/// sequential rewrite). Rebasing by the row group's first row yields the
+/// RG-relative position an evaluator needs to look up a Lucene bit.
+///
+/// This replaces the former `PositionMap`, which reconstructed the same
+/// information from delivery offsets and therefore had to be kept in lockstep
+/// with whatever the decoder skipped.
+pub struct RowPositions<'a> {
+    /// Delivered `__row_id__` values, or `None` when the scan did not project
+    /// the column because no evaluator asked for positions.
+    row_ids: Option<&'a datafusion::arrow::array::Int64Array>,
+    /// Row count, valid whether or not `row_ids` is present.
+    len: usize,
+    rg_first_row: i64,
+}
+
+impl<'a> RowPositions<'a> {
+    /// Wrap the delivered `__row_id__` values for a row group starting at
+    /// `rg_first_row` (file-relative).
+    pub fn new(row_ids: &'a datafusion::arrow::array::Int64Array, rg_first_row: i64) -> Self {
+        Self {
+            len: row_ids.len(),
+            row_ids: Some(row_ids),
+            rg_first_row,
+        }
+    }
+
+    /// Row positions for a batch whose scan did not project `__row_id__`.
+    ///
+    /// Only legitimate for evaluators reporting `needs_row_positions() == false`
+    /// — their refinement is an expression over the batch's own columns and only
+    /// reads `len()`. If an evaluator that *does* consult positions receives
+    /// this, that is a contract violation between the evaluator and
+    /// `IndexedTableProvider::scan`; callers must reject it rather than let
+    /// `rg_position` return `None` for every row, which would silently produce
+    /// an empty result. See `RowPositions::require_positions`.
+    pub fn unavailable(len: usize) -> Self {
+        Self {
+            row_ids: None,
+            len,
+            rg_first_row: 0,
+        }
+    }
+
+    /// Number of delivered rows.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Whether positions are actually available.
+    ///
+    /// Streams call this before handing the value to an evaluator that declared
+    /// `needs_row_positions()`, so a missing `__row_id__` column fails loudly
+    /// instead of yielding an empty answer.
+    #[inline]
+    pub fn are_available(&self) -> bool {
+        self.row_ids.is_some()
+    }
+
+    /// RG-relative position of delivered row `i`.
+    ///
+    /// `None` when positions were not projected, or when the stored id precedes
+    /// this row group — the latter would mean the scan handed us a row from
+    /// elsewhere in the file, so callers skip the row rather than guess.
+    #[inline]
+    pub fn rg_position(&self, i: usize) -> Option<usize> {
+        let id = self.row_ids?.value(i);
+        usize::try_from(id.checked_sub(self.rg_first_row)?).ok()
+    }
+
+    /// Absolute (file-relative) row id of delivered row `i`, when projected.
+    #[inline]
+    pub fn file_row_id(&self, i: usize) -> Option<i64> {
+        Some(self.row_ids?.value(i))
+    }
+
+    /// True when the delivered rows form one gapless ascending run, i.e. row
+    /// `i` sits at position `rg_position(0) + i`.
+    ///
+    /// This is the common case — a whole row group, or one contiguous stretch of
+    /// a `RowSelection` — and it lets callers index candidate bits by a linear
+    /// offset instead of looking up every row. The endpoint check rejects most
+    /// gapped batches in O(1) before the interior scan runs.
+    pub fn is_contiguous_run(&self) -> bool {
+        let Some(row_ids) = self.row_ids else {
+            // No positions to be contiguous over; callers must not take the
+            // linear fast path.
+            return false;
+        };
+        if self.len <= 1 {
+            return true;
+        }
+        if row_ids.value(self.len - 1) - row_ids.value(0) != self.len as i64 - 1 {
+            return false;
+        }
+        row_ids.values().windows(2).all(|w| w[1] == w[0] + 1)
+    }
+}
+
 /// Per-row-group bitset producer. Plugs into `IndexedStream`.
 pub trait RowGroupBitsetSource: Send + Sync {
     /// Build candidate[pre-scan] bitset for this RG. `None` = skip RG entirely.
@@ -123,39 +233,118 @@ pub trait RowGroupBitsetSource: Send + Sync {
     ///
     /// - `rg_state` is the `context` returned by the last `prefetch_rg` for
     ///   this RG — evaluators downcast it to their own per-RG state type.
-    /// - `position_map` translates delivered batch-row indices to RG-relative
-    ///   positions (identity under full-scan; non-trivial under
-    ///   block-granular RowSelection).
-    /// - `None` = no refinement mask needed (e.g. `SingleCollectorEvaluator`
-    ///   relies on DataFusion's own predicate pushdown, so the candidate
-    ///   stage's RowSelection is authoritative).
+    /// - `row_positions` gives, for each delivered row, its RG-relative
+    ///   position. It is derived from the `__row_id__` column the scan projects
+    ///   (a physical INT64 column whose value is the row's position within the
+    ///   file), rebased to the row group. Because the value travels with the
+    ///   row, it stays correct no matter what the decoder skipped —
+    ///   `RowSelection`, `RowFilter`, or page pruning — which is why evaluators
+    ///   no longer need to reconstruct positions from delivery offsets.
+    /// - `None` = no refinement mask needed, i.e. the candidate stage's
+    ///   `RowSelection` is already authoritative for this batch. Returning it is
+    ///   a claim that every delivered row survives, so an evaluator must not do
+    ///   so for a selection that was coalesced (see
+    ///   [`Self::masks_non_candidates`]).
+    ///
+    /// The returned mask, when `Some`, is indexed by delivered row and has
+    /// length `row_positions.len()`.
     fn on_batch_mask(
         &self,
         rg_state: &dyn Any,
         rg_first_row: i64,
-        position_map: &PositionMap,
-        batch_offset: usize,
-        batch_len: usize,
+        row_positions: &RowPositions,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String>;
 
-    /// Whether `IndexedStream` should build a post-decode `current_mask` from
-    /// candidate offsets on the full-scan strategy. `true` for evaluators
-    /// whose `on_batch_mask` returns `None` (e.g. `SingleCollectorEvaluator` —
-    /// candidates are the only per-row filter available post-decode).
-    /// `false` for evaluators whose `on_batch_mask` returns an exact refinement
-    /// mask (e.g. `TreeBitsetSource` — refinement is authoritative and would
-    /// ignore `current_mask` anyway). Default `true` keeps the current
-    /// behaviour for any future evaluator that forgets to override.
-    fn needs_row_mask(&self) -> bool {
-        true
+    /// Whether [`Self::on_batch_mask`] rejects rows outside the candidate set
+    /// this evaluator returned from [`Self::prefetch_rg`].
+    ///
+    /// This licenses the *only* transformation that hands the decoder rows the
+    /// candidate stage did not ask for: coalescing short skip runs into the
+    /// surrounding `select` (see
+    /// [`min_skip_run_for`](crate::indexed_table::access_provider)). Coalescing
+    /// trades a few over-read rows for a shorter selector list, and is correct
+    /// only because refinement then drops those rows by position. An evaluator
+    /// that would instead emit an over-read row — because its `on_batch_mask`
+    /// returns `None`, so the `RowSelection` *is* the answer — must keep the
+    /// selection exactly row-granular.
+    ///
+    /// Default `false`: an evaluator opts in only when its mask is a function of
+    /// the candidate set and not just of the batch's own columns. A residual over
+    /// decoded columns is not sufficient on its own — it rejects rows the
+    /// predicate excludes, but says nothing about candidate membership.
+    ///
+    /// Opting in is a claim about the mask, not a guarantee it can be built:
+    /// membership is tested by row position, so the caller additionally requires
+    /// that the scan deliver `__row_id__` before it coalesces.
+    fn masks_non_candidates(&self) -> bool {
+        false
+    }
+
+    /// Refine *during* decode instead of after it.
+    ///
+    /// `Some` hands parquet an [`ArrowPredicate`] that is installed in the
+    /// scan's `RowFilter`. Parquet then decodes only the predicate's own
+    /// columns, applies the mask, and decodes the projected columns for
+    /// surviving rows only — so a column the predicate does not read is never
+    /// materialized for a row that is about to be dropped. This is strictly
+    /// better than post-decode refinement whenever the refinement is selective
+    /// and the projection is wider than what the refinement reads.
+    ///
+    /// `None` (the default) keeps refinement in [`Self::on_batch_mask`], which
+    /// runs on fully decoded batches. That is the right choice when the
+    /// refinement is *not* selective enough to pay for the `RowFilter`'s extra
+    /// decode pass — parquet decodes the predicate columns, then decodes the
+    /// projection again for survivors, so a predicate that keeps nearly
+    /// everything pays twice for nearly nothing.
+    ///
+    /// Either way the mask itself comes from [`Self::on_batch_mask`]; this only
+    /// chooses *when* parquet asks for it. One
+    /// [`RefinementPredicate`](decode_predicate::RefinementPredicate) wraps any
+    /// evaluator, so nothing here builds a predicate.
+    ///
+    /// Requires `needs_row_positions()`: the predicate identifies rows by
+    /// `__row_id__`, since a row's position in the batch is meaningless once
+    /// earlier predicates have dropped rows.
+    ///
+    /// [`ArrowPredicate`]: datafusion::parquet::arrow::arrow_reader::ArrowPredicate
+    fn refines_during_decode(&self) -> bool {
+        false
+    }
+
+    /// Names of the columns [`Self::on_batch_mask`] reads from the batch.
+    ///
+    /// Only consulted when [`Self::refines_during_decode`] is `true`: an
+    /// `ArrowPredicate` is handed *only* the columns its `ProjectionMask` names,
+    /// so anything the refinement evaluates must be listed here or the
+    /// expression will fail against a batch that lacks it. `__row_id__` is added
+    /// by the caller and need not be listed.
+    ///
+    /// Empty means the refinement reads no data columns — it works from row
+    /// positions alone, as the pure-collector shapes do.
+    fn refinement_columns(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Whether `on_batch_mask` consults [`RowPositions`], i.e. whether the scan
+    /// must project `__row_id__`.
+    ///
+    /// `true` for evaluators that refine against external per-row state keyed by
+    /// row position — the Lucene-backed shapes. `false` (the default) for
+    /// evaluators whose refinement is a plain expression over the delivered
+    /// batch, which is the predicate-only path; those scans read no extra column.
+    fn needs_row_positions(&self) -> bool {
+        false
     }
 
     /// Whether this evaluator requires parquet's `with_predicate` pushdown
-    /// to be OFF. `true` when the evaluator applies its own refinement in
-    /// `on_batch_mask` over the full delivered batch (using `PositionMap`
-    /// for Collector lookups) — pushdown would drop rows mid-decode and
-    /// misalign indices.
+    /// to be OFF. `true` when the evaluator would otherwise evaluate the same
+    /// residual twice — once during decode and once in `on_batch_mask`.
+    ///
+    /// Note this is no longer about index alignment: since refinement reads
+    /// positions from the delivered `__row_id__` column, a RowFilter dropping
+    /// rows mid-decode cannot misalign anything. The remaining reason to forbid
+    /// pushdown is duplicated work / ownership of exactness.
     ///
     /// Default `false`: pushdown decided by the stream's base policy.
     /// Overridden to `true` by evaluators that must see the complete
@@ -317,19 +506,15 @@ pub trait TreeEvaluator: Send + Sync {
     /// record batch, consuming the candidate-stage `state` for the RG this
     /// batch belongs to.
     ///
-    /// `position_map` translates delivered batch-row index to RG-relative
-    /// position (identity under full-scan; non-trivial under block-granular
-    /// RowSelection). `batch_offset` is the delivered-row index of the
-    /// first row in this batch.
+    /// `row_positions` gives each delivered row's RG-relative position, taken
+    /// from the projected `__row_id__` column.
     fn on_batch(
         &self,
         tree: &ResolvedNode,
         state: &TreePrefetch,
         batch: &RecordBatch,
         rg_first_row: i64,
-        position_map: &PositionMap,
-        batch_offset: usize,
-        batch_len: usize,
+        row_positions: &RowPositions,
     ) -> Result<BooleanArray, String>;
 }
 
@@ -496,7 +681,7 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             let mut rg_candidates = RoaringBitmap::new();
             let mut run_start: Option<u32> = None;
             let mut run_end: u32 = 0; // inclusive
-            let mut flush = |bm: &mut RoaringBitmap, start: u32, end_inclusive: u32| {
+            let flush = |bm: &mut RoaringBitmap, start: u32, end_inclusive: u32| {
                 // Range API is half-open; end_inclusive+1 handles the
                 // edge case at u32::MAX via saturating add (roaring
                 // clamps at u32::MAX internally).
@@ -567,46 +752,76 @@ impl RowGroupBitsetSource for TreeBitsetSource {
         &self,
         rg_state: &dyn Any,
         rg_first_row: i64,
-        position_map: &PositionMap,
-        batch_offset: usize,
-        batch_len: usize,
+        row_positions: &RowPositions,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String> {
         let state = rg_state.downcast_ref::<TreePrefetch>().ok_or_else(|| {
             "TreeBitsetSource::on_batch_mask: rg_state is not TreePrefetch".to_string()
         })?;
-        let mask = self.evaluator.on_batch(
-            &self.tree,
-            state,
-            batch,
-            rg_first_row,
-            position_map,
-            batch_offset,
-            batch_len,
-        )?;
+        let mask =
+            self.evaluator
+                .on_batch(&self.tree, state, batch, rg_first_row, row_positions)?;
         Ok(Some(mask))
     }
 
-    /// `TreeBitsetSource` always returns `Some(mask)` from `on_batch_mask` —
-    /// the refinement mask is the exact per-row answer. `finalize_batch`
-    /// ignores `current_mask` in that branch, so building it from candidates
-    /// is wasted work.
-    fn needs_row_mask(&self) -> bool {
-        false
+    /// Collector leaves are looked up by row position, so the tree path always
+    /// needs `__row_id__`.
+    fn needs_row_positions(&self) -> bool {
+        true
     }
 
-    /// BitmapTree walks the BoolNode in `on_batch_mask` using
-    /// `PositionMap` for Collector lookups. If parquet's pushdown
-    /// dropped rows mid-decode, our delivered batch would have a
-    /// different size than the PositionMap expects, causing
-    /// misaligned Collector lookups. Plus, the pushdown predicate
-    /// (if any reached us via `scan(filters)`) could contain the
-    /// `index_filter(...)` UDF marker whose body panics.
-    ///
-    /// So: always forbid parquet pushdown for BitmapTree. Phase 2
-    /// will do the actual filter and produce filtered values.
+    /// The tree walk re-evaluates every leaf against the delivered rows,
+    /// resolving `Collector` leaves by row position out of the per-leaf bitmaps
+    /// the candidate stage stored. A row the candidate stage did not select
+    /// therefore misses those bitmaps and the mask rejects it — so the tree path
+    /// tolerates over-read rows.
+    fn masks_non_candidates(&self) -> bool {
+        true
+    }
+
+    /// BitmapTree owns the exact answer in `on_batch_mask`, so a parquet
+    /// RowFilter would only duplicate work. Row alignment is no longer a
+    /// concern — Collector lookups use the delivered `__row_id__` values, which
+    /// stay correct however many rows the decoder dropped. The remaining hard
+    /// reason is that a pushdown predicate reaching us via `scan(filters)` can
+    /// contain the `index_filter(...)` UDF marker, whose body panics.
     fn forbid_parquet_pushdown(&self) -> bool {
         true
+    }
+
+    /// The tree path always refines: the candidate stage yields a superset and
+    /// `on_batch_mask` produces the exact answer. Deciding that during decode
+    /// keeps the projection from being materialized for superset rows the
+    /// refinement rejects.
+    fn refines_during_decode(&self) -> bool {
+        true
+    }
+
+    /// Every column any `Predicate` leaf of the tree references. Collector
+    /// leaves contribute nothing — they are resolved from row positions.
+    fn refinement_columns(&self) -> Vec<String> {
+        fn walk(node: &ResolvedNode, out: &mut HashSet<String>) {
+            match node {
+                ResolvedNode::Predicate(expr) => {
+                    for column in datafusion::physical_expr::utils::collect_columns(expr) {
+                        out.insert(column.name().to_string());
+                    }
+                }
+                ResolvedNode::And(children) | ResolvedNode::Or(children) => {
+                    children.iter().for_each(|c| walk(c, out))
+                }
+                ResolvedNode::Not(inner) => walk(inner, out),
+                ResolvedNode::Collector { .. } => {}
+                ResolvedNode::DelegationPossible { original_expr, .. } => {
+                    for column in datafusion::physical_expr::utils::collect_columns(original_expr) {
+                        out.insert(column.name().to_string());
+                    }
+                }
+            }
+        }
+        let mut out = HashSet::new();
+        walk(&self.tree, &mut out);
+        out.into_iter().collect()
     }
 }
 
@@ -787,7 +1002,7 @@ mod tests {
     }
 
     /// Leaf source that returns empty bitmaps — enough to compose a
-    /// TreeBitsetSource purely for testing its `needs_row_mask` override.
+    /// TreeBitsetSource for trait-level tests.
     struct NoopLeaves;
     impl LeafBitmapSource for NoopLeaves {
         fn leaf_bitmap(
@@ -828,44 +1043,9 @@ mod tests {
             _state: &TreePrefetch,
             _batch: &RecordBatch,
             _rg_first_row: i64,
-            _position_map: &PositionMap,
-            _batch_offset: usize,
-            batch_len: usize,
+            row_positions: &RowPositions,
         ) -> Result<BooleanArray, String> {
-            Ok(BooleanArray::from(vec![false; batch_len]))
+            Ok(BooleanArray::from(vec![false; row_positions.len()]))
         }
-    }
-
-    #[test]
-    fn tree_bitset_source_does_not_need_row_mask() {
-        // `TreeBitsetSource::on_batch_mask` returns `Some(refinement_mask)`.
-        // `finalize_batch` ignores `current_mask` in that branch, so
-        // `IndexedStream` should skip building it.
-
-        #[derive(Debug)]
-        struct Dummy;
-        impl RowGroupDocsCollector for Dummy {
-            fn collect_packed_u64_bitset(&self, _: i32, _: i32) -> Result<Vec<u64>, String> {
-                Ok(vec![])
-            }
-        }
-        let source = TreeBitsetSource {
-            tree: Arc::new(ResolvedNode::Collector {
-                provider_key: 0,
-                collector: Arc::new(Dummy),
-            }),
-            evaluator: Arc::new(NoopTreeEvaluator),
-            leaves: Arc::new(NoopLeaves),
-            page_pruner: empty_pruner(),
-            cost_predicate: 1,
-            cost_collector: 10,
-            max_collector_parallelism: 1,
-            pruning_predicates: std::sync::Arc::new(HashMap::new()),
-            page_prune_metrics: None,
-            collector_strategy: CollectorCallStrategy::TightenOuterBounds,
-            stats_prune_tree: None,
-            rg_index_to_pos: HashMap::new(),
-        };
-        assert!(!source.needs_row_mask());
     }
 }

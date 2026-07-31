@@ -119,30 +119,6 @@ async fn metrics_batches_counters_relate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn metrics_position_map_variants_sum_to_rgs_processed() {
-    // Every RG that was processed (non-empty candidate set) produces
-    // exactly one PositionMap variant count. The sum across the three
-    // variants equals `row_groups_processed`.
-    let tree = BoolNode::And(vec![index_leaf(1)]);
-    let (_, plan) = run_tree_and_plan(tree).await;
-    let m = aggregate_metrics(&plan);
-    let identity = get_counter(&m, "position_map_identity");
-    let bitmap = get_counter(&m, "position_map_bitmap");
-    let runs = get_counter(&m, "position_map_runs");
-    let rg_processed = get_counter(&m, "row_groups_processed");
-    assert_eq!(
-        identity + bitmap + runs,
-        rg_processed,
-        "identity+bitmap+runs ({}+{}+{}={}) should equal rg_processed ({})",
-        identity,
-        bitmap,
-        runs,
-        identity + bitmap + runs,
-        rg_processed
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_rows_pruned_plus_rows_matched_upper_bounded() {
     // rows_matched = candidates per RG; rows_pruned = (rg rows -
     // candidates) per RG. Their sum equals total rows in processed RGs
@@ -159,23 +135,6 @@ async fn metrics_rows_pruned_plus_rows_matched_upper_bounded() {
         pruned
     );
     assert!(matched >= 5, "at least 5 apple rows should match");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn metrics_min_skip_run_bucket_consistency() {
-    // Each processed RG lands in exactly one of the two min_skip_run
-    // buckets. Sum equals row_groups_processed.
-    let tree = BoolNode::And(vec![index_leaf(1)]);
-    let (_, plan) = run_tree_and_plan(tree).await;
-    let m = aggregate_metrics(&plan);
-    let row_granular = get_counter(&m, "min_skip_run_row_granular");
-    let block_granular = get_counter(&m, "min_skip_run_block_granular");
-    let rg_processed = get_counter(&m, "row_groups_processed");
-    assert_eq!(
-        row_granular + block_granular,
-        rg_processed,
-        "row_granular+block_granular should equal rg_processed"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -213,8 +213,12 @@ impl DenseBitset {
         bm
     }
 
-    /// Build a row-granular `RowSelection` by word-level run detection, then
-    /// coalesce skips shorter than `min_skip_run` into adjacent selects.
+    /// Build a `RowSelection` by word-level run detection, then coalesce skips
+    /// shorter than `min_skip_run` into adjacent selects.
+    ///
+    /// `min_skip_run = 1` disables coalescing and yields the row-granular
+    /// selection. See [`row_selection`](crate::indexed_table::row_selection) for
+    /// why the knob exists.
     pub fn to_row_selection(&self, min_skip_run: usize) -> RowSelection {
         if self.len == 0 {
             return RowSelection::from(Vec::<RowSelector>::new());
@@ -227,7 +231,7 @@ impl DenseBitset {
         // Current run accumulator: (is_select, length).
         let mut run_select = false;
         let mut run_len = 0usize;
-        let mut flush = |raw: &mut Vec<RowSelector>, is_select: bool, len: usize| {
+        let flush = |raw: &mut Vec<RowSelector>, is_select: bool, len: usize| {
             if len == 0 {
                 return;
             }
@@ -288,12 +292,13 @@ impl DenseBitset {
         debug_assert_eq!(pos, self.len);
         flush(&mut raw, run_select, run_len);
 
-        let selection = RowSelection::from(raw);
         if min_skip_run <= 1 {
-            selection
-        } else {
-            super::row_selection::coalesce_row_selection_with_min_skip_run(selection, min_skip_run)
+            return RowSelection::from(raw);
         }
+        crate::indexed_table::row_selection::coalesce_row_selection_with_min_skip_run(
+            RowSelection::from(raw),
+            min_skip_run,
+        )
     }
 
     /// Zero-copy `BooleanArray` over bits `[offset, offset+len)`. Used when
@@ -451,7 +456,7 @@ mod tests {
 
     #[test]
     fn to_row_selection_matches_reference() {
-        use crate::indexed_table::row_selection::build_row_selection_with_min_skip_run;
+        use crate::indexed_table::row_selection::build_row_selection;
         // Deterministic pseudo-random patterns at several densities.
         for (seed, density) in [(1u64, 0.9), (2, 0.5), (3, 0.05), (4, 1.0), (5, 0.0)] {
             let len = 1000usize;
@@ -468,14 +473,13 @@ mod tests {
             }
             let d = dense_from(&bits, len);
             let r = roaring_from(&bits);
-            for min_skip_run in [1usize, 4, 100] {
-                let got = d.to_row_selection(min_skip_run);
-                let expected = build_row_selection_with_min_skip_run(&r, len, min_skip_run);
-                assert_eq!(
-                    got, expected,
-                    "seed={seed} density={density} min_skip_run={min_skip_run}"
-                );
-            }
+            // The packed word-level run detection must agree exactly with the
+            // roaring-bitmap builder at every density.
+            assert_eq!(
+                d.to_row_selection(1),
+                build_row_selection(&r, len),
+                "seed={seed} density={density}"
+            );
         }
     }
 

@@ -76,12 +76,12 @@ public class IndexFilterCallbackTests extends OpenSearchTestCase {
     }
 
     /**
-     * Lifecycle assertion: invoking an upcall on an unregistered contextId trips
-     * {@code assert binding != null}. With {@code -ea} on (test default), this throws
-     * AssertionError rather than silently returning -1 — surfacing missing-register
-     * or premature-unregister bugs.
+     * Lifecycle assertion: invoking an ACTIVE upcall (create/collect) on an unregistered
+     * contextId trips {@code assert binding != null}. With {@code -ea} on (test default),
+     * this throws AssertionError rather than silently returning -1 — surfacing
+     * missing-register or premature-unregister bugs.
      */
-    public void testUnregisteredContextIdAsserts() {
+    public void testUnregisteredContextIdAssertsOnActiveUpcalls() {
         FilterTreeCallbacks.unregister(CTX);
         expectThrows(AssertionError.class, () -> FilterTreeCallbacks.createProvider(CTX, 1));
         expectThrows(AssertionError.class, () -> FilterTreeCallbacks.createCollector(CTX, 1, 0L, 0, 64));
@@ -91,8 +91,20 @@ public class IndexFilterCallbackTests extends OpenSearchTestCase {
                 FilterTreeCallbacks.collectDocs(CTX, 1, 0, 64, buf, 1);
             }
         });
-        expectThrows(AssertionError.class, () -> FilterTreeCallbacks.releaseCollector(CTX, Integer.MAX_VALUE));
-        expectThrows(AssertionError.class, () -> FilterTreeCallbacks.releaseProvider(CTX, Integer.MAX_VALUE));
+    }
+
+    /**
+     * Release upcalls on an unregistered contextId must NOT throw — a native handle drop
+     * running asynchronously on a tokio worker can deliver releaseProvider/releaseCollector
+     * after the query's binding was unregistered (and {@link FilterDelegationHandle#close()}
+     * already freed everything). Throwing here would rethrow an AssertionError across the FFM
+     * upcall stub and abort the JVM. This is the regression guard for that crash.
+     */
+    public void testReleaseUpcallsTolerateUnregisteredContextId() {
+        FilterTreeCallbacks.unregister(CTX);
+        // Neither should throw; both are no-ops when the binding is already gone.
+        FilterTreeCallbacks.releaseCollector(CTX, Integer.MAX_VALUE);
+        FilterTreeCallbacks.releaseProvider(CTX, Integer.MAX_VALUE);
     }
 
     public void testHandleReturningNegativeOnePropagates() {

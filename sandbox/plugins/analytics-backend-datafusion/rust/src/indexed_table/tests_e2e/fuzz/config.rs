@@ -133,12 +133,6 @@ pub(in crate::indexed_table::tests_e2e) struct FixtureConfig {
     /// Exercises the grid multi-column-OR pruning path that
     /// `PruningPredicate::split_conjunction` discards in DataFusion.
     pub multi_column_or_pct: f64,
-
-    /// Override `min_skip_run_default` in the query config. When `Some`,
-    /// the harness sets this value instead of the default 1024. Use a
-    /// small value (e.g. 4) to force real skip runs in small RGs,
-    /// exercising the block-granular mask-alignment path.
-    pub min_skip_run_override: Option<usize>,
 }
 
 /// Strategy for placing nulls within a generated column.
@@ -181,7 +175,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -208,12 +201,11 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
     /// Block-boundary focus: cuts RGs + pages at tight multiples so
-    /// `PositionMap` and `min_skip_run` math gets stressed.
+    /// row-to-row-group position mapping gets stressed.
     pub fn block_boundaries(seed: u64) -> Self {
         Self {
             seed,
@@ -235,7 +227,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -261,7 +252,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -329,7 +319,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -359,7 +348,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -386,7 +374,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -417,7 +404,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -445,7 +431,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -473,7 +458,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -500,7 +484,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -529,7 +512,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -562,7 +544,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -595,7 +576,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Clustered { cluster_len: 256 },
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 
@@ -625,16 +605,14 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.3,
-            min_skip_run_override: None,
         }
     }
 
-    /// Block-granular dense: exercises the block-granular `min_skip_run`
-    /// regime where the RowSelection has real skip runs and
-    /// `current_mask` must be built lazily through `PositionMap`. Uses small data
-    /// (10k rows, 2k RGs) but sets `min_skip_run_default = 4` so that
-    /// even small gaps between the 10% candidate matches produce real
-    /// skips — no need for 100k+ row RGs.
+    /// Dense selection over small row groups: exercises many short skip runs
+    /// regime where the RowSelection is highly fragmented: 10% candidate
+    /// density over small data (10k rows, 2k RGs) leaves a real skip between
+    /// most matches, so the selector list is long and delivery is gapped —
+    /// the shape that stresses row-position lookups during refinement.
     pub fn block_granular_dense(seed: u64) -> Self {
         Self {
             seed,
@@ -656,7 +634,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: Some(4),
         }
     }
 
@@ -685,7 +662,6 @@ impl FixtureConfig {
             null_strategy: NullStrategy::Uniform,
             phantom_columns: Vec::new(),
             multi_column_or_pct: 0.0,
-            min_skip_run_override: None,
         }
     }
 }

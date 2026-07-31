@@ -25,7 +25,7 @@ use futures::StreamExt;
 use roaring::RoaringBitmap;
 
 use super::*;
-use crate::indexed_table::row_selection::build_row_selection_with_min_skip_run;
+use crate::indexed_table::row_selection::build_row_selection;
 use crate::shard_table_provider::{ShardFileInfo, ShardTableConfig, ShardTableProvider};
 
 // ── Query phase helper (adapted from row_id_emission.rs) ────────────
@@ -121,11 +121,11 @@ async fn query_phase(tree: BoolNode) -> Vec<i64> {
         query_config: Arc::new({
             let mut qc = crate::datafusion_query_config::DatafusionQueryConfig::test_default();
             qc.target_partitions = 1;
-            qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
+        evaluator_needs_row_positions: true,
         emit_row_ids: true,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -201,7 +201,7 @@ async fn fetch_phase(row_ids: &[i64], fetch_columns: &[&str]) -> Vec<RecordBatch
             }
         }
         if !rg_bitmap.is_empty() {
-            let selection = build_row_selection_with_min_skip_run(&rg_bitmap, rg_num_rows, 1);
+            let selection = build_row_selection(&rg_bitmap, rg_num_rows);
             plan.set(rg_idx, RowGroupAccess::Selection(selection));
         }
     }
@@ -408,11 +408,7 @@ async fn test_qtf_full_loop_two_segments() {
             }
         }
         if !rg_bitmap.is_empty() {
-            let selection = build_row_selection_with_min_skip_run(
-                &rg_bitmap,
-                rg_row_counts[rg_idx] as usize,
-                1,
-            );
+            let selection = build_row_selection(&rg_bitmap, rg_row_counts[rg_idx] as usize);
             plan.set(rg_idx, RowGroupAccess::Selection(selection));
         }
     }

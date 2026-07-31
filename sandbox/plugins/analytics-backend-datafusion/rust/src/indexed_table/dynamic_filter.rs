@@ -180,7 +180,7 @@ impl DynamicRgPruner {
     ///
     /// Conservative — returns `false` (scan the RG) on any uncertainty: missing
     /// stats, non-prunable predicate, or evaluation error. Never skips on doubt.
-    pub fn should_prune_rg(&mut self, metadata: &Arc<ParquetMetaData>, rg_idx: usize) -> bool {
+    pub fn should_prune_rg(&mut self, metadata: &ParquetMetaData, rg_idx: usize) -> bool {
         let Some(ctx) = self.current_pruning_predicate() else {
             return false;
         };
@@ -200,7 +200,7 @@ pub struct RgPruningContext {
 impl RgPruningContext {
     /// True if row group `rg_idx`'s parquet statistics prove it cannot satisfy
     /// the predicate. Conservative: `false` on any missing stats / error.
-    pub fn rg_provably_excluded(&self, metadata: &Arc<ParquetMetaData>, rg_idx: usize) -> bool {
+    pub fn rg_provably_excluded(&self, metadata: &ParquetMetaData, rg_idx: usize) -> bool {
         let Some(rg_meta) = metadata.row_groups().get(rg_idx) else {
             return false;
         };

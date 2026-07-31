@@ -31,7 +31,7 @@ use crate::indexed_table::eval::single_collector::SingleCollectorEvaluator;
 use crate::indexed_table::eval::{RowGroupBitsetSource, TreeBitsetSource};
 use crate::indexed_table::index::RowGroupDocsCollector;
 use crate::indexed_table::page_pruner::PagePruner;
-use crate::indexed_table::stream::{FilterStrategy, RowGroupInfo};
+use crate::indexed_table::stream::RowGroupInfo;
 use crate::indexed_table::substrait_to_tree::{classify_filter, FilterClass};
 use crate::indexed_table::table_provider::{
     EvaluatorFactory, IndexedTableConfig, IndexedTableProvider, SegmentFileInfo,
@@ -125,18 +125,15 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree(
     loaded: &LoadedSegment,
     tree: &GeneratedTree,
 ) -> Vec<i32> {
-    execute_tree_with(_corpus, loaded, tree, None).await
+    execute_tree_with(_corpus, loaded, tree).await
 }
 
 pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with(
     _corpus: &Corpus,
     loaded: &LoadedSegment,
     tree: &GeneratedTree,
-    force_strategy: Option<FilterStrategy>,
 ) -> Vec<i32> {
-    execute_tree_with_plan(_corpus, loaded, tree, force_strategy)
-        .await
-        .0
+    execute_tree_with_plan(_corpus, loaded, tree).await.0
 }
 
 /// Like `execute_tree_with` but also returns the ExecutionPlan so
@@ -145,9 +142,8 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan(
     _corpus: &Corpus,
     loaded: &LoadedSegment,
     tree: &GeneratedTree,
-    force_strategy: Option<FilterStrategy>,
 ) -> (Vec<i32>, Arc<dyn datafusion::physical_plan::ExecutionPlan>) {
-    execute_tree_with_plan_pushdown(_corpus, loaded, tree, force_strategy, Some(false)).await
+    execute_tree_with_plan_pushdown(_corpus, loaded, tree, Some(false)).await
 }
 
 /// Like `execute_tree_with_plan` but allows overriding `force_pushdown`.
@@ -157,18 +153,9 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
     _corpus: &Corpus,
     loaded: &LoadedSegment,
     tree: &GeneratedTree,
-    force_strategy: Option<FilterStrategy>,
     force_pushdown: Option<bool>,
 ) -> (Vec<i32>, Arc<dyn datafusion::physical_plan::ExecutionPlan>) {
-    execute_tree_with_plan_pushdown_filter(
-        _corpus,
-        loaded,
-        tree,
-        force_strategy,
-        force_pushdown,
-        None,
-    )
-    .await
+    execute_tree_with_plan_pushdown_filter(_corpus, loaded, tree, force_pushdown, None).await
 }
 
 /// Full-control execution: optionally attach a logical `Expr` as the
@@ -185,7 +172,6 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
     _corpus: &Corpus,
     loaded: &LoadedSegment,
     tree: &GeneratedTree,
-    force_strategy: Option<FilterStrategy>,
     force_pushdown: Option<bool>,
     where_expr: Option<datafusion::logical_expr::Expr>,
 ) -> (Vec<i32>, Arc<dyn datafusion::physical_plan::ExecutionPlan>) {
@@ -212,7 +198,6 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
     let cfg_max_parallelism = _corpus.config.max_collector_parallelism;
     let cfg_batch_size = _corpus.config.batch_size;
     let cfg_target_partitions = _corpus.config.target_partitions;
-    let cfg_min_skip_run = _corpus.config.min_skip_run_override;
 
     // Build per-leaf PruningPredicates the same way indexed_executor.rs
     // does in production, so our harness exercises real page-pruning
@@ -290,15 +275,11 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let mut qcb = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(cfg_target_partitions.max(1))
-        .force_strategy(force_strategy)
         .batch_size(cfg_batch_size.unwrap_or([128, 1024, 8192][seed as usize % 3]));
     // `force_pushdown` overrides the node-wide indexed_pushdown_filters default;
     // `None` leaves the default in place.
     if let Some(push) = force_pushdown {
         qcb = qcb.indexed_pushdown_filters(push);
-    }
-    if let Some(msr) = cfg_min_skip_run {
-        qcb = qcb.min_skip_run_default(msr);
     }
     let qc = qcb.build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
@@ -310,6 +291,7 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
         pushdown_predicate: None,
         query_config: Arc::new(qc),
         predicate_columns: collect_predicate_column_indices(&bool_tree),
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: Some((
             Arc::clone(&bool_tree),
@@ -378,7 +360,6 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_single_collector(
     _corpus: &Corpus,
     loaded: &LoadedSegment,
     tree: &GeneratedTree,
-    force_strategy: Option<FilterStrategy>,
     call_strategy: crate::indexed_table::eval::single_collector::CollectorCallStrategy,
 ) -> Option<Vec<i32>> {
     // Match production: classify the tree in its un-normalized form.
@@ -439,16 +420,7 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_single_collector(
         })
     };
 
-    Some(
-        run_single_collector_query(
-            loaded,
-            factory,
-            residual_logical,
-            force_strategy,
-            _corpus.config.min_skip_run_override,
-        )
-        .await,
-    )
+    Some(run_single_collector_query(loaded, factory, residual_logical).await)
 }
 
 /// Execute `SELECT * FROM t WHERE <residual>` so DataFusion's planner
@@ -460,8 +432,6 @@ async fn run_single_collector_query(
     loaded: &LoadedSegment,
     factory: EvaluatorFactory,
     residual: datafusion::logical_expr::Expr,
-    force_strategy: Option<FilterStrategy>,
-    min_skip_run_override: Option<usize>,
 ) -> Vec<i32> {
     // Convert the residual logical Expr to a PhysicalExpr and stash
     // as pushdown_predicate — mirrors what `execute_indexed_query`
@@ -494,12 +464,8 @@ async fn run_single_collector_query(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let mut qcb = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(force_strategy)
         .indexed_pushdown_filters(true)
         .batch_size([128, 1024, 8192][loaded.segments.len() % 3]);
-    if let Some(msr) = min_skip_run_override {
-        qcb = qcb.min_skip_run_default(msr);
-    }
     let qc = qcb.build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: loaded.schema.clone(),
@@ -510,6 +476,7 @@ async fn run_single_collector_query(
         pushdown_predicate,
         query_config: Arc::new(qc),
         predicate_columns: pred_cols,
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -684,24 +651,16 @@ fn bool_to_logical(node: &BoolNode) -> Option<datafusion::logical_expr::Expr> {
 async fn run_with_factory(
     loaded: &LoadedSegment,
     factory: EvaluatorFactory,
-    force_strategy: Option<FilterStrategy>,
     pushdown_predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
 ) -> Vec<i32> {
-    run_with_factory_plan(
-        loaded,
-        factory,
-        force_strategy,
-        Some(false),
-        pushdown_predicate,
-    )
-    .await
-    .0
+    run_with_factory_plan(loaded, factory, Some(false), pushdown_predicate)
+        .await
+        .0
 }
 
 async fn run_with_factory_plan(
     loaded: &LoadedSegment,
     factory: EvaluatorFactory,
-    force_strategy: Option<FilterStrategy>,
     force_pushdown: Option<bool>,
     pushdown_predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
 ) -> (Vec<i32>, Arc<dyn datafusion::physical_plan::ExecutionPlan>) {
@@ -710,7 +669,6 @@ async fn run_with_factory_plan(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let mut qcb = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(force_strategy)
         .batch_size([256, 1024, 8192][loaded.segments.len() % 3]);
     // `force_pushdown` overrides the node-wide indexed_pushdown_filters default;
     // `None` leaves the default in place.
@@ -727,6 +685,7 @@ async fn run_with_factory_plan(
         pushdown_predicate,
         query_config: Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -827,27 +786,21 @@ async fn run_iteration_impl(
     determinism_check: bool,
 ) -> Result<(), String> {
     let expected = oracle_evaluate(tree, corpus);
-    for strategy in [
-        None,
-        Some(FilterStrategy::RowSelection),
-        Some(FilterStrategy::BooleanMask),
-    ] {
-        let actual = execute_tree_with(corpus, loaded, tree, strategy).await;
+    {
+        let actual = execute_tree_with(corpus, loaded, tree).await;
         if expected != actual {
             let diff_info = summarize_diff(&expected, &actual);
             return Err(format!(
-                "BitmapTreeEvaluator vs oracle mismatch (strategy={:?}):\n  tree = {}\n  {}\n",
-                strategy,
+                "BitmapTreeEvaluator vs oracle mismatch:\n  tree = {}\n  {}\n",
                 format_tree(&tree.tree),
                 diff_info,
             ));
         }
         if determinism_check {
-            let actual2 = execute_tree_with(corpus, loaded, tree, strategy).await;
+            let actual2 = execute_tree_with(corpus, loaded, tree).await;
             if actual != actual2 {
                 return Err(format!(
-                    "non-deterministic output (strategy={:?}):\n  tree = {}\n  run1.len={} run2.len={}\n",
-                    strategy,
+                    "non-deterministic output:\n  tree = {}\n  run1.len={} run2.len={}\n",
                     format_tree(&tree.tree),
                     actual.len(),
                     actual2.len(),
@@ -855,30 +808,24 @@ async fn run_iteration_impl(
             }
         }
     }
-    // Cross-check: when the tree classifies as SingleCollector, run
-    // through SingleCollectorEvaluator with every FilterStrategy ×
-    // CollectorCallStrategy combination and assert all agree with the
-    // oracle. This ensures FullRange, TightenOuterBounds, and
-    // PageRangeSplit all produce identical results.
+    // Cross-check: when the tree classifies as SingleCollector, run through
+    // SingleCollectorEvaluator with every CollectorCallStrategy and assert all
+    // agree with the oracle — FullRange, TightenOuterBounds, and PageRangeSplit
+    // must produce identical results.
     use crate::indexed_table::eval::single_collector::CollectorCallStrategy;
-    for strategy in [
-        None,
-        Some(FilterStrategy::RowSelection),
-        Some(FilterStrategy::BooleanMask),
-    ] {
+    {
         for call_strat in [
             CollectorCallStrategy::FullRange,
             CollectorCallStrategy::TightenOuterBounds,
             CollectorCallStrategy::PageRangeSplit,
         ] {
             if let Some(actual) =
-                execute_tree_single_collector(corpus, loaded, tree, strategy, call_strat).await
+                execute_tree_single_collector(corpus, loaded, tree, call_strat).await
             {
                 if expected != actual {
                     let diff_info = summarize_diff(&expected, &actual);
                     return Err(format!(
-                        "SingleCollectorEvaluator vs oracle mismatch (strategy={:?}, call={:?}):\n  tree = {}\n  {}\n",
-                        strategy,
+                        "SingleCollectorEvaluator vs oracle mismatch (call={:?}):\n  tree = {}\n  {}\n",
                         call_strat,
                         format_tree(&tree.tree),
                         diff_info,
@@ -897,14 +844,9 @@ async fn run_iteration_impl(
     // doesn't implement, so we don't assert on those.
     let classification = classify_filter(&tree.tree);
     if classification == FilterClass::Tree {
-        let sc_result = execute_tree_single_collector(
-            corpus,
-            loaded,
-            tree,
-            None,
-            CollectorCallStrategy::FullRange,
-        )
-        .await;
+        let sc_result =
+            execute_tree_single_collector(corpus, loaded, tree, CollectorCallStrategy::FullRange)
+                .await;
         if sc_result.is_some() {
             return Err(format!(
                 "classify_filter returned Tree but execute_tree_single_collector \
@@ -972,7 +914,7 @@ mod tests {
             collector_matches: vec![],
         };
         // Use the normal harness path — it now wires pruning_predicates.
-        let (_rows, plan) = execute_tree_with_plan(&corpus, &loaded, &gt, None).await;
+        let (_rows, plan) = execute_tree_with_plan(&corpus, &loaded, &gt).await;
         let pages_total = get_counter_from_plan(&plan, "pages_total");
         assert!(
             pages_total > 0,
@@ -1022,12 +964,11 @@ mod tests {
             .expect("bare Collector must round-trip");
     }
 
-    /// Bare Collector with 50% density and small `min_skip_run` (4).
-    /// Forces the block-granular mask path where `PositionMap::Runs`
-    /// is non-identity and `current_mask` must be built through
-    /// `build_mask`. Catches the mask-alignment bug where `finalize_batch`
-    /// indexes the RG-relative mask by delivered-row offset after
-    /// skip runs shift the alignment.
+    /// Bare Collector at 50% density — many short skip runs in the selection,
+    /// so delivered rows are gapped rather than contiguous. Exercises the
+    /// per-row `RowPositions::rg_position` path in refinement (as opposed to the
+    /// contiguous fast path) and would catch a regression that assumed
+    /// delivered row `i` is row-group row `i`.
     #[tokio::test]
     async fn harness_bare_collector_block_granular() {
         use rand::rngs::StdRng;
@@ -1049,29 +990,17 @@ mod tests {
             collector_matches: vec![candidates],
         };
         let expected = oracle_evaluate(&gt, &corpus);
-        for strategy in [
-            None,
-            Some(FilterStrategy::RowSelection),
-            Some(FilterStrategy::BooleanMask),
-        ] {
-            let actual = execute_tree_single_collector(
-                &corpus,
-                &loaded,
-                &gt,
-                strategy,
-                CollectorCallStrategy::FullRange,
-            )
-            .await
-            .expect("bare Collector classifies as SingleCollector");
-            assert_eq!(
-                expected,
-                actual,
-                "bare collector block-granular strategy={:?}: expected {} rows, got {}",
-                strategy,
-                expected.len(),
-                actual.len()
-            );
-        }
+        let actual =
+            execute_tree_single_collector(&corpus, &loaded, &gt, CollectorCallStrategy::FullRange)
+                .await
+                .expect("bare Collector classifies as SingleCollector");
+        assert_eq!(
+            expected,
+            actual,
+            "bare collector: expected {} rows, got {}",
+            expected.len(),
+            actual.len()
+        );
     }
 
     #[tokio::test]
@@ -1095,27 +1024,27 @@ mod tests {
             .expect("bare Predicate must round-trip");
     }
 
-    /// Pin the fix for the pushdown+current_mask alignment bug
-    /// (regression from seed `INDEXED_E2E_SEED=1e94955ce24bc83d`).
+    /// Moderately dense collector output through the SingleCollector path.
     ///
-    /// 5% density → auto-strategy picks `min_skip_run=1024` →
-    /// `current_mask` built from candidate bitmap over delivered
-    /// rows. Pushdown must be disabled for this RG so the delivered
-    /// rowset matches what the mask assumes. Without the fix in
-    /// `IndexedStream::poll_next`, this fails with rows from the
-    /// wrong positions.
+    /// Originally pinned a pushdown/`current_mask` alignment bug (seed
+    /// `INDEXED_E2E_SEED=1e94955ce24bc83d`): at 5% density the old
+    /// `min_skip_run` heuristic went block-granular, built a whole-RG
+    /// `current_mask`, and needed pushdown disabled so the delivered rowset
+    /// matched what the mask assumed. That mechanism is gone — selection is
+    /// always row-granular and refinement reads positions from `__row_id__`,
+    /// so the misalignment is unrepresentable.
     ///
-    /// Tests all three strategies to ensure identical semantics.
+    /// Kept because density still varies selector count and page overlap, and a
+    /// dense collector result is worth exercising end to end.
     #[tokio::test]
     async fn harness_single_collector_density_5pct_all_strategies() {
         run_single_collector_density_test(5, 0xaaaa, 0xbbbb).await;
     }
 
-    /// Sibling: 1% density → auto-strategy picks `min_skip_run=1`
-    /// (row-granular). No `current_mask` built; pushdown stays ON.
-    /// This tests the OTHER branch of the fix — regression-proofing
-    /// against an accidental "turn off pushdown everywhere" change
-    /// which would be correct but slow.
+    /// Sparse sibling of the above. This is the shape that was already
+    /// row-granular with pushdown ON under the old heuristic, and is now the
+    /// only shape — so it guards against an accidental "disable pushdown
+    /// everywhere" change, which would be correct but slow.
     #[tokio::test]
     async fn harness_single_collector_density_1pct_all_strategies() {
         run_single_collector_density_test(1, 0xcccc, 0xdddd).await;
@@ -1171,12 +1100,10 @@ mod tests {
         };
 
         let expected = oracle_evaluate(&gt, &corpus);
-        // Force BooleanMask strategy through the SingleCollector path.
         let actual = execute_tree_single_collector(
             &corpus,
             &loaded,
             &gt,
-            Some(FilterStrategy::BooleanMask),
             CollectorCallStrategy::PageRangeSplit,
         )
         .await
@@ -1184,7 +1111,7 @@ mod tests {
         assert_eq!(
             expected,
             actual,
-            "pushdown+BooleanMask alignment bug: expected {} rows, got {}",
+            "dense collector + pushdown: expected {} rows, got {}",
             expected.len(),
             actual.len()
         );
@@ -1269,12 +1196,11 @@ mod tests {
         let _ = DataType::Int32; // silence unused import
 
         let expected = oracle_evaluate(&gt, &corpus);
-        // Force pushdown ON, BooleanMask strategy, with a real WHERE clause.
+        // Pushdown ON with a real WHERE clause reaching scan(filters).
         let (actual, _plan) = execute_tree_with_plan_pushdown_filter(
             &corpus,
             &loaded,
             &gt,
-            Some(FilterStrategy::BooleanMask),
             Some(true),       // pushdown ON
             Some(where_expr), // real WHERE clause pushed to scan(filters)
         )
@@ -1282,15 +1208,14 @@ mod tests {
         assert_eq!(
             expected,
             actual,
-            "BitmapTree + pushdown ON + BooleanMask + real WHERE: expected {} rows, got {}",
+            "BitmapTree + pushdown ON + real WHERE: expected {} rows, got {}",
             expected.len(),
             actual.len()
         );
     }
 
-    /// Parameterized helper: build a Collector at `pct`% density,
-    /// run `AND(Collector, price<1000)` through all 3 strategies,
-    /// assert each matches the oracle.
+    /// Parameterized helper: build a Collector at `pct`% density, run
+    /// `AND(Collector, price<1000)` and assert it matches the oracle.
     async fn run_single_collector_density_test(pct: usize, corpus_seed: u64, collector_seed: u64) {
         use datafusion::common::ScalarValue;
         use datafusion::logical_expr::Operator;
@@ -1323,30 +1248,22 @@ mod tests {
         };
 
         let expected = oracle_evaluate(&gt, &corpus);
-        for strategy in [
-            None,
-            Some(FilterStrategy::RowSelection),
-            Some(FilterStrategy::BooleanMask),
-        ] {
-            let actual = execute_tree_single_collector(
-                &corpus,
-                &loaded,
-                &gt,
-                strategy,
-                CollectorCallStrategy::PageRangeSplit,
-            )
-            .await
-            .expect("tree classifies as SingleCollector");
-            assert_eq!(
-                expected,
-                actual,
-                "density={}% strategy={:?}: expected {} rows, got {}",
-                pct,
-                strategy,
-                expected.len(),
-                actual.len()
-            );
-        }
+        let actual = execute_tree_single_collector(
+            &corpus,
+            &loaded,
+            &gt,
+            CollectorCallStrategy::PageRangeSplit,
+        )
+        .await
+        .expect("tree classifies as SingleCollector");
+        assert_eq!(
+            expected,
+            actual,
+            "density={}%: expected {} rows, got {}",
+            pct,
+            expected.len(),
+            actual.len()
+        );
     }
 
     /// Walks the plan and sums the named counter off QueryShardExec.

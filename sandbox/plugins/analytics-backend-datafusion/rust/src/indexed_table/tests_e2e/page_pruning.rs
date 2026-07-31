@@ -65,7 +65,7 @@ use crate::indexed_table::eval::{
 };
 use crate::indexed_table::index::RowGroupDocsCollector;
 use crate::indexed_table::page_pruner::{build_pruning_predicate, PagePruner};
-use crate::indexed_table::stream::{FilterStrategy, RowGroupInfo};
+use crate::indexed_table::stream::RowGroupInfo;
 use crate::indexed_table::table_provider::{
     EvaluatorFactory, IndexedTableConfig, IndexedTableProvider, SegmentFileInfo,
 };
@@ -77,9 +77,14 @@ const NUM_ROWS: usize = ROWS_PER_PAGE * NUM_PAGES; // 4096
 // ── Fixture builder ─────────────────────────────────────────────────
 
 fn fixture_schema() -> SchemaRef {
+    // `__row_id__` last, mirroring production: the parquet writer appends it to
+    // every file (parquet-data-format `merge/schema.rs`) holding the row's
+    // position within the file. Refinement reads it to map delivered rows back
+    // to row-group positions.
     Arc::new(Schema::new(vec![
         Field::new("price", DataType::Int32, false),
         Field::new("brand", DataType::Utf8, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]))
 }
 
@@ -95,11 +100,13 @@ fn write_fixture() -> NamedTempFile {
     let brands: Vec<&str> = (0..NUM_PAGES)
         .flat_map(|p| std::iter::repeat(labels[p]).take(ROWS_PER_PAGE))
         .collect();
+    let row_ids: Vec<i64> = (0..prices.len() as i64).collect();
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
             Arc::new(Int32Array::from(prices)),
             Arc::new(StringArray::from(brands)),
+            Arc::new(datafusion::arrow::array::Int64Array::from(row_ids)),
         ],
     )
     .unwrap();
@@ -387,7 +394,6 @@ async fn execute_and_collect(
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
@@ -399,6 +405,7 @@ async fn execute_and_collect(
         pushdown_predicate: None,
         query_config: Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],

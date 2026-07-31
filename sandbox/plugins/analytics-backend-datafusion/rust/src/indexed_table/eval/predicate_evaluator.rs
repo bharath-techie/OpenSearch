@@ -23,9 +23,9 @@ use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 
 use super::eval_helpers::evaluate_residual;
+use super::RowPositions;
 use super::{PrefetchedRg, PrefetchedRgRows, RowGroupBitsetSource};
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
-use crate::indexed_table::row_selection::PositionMap;
 use crate::indexed_table::stream::RowGroupInfo;
 
 /// Evaluator for predicate-only queries (no Collector).
@@ -114,15 +114,19 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
         &self,
         _rg_state: &dyn std::any::Any,
         _rg_first_row: i64,
-        _position_map: &PositionMap,
-        _batch_offset: usize,
-        batch_len: usize,
+        row_positions: &RowPositions,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String> {
         let Some(ref residual) = self.residual_expr else {
             return Ok(None);
         };
-        Ok(Some(evaluate_residual(residual, batch, batch_len)?))
+        // The residual is a plain expression over the batch's own columns, so
+        // this evaluator never needs row positions — only the row count.
+        Ok(Some(evaluate_residual(
+            residual,
+            batch,
+            row_positions.len(),
+        )?))
     }
 
     fn forbid_parquet_pushdown(&self) -> bool {

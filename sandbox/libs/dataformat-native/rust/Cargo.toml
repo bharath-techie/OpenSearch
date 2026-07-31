@@ -17,12 +17,16 @@ members = [
 [workspace.dependencies]
 # Arrow / Parquet
 #
-# 59.1.0 is the release DataFusion `main` pins, and it is the first release
-# containing every ParquetPushDecoder row-group boundary API the indexed scan
-# path needs (`is_at_row_group_boundary`, `row_groups_remaining`,
-# `peek_next_row_group`, `into_builder`). That is why there is no longer a
-# `[patch.crates-io]` block below: the Arrow fork existed solely to carry those
-# APIs ahead of a release.
+# 59.1.0 is the release DataFusion `main` pins. It already carries most of the
+# ParquetPushDecoder row-group boundary API the indexed scan path needs
+# (`is_at_row_group_boundary`, `row_groups_remaining`, `peek_next_row_group`,
+# `into_builder`).
+#
+# It does *not* yet carry `try_next_row_group` / `RowGroupReaderResult`, which
+# the indexed path needs so an empty row group surfaces as an explicit boundary
+# instead of being silently skipped — without it the access provider cannot be
+# consulted for the following row group. Until that lands upstream, `parquet` is
+# redirected at a local checkout by `.cargo/config.toml`; see the comment there.
 arrow = { version = "=59.1.0", features = ["ffi"] }
 arrow-array = "=59.1.0"
 arrow-ipc = "=59.1.0"

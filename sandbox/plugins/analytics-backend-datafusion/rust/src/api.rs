@@ -1020,7 +1020,7 @@ pub async unsafe fn fetch_by_row_ids(
     columns: Vec<String>,
     context_id: i64,
 ) -> Result<i64, DataFusionError> {
-    use crate::indexed_table::row_selection::build_row_selection_with_min_skip_run;
+    use crate::indexed_table::row_selection::build_row_selection;
     use crate::indexed_table::segment_info::build_segments;
     use crate::query_executor::{store_url_from_table_path, wrap_stream_as_handle};
 
@@ -1107,8 +1107,7 @@ pub async unsafe fn fetch_by_row_ids(
                     .map(|pos| pos - rg_start)
                     .collect();
                 if !rg_bitmap.is_empty() {
-                    let selection =
-                        build_row_selection_with_min_skip_run(&rg_bitmap, rg.num_rows as usize, 1);
+                    let selection = build_row_selection(&rg_bitmap, rg.num_rows as usize);
                     plan.set(rg.index, RowGroupAccess::Selection(selection));
                 }
             }

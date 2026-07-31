@@ -30,7 +30,7 @@ use tempfile::NamedTempFile;
 use super::super::eval::RowGroupBitsetSource;
 use super::super::index::RowGroupDocsCollector;
 use super::super::page_pruner::PagePruner;
-use super::super::stream::{FilterStrategy, RowGroupInfo};
+use super::super::stream::RowGroupInfo;
 use super::super::table_provider::{IndexedTableConfig, IndexedTableProvider, SegmentFileInfo};
 
 /// 16 rows, `price` = 15..0 **descending** in file order, 4 rows per row group →
@@ -180,6 +180,7 @@ async fn run_indexed(sql: &str) -> (Vec<i32>, Arc<dyn datafusion::physical_plan:
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],

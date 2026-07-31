@@ -97,8 +97,17 @@ pub(in crate::indexed_table::tests_e2e) fn build_corpus(config: FixtureConfig) -
         );
         cells.push(col);
     }
+    // `col_idx` is derived from the schema, so `cells` must stay parallel to it:
+    // append a `__row_id__` column matching the field appended in
+    // `build_schema`. The oracle never predicates on it, but indexing would go
+    // out of bounds without it.
+    cells.push(
+        (0..config.num_rows)
+            .map(|i| CellValue::Int64(Some(i as i64)))
+            .collect(),
+    );
 
-    // Arrow arrays: __doc_id first, then user columns.
+    // Arrow arrays: __doc_id first, then user columns, then __row_id__.
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(cells.len());
     let doc_id_array = {
         let mut b = Int32Builder::new();
@@ -114,6 +123,12 @@ pub(in crate::indexed_table::tests_e2e) fn build_corpus(config: FixtureConfig) -
     for (col, (_, kind)) in cells.iter().skip(1).zip(config.columns.iter()) {
         arrays.push(cells_to_array(col, *kind));
     }
+    // `__row_id__` last, matching the field order in `build_schema`.
+    arrays.push(
+        Arc::new(datafusion::arrow::array::Int64Array::from_iter_values(
+            0..config.num_rows as i64,
+        )) as ArrayRef,
+    );
 
     let batch = RecordBatch::try_new(schema.clone(), arrays).expect("record batch");
 
@@ -178,6 +193,16 @@ fn build_schema(config: &FixtureConfig) -> SchemaRef {
         };
         fields.push(Field::new(name, dt, config.null_pct > 0.0));
     }
+    // `__row_id__` LAST, mirroring production: the parquet writer appends it to
+    // every file (parquet-data-format `merge/schema.rs`) holding the row's
+    // position within the file. Refinement reads it to map delivered rows back
+    // to row-group positions. Appending keeps user columns at the indices the
+    // oracle and `config.columns` assume.
+    fields.push(Field::new(
+        crate::ROW_ID_COLUMN_NAME,
+        DataType::Int64,
+        false,
+    ));
     Arc::new(Schema::new(fields))
 }
 

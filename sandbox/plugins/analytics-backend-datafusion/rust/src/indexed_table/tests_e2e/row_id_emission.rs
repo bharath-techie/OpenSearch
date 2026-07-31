@@ -110,12 +110,11 @@ async fn run_tree_row_ids(tree: BoolNode) -> Vec<i64> {
         query_config: Arc::new({
             let mut qc = crate::datafusion_query_config::DatafusionQueryConfig::test_default();
             qc.target_partitions = 1;
-            qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
-            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
+        evaluator_needs_row_positions: true,
         emit_row_ids: true,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -283,12 +282,11 @@ async fn run_tree_row_ids_with_global_base(tree: BoolNode, global_base: u64) -> 
         query_config: Arc::new({
             let mut qc = crate::datafusion_query_config::DatafusionQueryConfig::test_default();
             qc.target_partitions = 1;
-            qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
-            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
+        evaluator_needs_row_positions: true,
         emit_row_ids: true,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -566,12 +564,11 @@ async fn test_row_id_with_data_columns() {
         query_config: Arc::new({
             let mut qc = crate::datafusion_query_config::DatafusionQueryConfig::test_default();
             qc.target_partitions = 1;
-            qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
-            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
+        evaluator_needs_row_positions: true,
         emit_row_ids: true,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -833,12 +830,11 @@ async fn run_two_segments_row_ids(tree: BoolNode) -> Vec<i64> {
         query_config: Arc::new({
             let mut qc = crate::datafusion_query_config::DatafusionQueryConfig::test_default();
             qc.target_partitions = 1;
-            qc.force_strategy = Some(FilterStrategy::BooleanMask);
             qc.indexed_pushdown_filters = false;
-            qc.indexed_multi_rg_decode = true;
             qc
         }),
         predicate_columns: vec![0, 1, 2, 3],
+        evaluator_needs_row_positions: true,
         emit_row_ids: true,
         prune_tree_config: None,
         sort_fields: vec![],

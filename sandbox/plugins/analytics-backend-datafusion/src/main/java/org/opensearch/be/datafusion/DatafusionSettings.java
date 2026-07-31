@@ -77,31 +77,14 @@ public final class DatafusionSettings {
     );
 
     /**
-     * Whether indexed scans reuse one adaptive Arrow decoder across all row
-     * groups in a segment chunk. Default-off while the path is experimental.
-     */
-    public static final Setting<Boolean> INDEXED_MULTI_RG_DECODE = Setting.boolSetting(
-        "datafusion.indexed.multi_rg_decode",
-        false,
-        Setting.Property.NodeScope,
-        Setting.Property.Dynamic
-    );
-
-    /**
-     * Whether marker-free, non-row-id Parquet scans are routed through the
-     * indexed provider. Default-off benchmark aid for ListingTable parity work.
-     */
-    public static final Setting<Boolean> INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED = Setting.boolSetting(
-        "datafusion.indexed.route_pure_parquet_through_indexed",
-        false,
-        Setting.Property.NodeScope,
-        Setting.Property.Dynamic
-    );
-
-    /**
-     * Default minimum run length (in rows) below which the indexed stream skips
-     * row-selection optimizations and falls back to sequential decode. Shorter runs
-     * have higher per-row overhead from selection vector maintenance.
+     * Minimum skip-run length (in rows) for an indexed scan's candidate selection.
+     * Skip runs shorter than this are absorbed into the surrounding {@code select},
+     * so the decoder sees fewer, longer runs at the cost of over-reading a handful of
+     * non-candidate rows — which the refinement stage drops anyway. {@code 1} disables
+     * coalescing and gives a strictly row-granular selection.
+     * <p>
+     * Only applied at or above {@link #INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD};
+     * below it the skips are long and few, so coalescing would over-read for nothing.
      */
     public static final Setting<Integer> INDEXED_MIN_SKIP_RUN_DEFAULT = Setting.intSetting(
         "datafusion.indexed.min_skip_run_default",
@@ -112,13 +95,14 @@ public final class DatafusionSettings {
     );
 
     /**
-     * Selectivity threshold [0.0, 1.0] that controls when the indexed stream switches
-     * from row-selection mode to full-decode mode. A low threshold (e.g., 0.03) means
-     * "only use row-selection when the filter is very selective (few rows match)."
+     * Candidate selectivity (matched rows / row-group rows) at or above which
+     * {@link #INDEXED_MIN_SKIP_RUN_DEFAULT} coalescing kicks in.
      * <p>
-     * Example: with threshold 0.03, a filter that matches 2% of rows uses row-selection
-     * (skip non-matching rows), but a filter matching 5% switches to full-decode
-     * (cheaper to just read everything sequentially).
+     * Example: at the 0.03 default, a row group whose index matched 2% of its rows keeps
+     * a row-granular selection — each skip is long, so each one saves real bytes. One
+     * that matched 5% gets short skips absorbed into the surrounding {@code select},
+     * because the decoder's per-selector cost, paid on every column, then outweighs the
+     * rows over-read.
      */
     public static final Setting<Double> INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD = Setting.doubleSetting(
         "datafusion.indexed.min_skip_run_selectivity_threshold",
@@ -148,6 +132,25 @@ public final class DatafusionSettings {
         Setting.Property.Dynamic
     );
 
+    /**
+     * Whether an indexed scan's refinement runs as a parquet {@code ArrowPredicate}
+     * during decode rather than on the fully decoded batch.
+     * <p>
+     * Decode-time refinement is two decode passes: the refinement's own columns are
+     * decoded for the whole candidate set, then the projection is decoded for the
+     * survivors. That is a win exactly when refinement rejects most candidates. When the
+     * candidate stage is already near-exact — an indexed term match, typically — almost
+     * nothing is rejected and the second pass is pure overhead, which measured up to
+     * +68% wall on the ClickBench selectivity ladder. Default-off for that reason;
+     * post-decode refinement produces identical results.
+     */
+    public static final Setting<Boolean> INDEXED_DECODE_TIME_REFINEMENT = Setting.boolSetting(
+        "datafusion.indexed.decode_time_refinement",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     private static void validateForceStrategy(String value) {
         forceStrategyToWire(value);
     }
@@ -156,11 +159,11 @@ public final class DatafusionSettings {
     static int forceStrategyToWire(String value) {
         switch (value) {
             case "none":
-                return -1;
+                return WireConfigSnapshot.FORCE_STRATEGY_NONE;
             case "row_selection":
-                return 0;
+                return WireConfigSnapshot.FORCE_STRATEGY_ROW_SELECTION;
             case "boolean_mask":
-                return 1;
+                return WireConfigSnapshot.FORCE_STRATEGY_BOOLEAN_MASK;
             default:
                 throw new IllegalArgumentException(
                     "Setting [datafusion.indexed.force_strategy] must be one of [none, row_selection, boolean_mask], got [" + value + "]"
@@ -249,11 +252,10 @@ public final class DatafusionSettings {
         BATCH_SIZE,
         LISTING_TABLE_PUSHDOWN_FILTERS,
         INDEXED_PUSHDOWN_FILTERS,
-        INDEXED_MULTI_RG_DECODE,
-        INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED,
         INDEXED_MIN_SKIP_RUN_DEFAULT,
         INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD,
-        INDEXED_FORCE_STRATEGY
+        INDEXED_FORCE_STRATEGY,
+        INDEXED_DECODE_TIME_REFINEMENT
     );
 
     // ── Snapshot management ──
@@ -290,11 +292,10 @@ public final class DatafusionSettings {
             .targetPartitions(deriveTargetPartitions(this.concurrentSearchMode, this.maxSliceCount))
             .listingTablePushdownFilters(LISTING_TABLE_PUSHDOWN_FILTERS.get(settings))
             .indexedPushdownFilters(INDEXED_PUSHDOWN_FILTERS.get(settings))
-            .indexedMultiRgDecode(INDEXED_MULTI_RG_DECODE.get(settings))
-            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
             .forceStrategy(forceStrategyToWire(INDEXED_FORCE_STRATEGY.get(settings)))
+            .indexedDecodeTimeRefinement(INDEXED_DECODE_TIME_REFINEMENT.get(settings))
             .build();
 
         registerListeners(clusterSettings);
@@ -313,11 +314,10 @@ public final class DatafusionSettings {
             .targetPartitions(deriveTargetPartitions(this.concurrentSearchMode, this.maxSliceCount))
             .listingTablePushdownFilters(LISTING_TABLE_PUSHDOWN_FILTERS.get(settings))
             .indexedPushdownFilters(INDEXED_PUSHDOWN_FILTERS.get(settings))
-            .indexedMultiRgDecode(INDEXED_MULTI_RG_DECODE.get(settings))
-            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
             .forceStrategy(forceStrategyToWire(INDEXED_FORCE_STRATEGY.get(settings)))
+            .indexedDecodeTimeRefinement(INDEXED_DECODE_TIME_REFINEMENT.get(settings))
             .build();
     }
 
@@ -334,14 +334,6 @@ public final class DatafusionSettings {
             snapshot = WireConfigSnapshot.builder(snapshot).indexedPushdownFilters(newValue).build();
         });
 
-        clusterSettings.addSettingsUpdateConsumer(INDEXED_MULTI_RG_DECODE, newValue -> {
-            snapshot = WireConfigSnapshot.builder(snapshot).indexedMultiRgDecode(newValue).build();
-        });
-
-        clusterSettings.addSettingsUpdateConsumer(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED, newValue -> {
-            snapshot = WireConfigSnapshot.builder(snapshot).routePureParquetThroughIndexed(newValue).build();
-        });
-
         clusterSettings.addSettingsUpdateConsumer(INDEXED_MIN_SKIP_RUN_DEFAULT, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).minSkipRunDefault(newValue).build();
         });
@@ -352,6 +344,10 @@ public final class DatafusionSettings {
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_FORCE_STRATEGY, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).forceStrategy(forceStrategyToWire(newValue)).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_DECODE_TIME_REFINEMENT, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).indexedDecodeTimeRefinement(newValue).build();
         });
 
         clusterSettings.addSettingsUpdateConsumer(SearchService.CONCURRENT_SEGMENT_SEARCH_TARGET_MAX_SLICE_COUNT_SETTING, newValue -> {

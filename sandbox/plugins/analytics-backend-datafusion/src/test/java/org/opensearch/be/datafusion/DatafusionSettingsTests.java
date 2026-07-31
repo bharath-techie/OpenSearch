@@ -37,79 +37,34 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertTrue(DatafusionSettings.INDEXED_PUSHDOWN_FILTERS.hasNodeScope());
     }
 
-    public void testIndexedMultiRgDecodeSettingDefinition() {
-        assertEquals("datafusion.indexed.multi_rg_decode", DatafusionSettings.INDEXED_MULTI_RG_DECODE.getKey());
-        assertEquals(Boolean.FALSE, DatafusionSettings.INDEXED_MULTI_RG_DECODE.get(Settings.EMPTY));
-        assertTrue(DatafusionSettings.INDEXED_MULTI_RG_DECODE.isDynamic());
-        assertTrue(DatafusionSettings.INDEXED_MULTI_RG_DECODE.hasNodeScope());
-    }
-
-    public void testRoutePureParquetThroughIndexedSettingDefinition() {
-        assertEquals(
-            "datafusion.indexed.route_pure_parquet_through_indexed",
-            DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.getKey()
-        );
-        assertEquals(Boolean.FALSE, DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(Settings.EMPTY));
-        assertTrue(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.isDynamic());
-        assertTrue(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.hasNodeScope());
-    }
-
-    public void testMinSkipRunDefaultSettingDefinition() {
-        assertEquals("datafusion.indexed.min_skip_run_default", DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT.getKey());
-        assertEquals(Integer.valueOf(1024), DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT.get(Settings.EMPTY));
-        assertTrue(DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT.isDynamic());
-        assertTrue(DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT.hasNodeScope());
-    }
-
-    public void testMinSkipRunSelectivityThresholdSettingDefinition() {
-        assertEquals(
-            "datafusion.indexed.min_skip_run_selectivity_threshold",
-            DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.getKey()
-        );
-        assertEquals(0.03, DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(Settings.EMPTY), 1e-15);
-        assertTrue(DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.isDynamic());
-        assertTrue(DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.hasNodeScope());
-    }
-
     public void testAllSettingsContainsAllExpectedSettings() {
-        assertEquals(33, DatafusionSettings.ALL_SETTINGS.size());
+        assertEquals(32, DatafusionSettings.ALL_SETTINGS.size());
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_REDUCE_TARGET_PARTITIONS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_MEMORY_GUARD_SPILL_EXEMPT_CAP));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_SPILL_DIRECTORY));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.BATCH_SIZE));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.LISTING_TABLE_PUSHDOWN_FILTERS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_PUSHDOWN_FILTERS));
-        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MULTI_RG_DECODE));
-        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_FORCE_STRATEGY));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_DECODE_TIME_REFINEMENT));
     }
 
-    public void testForceStrategySettingDefaultsAndMapping() {
-        assertEquals("datafusion.indexed.force_strategy", DatafusionSettings.INDEXED_FORCE_STRATEGY.getKey());
-        assertEquals("none", DatafusionSettings.INDEXED_FORCE_STRATEGY.get(Settings.EMPTY));
-        assertTrue(DatafusionSettings.INDEXED_FORCE_STRATEGY.isDynamic());
-        assertTrue(DatafusionSettings.INDEXED_FORCE_STRATEGY.hasNodeScope());
-
+    public void testForceStrategyMapsToWireCodes() {
         assertEquals(-1, DatafusionSettings.forceStrategyToWire("none"));
         assertEquals(0, DatafusionSettings.forceStrategyToWire("row_selection"));
         assertEquals(1, DatafusionSettings.forceStrategyToWire("boolean_mask"));
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> DatafusionSettings.forceStrategyToWire("bogus"));
+        assertTrue(e.getMessage().contains("must be one of [none, row_selection, boolean_mask]"));
+    }
 
-        // Default snapshot encodes None (-1).
-        assertEquals(-1, new DatafusionSettings(Settings.EMPTY).getSnapshot().forceStrategy());
-
-        // A configured value flows into the snapshot.
-        DatafusionSettings ds = new DatafusionSettings(Settings.builder().put("datafusion.indexed.force_strategy", "boolean_mask").build());
-        assertEquals(1, ds.getSnapshot().forceStrategy());
-
-        // Invalid values are rejected at parse time.
-        expectThrows(
-            IllegalArgumentException.class,
-            () -> DatafusionSettings.INDEXED_FORCE_STRATEGY.get(
-                Settings.builder().put("datafusion.indexed.force_strategy", "bogus").build()
-            )
-        );
+    public void testGranularitySettingDefinitions() {
+        assertEquals(Integer.valueOf(1024), DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT.get(Settings.EMPTY));
+        assertEquals(0.03, DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(Settings.EMPTY), 0.0);
+        assertEquals("none", DatafusionSettings.INDEXED_FORCE_STRATEGY.get(Settings.EMPTY));
+        // Decode-time refinement costs a second decode pass, so it is off by default.
+        assertEquals(Boolean.FALSE, DatafusionSettings.INDEXED_DECODE_TIME_REFINEMENT.get(Settings.EMPTY));
     }
 
     public void testDefaultSnapshotValuesMatchDefaults() {
@@ -118,11 +73,12 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
 
         assertEquals(8192, snapshot.batchSize());
         assertEquals(false, snapshot.listingTablePushdownFilters());
-        assertEquals(1024, snapshot.minSkipRunDefault());
-        assertEquals(0.03, snapshot.minSkipRunSelectivityThreshold(), 1e-15);
         assertEquals(DEFAULT_PARALLELISM, snapshot.targetPartitions());
-        assertFalse(snapshot.indexedMultiRgDecode());
-        assertFalse(snapshot.routePureParquetThroughIndexed());
+        assertTrue(snapshot.indexedPushdownFilters());
+        assertEquals(1024, snapshot.minSkipRunDefault());
+        assertEquals(0.03, snapshot.minSkipRunSelectivityThreshold(), 0.0);
+        assertEquals(WireConfigSnapshot.FORCE_STRATEGY_NONE, snapshot.forceStrategy());
+        assertFalse(snapshot.indexedDecodeTimeRefinement());
     }
 
     public void testTargetPartitionsPassthroughWhenNonZero() {
@@ -165,8 +121,4 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         expectThrows(IllegalArgumentException.class, () -> DatafusionSettings.BATCH_SIZE.get(settings));
     }
 
-    public void testSelectivityThresholdAboveBoundIsRejected() {
-        Settings settings = Settings.builder().put("datafusion.indexed.min_skip_run_selectivity_threshold", 1.1).build();
-        expectThrows(IllegalArgumentException.class, () -> DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings));
-    }
 }

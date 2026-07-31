@@ -62,12 +62,18 @@ fn build_null_fixture() -> NullFixture {
         tag.push(if i % 2 == 0 { "even" } else { "odd" });
     }
 
+    // `__row_id__` last, mirroring production: the parquet writer appends it to
+    // every file (parquet-data-format `merge/schema.rs`) holding the row's
+    // position within the file. Refinement reads it to map delivered rows back
+    // to row-group positions.
     let schema = Arc::new(Schema::new(vec![
         Field::new("all_null_col", DataType::Int32, true),
         Field::new("mostly_null_col", DataType::Int32, true),
         Field::new("half_null_col", DataType::Int32, true),
         Field::new("tag", DataType::Utf8, false),
+        Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
     ]));
+    let row_ids: Vec<i64> = (0..tag.len() as i64).collect();
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -75,6 +81,7 @@ fn build_null_fixture() -> NullFixture {
             Arc::new(Int32Array::from(mostly_null.clone())),
             Arc::new(Int32Array::from(half_null.clone())),
             Arc::new(StringArray::from(tag.clone())),
+            Arc::new(datafusion::arrow::array::Int64Array::from(row_ids)),
         ],
     )
     .unwrap();
@@ -194,11 +201,14 @@ fn reference_evaluator_null(tree: &NT, row: usize) -> Option<bool> {
 /// the matching-set for the leaf.
 fn to_engine_tree_null(tree: &NT, coll_seq: &mut u8) -> BoolNode {
     fn null_schema() -> SchemaRef {
+        // Mirrors the fixture schema, `__row_id__` last so `index_of` lookups
+        // for the user columns keep their indices.
         Arc::new(Schema::new(vec![
             Field::new("all_null_col", DataType::Int32, true),
             Field::new("mostly_null_col", DataType::Int32, true),
             Field::new("half_null_col", DataType::Int32, true),
             Field::new("tag", DataType::Utf8, false),
+            Field::new(crate::ROW_ID_COLUMN_NAME, DataType::Int64, false),
         ]))
     }
     fn pred_int_local(col: &str, op: Operator, v: i32) -> BoolNode {
@@ -372,7 +382,6 @@ async fn assert_engine_matches_reference_null(name: &str, tree: NT) {
 
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
@@ -385,6 +394,7 @@ async fn assert_engine_matches_reference_null(name: &str, tree: NT) {
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],

@@ -168,16 +168,28 @@ public final class FilterTreeCallbacks {
 
     /**
      * {@code releaseProvider(contextId, providerKey)}. Never throws.
+     *
+     * <p>Unlike the create/collect upcalls, a MISSING binding here is expected, not a
+     * lifecycle bug: the native {@code ProviderHandle}/{@code FfmSegmentCollector} drops
+     * run asynchronously on tokio workers that can outlive {@code stream_close}'s
+     * synchronous return, so a release may arrive after {@link #unregister}. That is
+     * harmless — {@link FilterDelegationHandle#close()} (run by the cleanup right after
+     * unregister) already cleared every provider/collector, so a late release is a
+     * no-op. We therefore do NOT assert on a missing binding: doing so would rethrow an
+     * {@link AssertionError} across the FFM upcall stub and abort the JVM under {@code -ea}
+     * (default in tests and {@code ./gradlew run}). A present binding still releases
+     * eagerly, before {@code close()}, which is the fast path.
      */
     public static void releaseProvider(long contextId, int providerKey) {
         try {
             QueryBinding binding = BINDINGS.get(contextId);
-            assertBindingExists(binding, "releaseProvider", contextId);
-            if (binding != null && binding.handle() != null) {
+            if (binding == null) {
+                // Query already torn down (unregister + close ran); nothing left to release.
+                return;
+            }
+            if (binding.handle() != null) {
                 binding.handle().releaseProvider(providerKey);
             }
-        } catch (AssertionError e) {
-            throw e;
         } catch (Throwable throwable) {
             LOGGER.error(
                 new ParameterizedMessage("releaseProvider(contextId={}, providerKey={}) failed", contextId, providerKey),
@@ -262,16 +274,23 @@ public final class FilterTreeCallbacks {
 
     /**
      * {@code releaseCollector(contextId, collectorKey)}. Never throws.
+     *
+     * <p>See {@link #releaseProvider}: a missing binding is the expected async-teardown
+     * case (native collector drop on a tokio worker races past {@link #unregister}), not
+     * a lifecycle bug, and {@link FilterDelegationHandle#close()} already released the
+     * collector. Asserting here would abort the JVM through the FFM upcall stub under
+     * {@code -ea}, so we return quietly instead.
      */
     public static void releaseCollector(long contextId, int collectorKey) {
         try {
             QueryBinding binding = BINDINGS.get(contextId);
-            assertBindingExists(binding, "releaseCollector", contextId);
-            if (binding != null && binding.handle() != null) {
+            if (binding == null) {
+                // Query already torn down (unregister + close ran); nothing left to release.
+                return;
+            }
+            if (binding.handle() != null) {
                 binding.handle().releaseCollector(collectorKey);
             }
-        } catch (AssertionError e) {
-            throw e;
         } catch (Throwable throwable) {
             LOGGER.error(
                 new ParameterizedMessage("releaseCollector(contextId={}, collectorKey={}) failed", contextId, collectorKey),

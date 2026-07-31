@@ -187,10 +187,19 @@ pub struct IndexedTableConfig {
     pub query_config: Arc<DatafusionQueryConfig>,
     /// Full-schema column indices referenced by BoolNode Predicate leaves.
     pub predicate_columns: Vec<usize>,
-    /// When true, the `___row_id` column in the output projection is computed
-    /// from position (global_base + rg.first_row + position_in_rg) instead of
-    /// being read from parquet. Other projected columns are read normally.
+    /// When true, the `___row_id` column in the output projection is the stored
+    /// physical value offset by `global_base` (making it shard-global) rather
+    /// than a straight pass-through. Other projected columns are read normally.
     pub emit_row_ids: bool,
+    /// When true, the scan reads `__row_id__` so `on_batch_mask` can map each
+    /// delivered row to its row-group position (`eval::RowPositions`).
+    ///
+    /// Set from the evaluator: only shapes that refine post-decode against
+    /// external state need it — the single-collector-with-residual and
+    /// boolean-tree paths. Predicate-only refinement evaluates an expression
+    /// over the batch's own columns and needs no positions, so it leaves this
+    /// false and reads nothing extra.
+    pub evaluator_needs_row_positions: bool,
     /// Query-level data for building StatsPruneTree per segment.
     /// (BoolNode tree, prebuilt PruningPredicates keyed by Arc ptr, schema)
     pub prune_tree_config: Option<(
@@ -266,8 +275,17 @@ impl TableProvider for IndexedTableProvider {
         let config = &self.config;
         let full_schema = config.schema.clone();
 
-        // Detect __row_id__ in the output projection when emit_row_ids=true.
-        // If present, we strip it from the parquet read and compute it from position.
+        // `__row_id__` is a physical INT64 column in every OpenSearch parquet
+        // file whose value is the row's position within the file. Two consumers
+        // want it, for different reasons:
+        //
+        //  - QTF (`emit_row_ids`) projects it into the *output*, offset by the
+        //    segment's `global_base` to make it shard-global.
+        //  - Refinement needs it in the *read* so `on_batch_mask` can map each
+        //    delivered row back to its RG position (see `eval::RowPositions`).
+        //    Reading it is what lets refinement stay correct no matter what the
+        //    decoder skipped, instead of reconstructing positions from delivery
+        //    offsets.
         let row_id_col_in_full_schema = full_schema.index_of(crate::ROW_ID_COLUMN_NAME).ok();
         let row_id_output_index: Option<usize> = if config.emit_row_ids {
             match projection {
@@ -279,6 +297,9 @@ impl TableProvider for IndexedTableProvider {
         } else {
             None
         };
+        // Only evaluators that actually refine need positions; a scan with no
+        // refinement pays nothing.
+        let needs_row_positions = config.evaluator_needs_row_positions;
 
         // Output schema = what DataFusion expects (includes ___row_id if projected).
         // When computing row IDs, replace the ___row_id field type with UInt64.
@@ -297,39 +318,52 @@ impl TableProvider for IndexedTableProvider {
             }
         };
 
-        // Read projection = output columns (minus ___row_id) + predicate columns for evaluator.
-        let read_projection: Option<Vec<usize>> = if config.emit_row_ids {
-            let output_cols: Vec<usize> = match projection {
-                Some(proj) => proj
-                    .iter()
-                    .filter(|&&idx| Some(idx) != row_id_col_in_full_schema)
-                    .copied()
-                    .collect(),
-                None => (0..full_schema.fields().len())
-                    .filter(|&idx| Some(idx) != row_id_col_in_full_schema)
-                    .collect(),
+        // Read projection = output columns + predicate columns the evaluator's
+        // residual needs + `__row_id__` when refinement needs row positions.
+        //
+        // On the QTF path `__row_id__` is dropped from the *output* columns and
+        // re-added below: the output value is `stored + global_base`, computed by
+        // the stream, so it cannot simply be passed through.
+        let read_projection: Option<Vec<usize>> = {
+            let base_cols: Option<Vec<usize>> = if config.emit_row_ids {
+                Some(match projection {
+                    Some(proj) => proj
+                        .iter()
+                        .filter(|&&idx| Some(idx) != row_id_col_in_full_schema)
+                        .copied()
+                        .collect(),
+                    None => (0..full_schema.fields().len())
+                        .filter(|&idx| Some(idx) != row_id_col_in_full_schema)
+                        .collect(),
+                })
+            } else {
+                projection.cloned()
             };
-            let mut cols = output_cols;
-            for &idx in &config.predicate_columns {
-                if !cols.contains(&idx) {
-                    cols.push(idx);
-                }
-            }
-            cols.sort();
-            Some(cols)
-        } else if config.predicate_columns.is_empty() {
-            projection.cloned()
-        } else {
-            projection.map(|proj| {
-                let mut cols = proj.clone();
-                for &idx in &config.predicate_columns {
-                    if !cols.contains(&idx) {
-                        cols.push(idx);
+
+            let extra_predicate_cols = !config.predicate_columns.is_empty();
+            let extra_row_id = needs_row_positions && row_id_col_in_full_schema.is_some();
+
+            match base_cols {
+                // No explicit projection means "read everything", which already
+                // covers the predicate columns and `__row_id__`.
+                None => None,
+                Some(mut cols) if extra_predicate_cols || extra_row_id => {
+                    for &idx in &config.predicate_columns {
+                        if !cols.contains(&idx) {
+                            cols.push(idx);
+                        }
                     }
+                    if extra_row_id {
+                        let idx = row_id_col_in_full_schema.expect("checked above");
+                        if !cols.contains(&idx) {
+                            cols.push(idx);
+                        }
+                    }
+                    cols.sort_unstable();
+                    Some(cols)
                 }
-                cols.sort();
-                cols
-            })
+                Some(cols) => Some(cols),
+            }
         };
 
         let projected_schema = output_schema;
@@ -750,7 +784,6 @@ impl ExecutionPlan for QueryShardExec {
                 stream_metrics: stream_metrics.clone(),
                 query_config: Arc::clone(&self.config.query_config),
                 global_base: segment.global_base,
-                emit_row_ids: self.config.emit_row_ids,
                 row_id_output_index: self.row_id_output_index,
                 dynamic_filter: dynamic_filter.clone(),
                 cancellation_token: self.config.cancellation_token.clone(),
@@ -863,6 +896,7 @@ mod tests {
         ]));
         IndexedTableConfig {
             schema,
+            evaluator_needs_row_positions: false,
             segments: Vec::new(),
             store: Arc::new(object_store::local::LocalFileSystem::new()),
             store_url: datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),

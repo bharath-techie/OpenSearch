@@ -69,10 +69,11 @@ use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{BinaryExpr, Column as PhysColumn, Literal};
 use roaring::RoaringBitmap;
 
+use super::RowPositions;
 use super::{LeafBitmapSource, RgEvalContext, TreeEvaluator, TreePrefetch};
 use crate::indexed_table::bool_tree::ResolvedNode;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
-use crate::indexed_table::row_selection::{packed_bits_to_boolean_array, PositionMap};
+use crate::indexed_table::row_selection::packed_bits_to_boolean_array;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 
 /// In-process Rust `TreeEvaluator`. Stateless — all per-RG state lives in the
@@ -122,19 +123,9 @@ impl TreeEvaluator for BitmapTreeEvaluator {
         state: &TreePrefetch,
         batch: &RecordBatch,
         rg_first_row: i64,
-        position_map: &PositionMap,
-        batch_offset: usize,
-        batch_len: usize,
+        row_positions: &RowPositions,
     ) -> Result<BooleanArray, String> {
-        on_batch_node(
-            tree,
-            state,
-            batch,
-            rg_first_row,
-            position_map,
-            batch_offset,
-            batch_len,
-        )
+        on_batch_node(tree, state, batch, rg_first_row, row_positions)
     }
 }
 
@@ -769,23 +760,13 @@ fn on_batch_node(
     state: &TreePrefetch,
     batch: &RecordBatch,
     rg_first_row: i64,
-    position_map: &PositionMap,
-    batch_offset: usize,
-    batch_len: usize,
+    row_positions: &RowPositions,
 ) -> Result<BooleanArray, String> {
     match node {
         ResolvedNode::And(children) => {
             let mut optional_result_bitmap: Option<BooleanArray> = None;
             for child in children {
-                let child_bitmap = on_batch_node(
-                    child,
-                    state,
-                    batch,
-                    rg_first_row,
-                    position_map,
-                    batch_offset,
-                    batch_len,
-                )?;
+                let child_bitmap = on_batch_node(child, state, batch, rg_first_row, row_positions)?;
                 optional_result_bitmap = Some(match optional_result_bitmap {
                     None => child_bitmap,
                     Some(result_bitmap) => {
@@ -801,20 +782,12 @@ fn on_batch_node(
                     }
                 }
             }
-            Ok(optional_result_bitmap.unwrap_or_else(|| all_true(batch_len)))
+            Ok(optional_result_bitmap.unwrap_or_else(|| all_true(row_positions.len())))
         }
         ResolvedNode::Or(children) => {
             let mut optional_result_bitmap: Option<BooleanArray> = None;
             for child in children {
-                let child_bitmap = on_batch_node(
-                    child,
-                    state,
-                    batch,
-                    rg_first_row,
-                    position_map,
-                    batch_offset,
-                    batch_len,
-                )?;
+                let child_bitmap = on_batch_node(child, state, batch, rg_first_row, row_positions)?;
                 optional_result_bitmap = Some(match optional_result_bitmap {
                     None => child_bitmap,
                     Some(result_bitmap) => {
@@ -830,18 +803,10 @@ fn on_batch_node(
                     }
                 }
             }
-            Ok(optional_result_bitmap.unwrap_or_else(|| all_false(batch_len)))
+            Ok(optional_result_bitmap.unwrap_or_else(|| all_false(row_positions.len())))
         }
         ResolvedNode::Not(child) => {
-            let child_bitmap = on_batch_node(
-                child,
-                state,
-                batch,
-                rg_first_row,
-                position_map,
-                batch_offset,
-                batch_len,
-            )?;
+            let child_bitmap = on_batch_node(child, state, batch, rg_first_row, row_positions)?;
             not(&child_bitmap).map_err(|e| e.to_string())
         }
         ResolvedNode::Collector { collector, .. } => {
@@ -855,9 +820,7 @@ fn on_batch_node(
                 bitmap,
                 state.min_doc,
                 rg_first_row,
-                position_map,
-                batch_offset,
-                batch_len,
+                row_positions,
             ))
         }
         ResolvedNode::Predicate(expr) => predicate_to_batch_mask(batch, expr),
@@ -874,68 +837,55 @@ fn on_batch_node(
 /// Translate a Collector leaf's bitmap (in min-doc-relative coordinates) to
 /// a per-batch `BooleanArray`.
 ///
-/// With block-granular RowSelection the delivered rows are a compacted
-/// subset of the RG, not a contiguous span. `position_map` lets us recover
-/// which RG-relative position each delivered row came from; from there we
-/// compute the absolute doc id and look it up in `bm`.
-///
-/// `batch_offset` is the delivered-row index of the first row in this
-/// batch; delivered row `batch_offset + i` maps to RG position
-/// `position_map.rg_position(batch_offset + i)`.
+/// The delivered rows may be a compacted subset of the row group rather than a
+/// contiguous span. `row_positions` — the projected `__row_id__` column, rebased
+/// to the row group — says which RG position each delivered row came from; from
+/// there we compute the absolute doc id and look it up in `bm`.
 fn bitmap_to_batch_mask(
     bm: &RoaringBitmap,
     min_doc: i32,
     rg_first_row: i64,
-    position_map: &PositionMap,
-    batch_offset: usize,
-    batch_len: usize,
+    row_positions: &RowPositions,
 ) -> BooleanArray {
-    // Convert batch-row index -> min-doc-relative bitmap index.
-    // delivered row i -> rg_position(batch_offset + i) -> abs_doc -> bit.
-    //
-    // For Identity position map, rg_position(k) == k, so the mapping is
-    // linear: delivered row i -> bit (rg_first_row + batch_offset + i) - min_doc.
-    // We iterate the set bits of `bm` within the batch's coverage and
-    // translate back, instead of per-row `bm.contains()`.
-    let words = batch_len.div_ceil(64);
-    let mut out = vec![0u64; words];
+    let len = row_positions.len();
+    let mut out = vec![0u64; len.div_ceil(64)];
 
-    let anchor = rg_first_row - min_doc as i64; // rg_pos -> bit: rg_pos + anchor
-    match position_map {
-        PositionMap::Identity { .. } => {
-            // delivered row i -> rg_pos = batch_offset + i -> bit = batch_offset + i + anchor.
-            // Enumerate set bits in `bm` within [anchor + batch_offset, anchor + batch_offset + batch_len).
-            let lo = (batch_offset as i64 + anchor).max(0);
-            let hi = (batch_offset as i64 + anchor + batch_len as i64).max(0);
-            if hi > 0 && lo <= u32::MAX as i64 {
-                let lo_u32 = lo as u32;
-                let hi_u32 = hi.min(u32::MAX as i64) as u32;
-                for b in bm.range(lo_u32..hi_u32) {
-                    // delivered index = bit - anchor - batch_offset
-                    let delivered = (b as i64 - anchor - batch_offset as i64) as usize;
-                    if delivered < batch_len {
-                        out[delivered >> 6] |= 1u64 << (delivered & 63);
-                    }
+    // rg_pos -> bitmap bit: rg_pos + anchor
+    let anchor = rg_first_row - min_doc as i64;
+
+    if row_positions.is_contiguous_run() && len > 0 {
+        // Contiguous delivery: delivered row i sits at RG position
+        // `first + i`, so the mapping is linear and we can enumerate the set
+        // bits of `bm` inside the batch's window instead of testing every row.
+        let Some(first) = row_positions.rg_position(0) else {
+            return packed_bits_to_boolean_array(out, len);
+        };
+        let lo = (first as i64 + anchor).max(0);
+        let hi = (first as i64 + anchor + len as i64).max(0);
+        if hi > 0 && lo <= u32::MAX as i64 {
+            let lo_u32 = lo as u32;
+            let hi_u32 = hi.min(u32::MAX as i64) as u32;
+            for b in bm.range(lo_u32..hi_u32) {
+                let delivered = (b as i64 - anchor - first as i64) as usize;
+                if delivered < len {
+                    out[delivered >> 6] |= 1u64 << (delivered & 63);
                 }
             }
         }
-        PositionMap::Bitmap { .. } | PositionMap::DenseBitmap { .. } | PositionMap::Runs { .. } => {
-            // General case — fall back to per-row lookup but use packed-bit
-            // assembly so we avoid the Vec<bool> + BooleanArray::from copy.
-            for i in 0..batch_len {
-                let rg_pos = match position_map.rg_position(batch_offset + i) {
-                    Some(p) => p,
-                    None => continue,
-                };
-                let abs_doc = rg_first_row + rg_pos as i64;
-                let bit = abs_doc - min_doc as i64;
-                if bit >= 0 && bit <= u32::MAX as i64 && bm.contains(bit as u32) {
-                    out[i >> 6] |= 1u64 << (i & 63);
-                }
+    } else {
+        // Gapped delivery: per-row lookup, assembled into packed bits so we
+        // avoid a Vec<bool> + BooleanArray::from copy.
+        for i in 0..len {
+            let Some(rg_pos) = row_positions.rg_position(i) else {
+                continue;
+            };
+            let bit = rg_first_row + rg_pos as i64 - min_doc as i64;
+            if bit >= 0 && bit <= u32::MAX as i64 && bm.contains(bit as u32) {
+                out[i >> 6] |= 1u64 << (i & 63);
             }
         }
     }
-    packed_bits_to_boolean_array(out, batch_len)
+    packed_bits_to_boolean_array(out, len)
 }
 
 // Evaluate an arbitrary boolean `PhysicalExpr` against a batch; return
@@ -1303,21 +1253,26 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![0i32; 8]))]).unwrap();
         // Batch covers docs [0, 8). Match bitmap {1,3,5}.
-        // Full-scan position map: delivered index == RG position.
-        let pm = PositionMap::from_selection(&RowSelection::from(vec![RowSelector::select(8)]));
+        let ids = contiguous_ids(0, 8);
+        let rp = RowPositions::new(&ids, 0);
         let mask = BitmapTreeEvaluator
-            .on_batch(&tree, &state, &batch, 0, &pm, 0, 8)
+            .on_batch(&tree, &state, &batch, 0, &rp)
             .unwrap();
         let expected =
             BooleanArray::from(vec![false, true, false, true, false, true, false, false]);
         assert_eq!(mask, expected);
     }
 
-    /// Identity position map over `rg_num_rows`. Delivered index == RG
-    /// position — matches the pre-block-granular full-scan behaviour and
-    /// keeps the per-test expected values unchanged.
-    fn identity_pm(rg_num_rows: usize) -> PositionMap {
-        PositionMap::from_selection(&RowSelection::from(vec![RowSelector::select(rg_num_rows)]))
+    /// `__row_id__` values for `len` rows delivered back-to-back from RG
+    /// position `first`, i.e. an unfiltered read.
+    fn contiguous_ids(first: i64, len: usize) -> datafusion::arrow::array::Int64Array {
+        datafusion::arrow::array::Int64Array::from_iter_values((0..len as i64).map(|i| first + i))
+    }
+
+    /// `__row_id__` values for an arbitrary delivered subset — what a
+    /// `RowSelection` that skipped rows produces.
+    fn ids(values: Vec<i64>) -> datafusion::arrow::array::Int64Array {
+        datafusion::arrow::array::Int64Array::from(values)
     }
 
     #[test]
@@ -1332,9 +1287,12 @@ mod tests {
             b.insert(5);
             b
         };
-        let pm = identity_pm(8);
+        let row_ids = contiguous_ids(100, 8);
         let mask = bitmap_to_batch_mask(
-            &bm, /*min_doc*/ 100, /*rg_first_row*/ 100, &pm, 0, 8,
+            &bm,
+            /*min_doc*/ 100,
+            /*rg_first_row*/ 100,
+            &RowPositions::new(&row_ids, 100),
         );
         let got: Vec<bool> = (0..8).map(|i| mask.value(i)).collect();
         assert_eq!(
@@ -1356,8 +1314,9 @@ mod tests {
             b.insert(9);
             b
         };
-        let pm = identity_pm(16);
-        let mask = bitmap_to_batch_mask(&bm, 0, 0, &pm, 4, 4);
+        // Delivered rows are RG positions 4..8.
+        let row_ids = contiguous_ids(4, 4);
+        let mask = bitmap_to_batch_mask(&bm, 0, 0, &RowPositions::new(&row_ids, 0));
         let got: Vec<bool> = (0..4).map(|i| mask.value(i)).collect();
         assert_eq!(got, vec![false, true, false, false]);
     }
@@ -1365,8 +1324,8 @@ mod tests {
     #[test]
     fn bitmap_to_batch_mask_empty_bitmap_produces_all_false() {
         let bm = RoaringBitmap::new();
-        let pm = identity_pm(5);
-        let mask = bitmap_to_batch_mask(&bm, 0, 0, &pm, 0, 5);
+        let row_ids = contiguous_ids(0, 5);
+        let mask = bitmap_to_batch_mask(&bm, 0, 0, &RowPositions::new(&row_ids, 0));
         assert_eq!(mask.true_count(), 0);
         assert_eq!(mask.len(), 5);
     }
@@ -1378,13 +1337,13 @@ mod tests {
             b.insert(0);
             b
         };
-        let pm = identity_pm(1);
-        let mask = bitmap_to_batch_mask(&bm, 0, 0, &pm, 0, 0);
+        let row_ids = contiguous_ids(0, 0);
+        let mask = bitmap_to_batch_mask(&bm, 0, 0, &RowPositions::new(&row_ids, 0));
         assert_eq!(mask.len(), 0);
     }
 
     #[test]
-    fn bitmap_to_batch_mask_respects_position_map() {
+    fn bitmap_to_batch_mask_respects_delivered_row_ids() {
         // RG has 10 rows; RowSelection selects rows [0..3] and [7..10],
         // skipping [3..7]. Delivered rows = 6 (3 + 3).
         // delivered idx 0 → rg_pos 0
@@ -1395,19 +1354,14 @@ mod tests {
         // delivered idx 5 → rg_pos 9
         // Bitmap (min_doc-relative, min_doc = 0, rg_first_row = 0) {2, 8}.
         // Expected mask per delivered index: [F,F,T,F,T,F]
-        let sel = RowSelection::from(vec![
-            RowSelector::select(3),
-            RowSelector::skip(4),
-            RowSelector::select(3),
-        ]);
-        let pm = PositionMap::from_selection(&sel);
+        let row_ids = ids(vec![0, 1, 2, 7, 8, 9]);
         let bm = {
             let mut b = RoaringBitmap::new();
             b.insert(2);
             b.insert(8);
             b
         };
-        let mask = bitmap_to_batch_mask(&bm, 0, 0, &pm, 0, 6);
+        let mask = bitmap_to_batch_mask(&bm, 0, 0, &RowPositions::new(&row_ids, 0));
         let got: Vec<bool> = (0..6).map(|i| mask.value(i)).collect();
         assert_eq!(got, vec![false, false, true, false, true, false]);
     }
@@ -1476,8 +1430,14 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![0i32; 4]))]).unwrap();
 
-        let mask = on_batch_node(&tree, &state, &batch, 0, &identity_pm(4), 0, 4)
-            .expect("AND should short-circuit on all-false acc, skipping poison leaf");
+        let mask = on_batch_node(
+            &tree,
+            &state,
+            &batch,
+            0,
+            &RowPositions::new(&contiguous_ids(0, 4), 0),
+        )
+        .expect("AND should short-circuit on all-false acc, skipping poison leaf");
         assert_eq!(mask.true_count(), 0);
     }
 
@@ -1506,8 +1466,14 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![0i32; 4]))]).unwrap();
 
-        let mask = on_batch_node(&tree, &state, &batch, 0, &identity_pm(4), 0, 4)
-            .expect("OR should short-circuit on all-true acc, skipping poison leaf");
+        let mask = on_batch_node(
+            &tree,
+            &state,
+            &batch,
+            0,
+            &RowPositions::new(&contiguous_ids(0, 4), 0),
+        )
+        .expect("OR should short-circuit on all-true acc, skipping poison leaf");
         assert_eq!(mask.true_count(), 4);
     }
 

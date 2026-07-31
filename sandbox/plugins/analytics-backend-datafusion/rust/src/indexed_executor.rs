@@ -403,6 +403,29 @@ fn collect_plan_column_names(plan: &datafusion::logical_expr::LogicalPlan) -> Ve
     names.into_iter().collect()
 }
 
+/// Column names that must receive a real (not placeholder) scoped OffsetIndex for
+/// the projection side: every column the logical plan reads, PLUS `__row_id__`.
+///
+/// `__row_id__` is injected into the PHYSICAL read projection by
+/// [`IndexedTableProvider::scan`](crate::indexed_table) — for QTF output and/or
+/// refinement row positions — but never appears in the LOGICAL plan, so
+/// [`collect_plan_column_names`] never lists it. Every column the scan physically
+/// reads MUST get a real OffsetIndex: a scoped-out column falls back to the
+/// whole-chunk placeholder page, and when the reader actually decodes it arrow
+/// treats the entire column chunk as one page and hands lz4 a compressed slice
+/// that overruns into the following page ("provided output is too small for the
+/// decompressed data"). Adding it unconditionally is always safe — `__row_id__`
+/// is a physical column in every OpenSearch parquet file — and costs at most one
+/// extra real OffsetIndex column when the query does not otherwise read it.
+fn collect_scoped_projection_names(plan: &datafusion::logical_expr::LogicalPlan) -> Vec<String> {
+    let mut names = collect_plan_column_names(plan);
+    let row_id_name = crate::ROW_ID_COLUMN_NAME.to_string();
+    if !names.contains(&row_id_name) {
+        names.push(row_id_name);
+    }
+    names
+}
+
 /// Build the `prune_tree_config` tuple from a BoolNode tree and schema.
 /// Builds per-leaf PruningPredicates from pre-collected leaf exprs.
 fn build_prune_tree_config(
@@ -755,6 +778,37 @@ mod tests {
                 "expected column `{expected}` in collected names {names:?}"
             );
         }
+    }
+
+    /// The scoped projection set must ALWAYS include `__row_id__`, even though it
+    /// never appears in the logical plan — it is injected into the physical read
+    /// and reading it through a whole-chunk placeholder OffsetIndex corrupts the
+    /// lz4 decode ("provided output is too small"). Regression guard.
+    #[test]
+    fn collect_scoped_projection_names_always_includes_row_id() {
+        let plan = build_logical_plan("SELECT v FROM t WHERE id = 1 ORDER BY ts");
+        let names = collect_scoped_projection_names(&plan);
+        assert!(
+            names.iter().any(|n| n == crate::ROW_ID_COLUMN_NAME),
+            "scoped projection set must include `{}`, got {names:?}",
+            crate::ROW_ID_COLUMN_NAME
+        );
+        // and still carries the real projected/referenced columns
+        for expected in ["v", "id", "ts"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "expected column `{expected}` in {names:?}"
+            );
+        }
+    }
+
+    /// `__row_id__` appears exactly once (the injected copy), never duplicated.
+    #[test]
+    fn collect_scoped_projection_names_no_duplicate_row_id() {
+        let plan = build_logical_plan("SELECT v FROM t WHERE id = 1 ORDER BY ts");
+        let names = collect_scoped_projection_names(&plan);
+        let count = names.iter().filter(|n| *n == crate::ROW_ID_COLUMN_NAME).count();
+        assert_eq!(count, 1, "`__row_id__` must appear once, got {names:?}");
     }
 
     #[test]
@@ -1146,7 +1200,7 @@ async unsafe fn execute_indexed_with_context_inner(
     // scoped OffsetIndex so the reader fetches only matched pages.
     if page_index::is_scoped_page_index_enabled() {
         let predicate_column_names = collect_predicate_column_names(extraction.as_ref(), &schema);
-        let projection_column_names = collect_plan_column_names(&logical_plan);
+        let projection_column_names = collect_scoped_projection_names(&logical_plan);
         if !predicate_column_names.is_empty() || !projection_column_names.is_empty() {
             for segment in segments.iter_mut() {
                 let (parquet_cols, offset_cols) = resolve_predicate_parquet_columns_pair(
@@ -1509,6 +1563,15 @@ async unsafe fn execute_indexed_with_context_inner(
         pushdown_predicate,
         query_config: Arc::clone(&query_config),
         predicate_columns,
+        // Refinement against external per-row state needs the row's position,
+        // which comes from the projected `__row_id__` column. The predicate-only
+        // shape refines with a plain expression over the batch and needs nothing,
+        // so it reads no extra column. Mirrors
+        // `RowGroupBitsetSource::needs_row_positions`.
+        evaluator_needs_row_positions: matches!(
+            classification,
+            FilterClass::SingleCollector | FilterClass::Tree
+        ),
         emit_row_ids,
         prune_tree_config,
         sort_fields: sort_fields.clone(),

@@ -35,12 +35,11 @@ use super::eval::bitmap_tree::{BitmapTreeEvaluator, CollectorLeafBitmaps};
 use super::eval::{RowGroupBitsetSource, TreeBitsetSource};
 use super::index::RowGroupDocsCollector;
 use super::page_pruner::PagePruner;
-use super::stream::{FilterStrategy, RowGroupInfo};
+use super::stream::RowGroupInfo;
 use super::table_provider::{IndexedTableConfig, IndexedTableProvider, SegmentFileInfo};
 
 mod boolean_algebra;
 mod constant_predicate;
-mod decoder_stream;
 mod dynamic_filter_pushdown;
 mod fuzz;
 mod metrics;
@@ -194,29 +193,10 @@ async fn run_tree(tree: BoolNode) -> Vec<(String, i32, String, String)> {
     run_tree_and_plan(tree).await.0
 }
 
-async fn run_tree_with_decoder(
-    tree: BoolNode,
-    indexed_multi_rg_decode: bool,
-) -> Vec<(String, i32, String, String)> {
-    run_tree_and_plan_with_decoder(tree, indexed_multi_rg_decode)
-        .await
-        .0
-}
-
 /// Like [`run_tree`] but also returns the physical plan so tests can
 /// read metrics off it after execution.
 async fn run_tree_and_plan(
     tree: BoolNode,
-) -> (
-    Vec<(String, i32, String, String)>,
-    std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-) {
-    run_tree_and_plan_with_decoder(tree, false).await
-}
-
-async fn run_tree_and_plan_with_decoder(
-    tree: BoolNode,
-    indexed_multi_rg_decode: bool,
 ) -> (
     Vec<(String, i32, String, String)>,
     std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
@@ -305,15 +285,12 @@ async fn run_tree_and_plan_with_decoder(
     let store: Arc<dyn object_store::ObjectStore> =
         Arc::new(object_store::local::LocalFileSystem::new());
     let store_url = datafusion::execution::object_store::ObjectStoreUrl::local_filesystem();
-    // Force BooleanMask so batches contain the entire RG and batch_offset
-    // equals the row-index-within-RG. Phase 2 bitmap_to_batch_mask
-    // relies on this alignment. RowSelection would still work for Path B
-    // (no Phase-2 mask), but Path C tree eval requires BooleanMask today.
+    // Selection is always row-granular now, and refinement reads positions from
+    // the delivered `__row_id__` column, so no strategy needs pinning: the tree
+    // evaluator works on whatever subset parquet hands back.
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(Some(FilterStrategy::BooleanMask))
         .indexed_pushdown_filters(false)
-        .indexed_multi_rg_decode(indexed_multi_rg_decode)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -324,6 +301,7 @@ async fn run_tree_and_plan_with_decoder(
         pushdown_predicate: None,
         query_config: std::sync::Arc::new(qc),
         predicate_columns: vec![],
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],

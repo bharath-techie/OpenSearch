@@ -5,8 +5,6 @@
 //! setup time and copied into hot-path fields — never dereferenced on a
 //! per-batch or per-row hot path.
 
-use crate::indexed_table::stream::FilterStrategy;
-
 /// Engine-internal point lookup driven through the normal `df_execute_query`
 /// entry point. When active, the Substrait `plan_ptr` is ignored and the plan
 /// is built natively via the DataFrame API with a single pushed-down filter on
@@ -53,26 +51,57 @@ pub struct DatafusionQueryConfig {
     pub listing_table_pushdown_filters: bool,
 
     // Indexed-only
-    pub min_skip_run_default: usize,
-    pub min_skip_run_selectivity_threshold: f64,
     /// Whether IndexedStream asks parquet to apply the residual predicate
-    /// during decode (via `RowFilter` pushdown). Narrow row-granular
-    /// selections benefit; block-granular ones don't.
+    /// during decode (via `RowFilter` pushdown).
     pub indexed_pushdown_filters: bool,
-    /// Optional override that pins the per-RG `min_skip_run` choice instead of
-    /// letting selectivity decide. Backed by the `datafusion.indexed.force_strategy`
-    /// cluster setting: `None` (wire `-1`) lets the selectivity heuristic run,
-    /// `RowSelection`/`BooleanMask` pin the choice node-wide. See
-    /// `IndexedStream::pick_min_skip_run`.
-    pub force_strategy: Option<FilterStrategy>,
     pub cost_predicate: u32,
     pub cost_collector: u32,
-    /// Use one adaptive Arrow decoder across a segment chunk's row groups.
-    /// Default-off while correctness and performance are validated.
-    pub indexed_multi_rg_decode: bool,
-    /// Route marker-free, non-row-id scans through IndexedTableProvider.
-    /// Default-off benchmark aid for ListingTable parity work.
-    pub route_pure_parquet_through_indexed: bool,
+    /// Skip runs shorter than this are absorbed into the surrounding `select`
+    /// when candidates are dense enough to make the selector list the dominant
+    /// cost. `1` disables coalescing. Applied only above
+    /// [`Self::min_skip_run_selectivity_threshold`].
+    pub min_skip_run_default: usize,
+    /// Candidate selectivity (matched / row-group rows) below which selection
+    /// stays row-granular. Below it the skips are long and few, so coalescing
+    /// would over-read for nothing.
+    pub min_skip_run_selectivity_threshold: f64,
+    /// Pins the per-row-group granularity decision instead of letting
+    /// selectivity choose. Diagnostics only; `None` in production.
+    pub force_strategy: Option<FilterStrategy>,
+    /// Whether refinement runs as a parquet `ArrowPredicate` during decode
+    /// rather than on the fully decoded batch.
+    ///
+    /// Decode-time refinement decodes the refinement's own columns first, then
+    /// decodes the projection for survivors only — two decode passes, which pays
+    /// off exactly when refinement rejects most candidates. When the candidate
+    /// stage is already near-exact (an indexed term match, typically) almost
+    /// nothing is rejected and the second pass is pure overhead, so this is
+    /// gated on measured refinement selectivity at runtime.
+    pub indexed_decode_time_refinement: bool,
+}
+
+/// How to materialize a row group's candidate set for the decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterStrategy {
+    /// Row-granular: every non-candidate row becomes a `skip`
+    /// (`min_skip_run = 1`).
+    RowSelection,
+    /// One whole-row-group `select`; the refinement drops non-candidates
+    /// (`min_skip_run > rows`).
+    BooleanMask,
+}
+
+impl FilterStrategy {
+    /// Decodes the FFM wire value: `-1` = `None`, `0` = `RowSelection`,
+    /// `1` = `BooleanMask`. Unknown values are treated as `None` so a newer
+    /// Java side cannot force an unimplemented strategy.
+    pub fn from_wire(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::RowSelection),
+            1 => Some(Self::BooleanMask),
+            _ => None,
+        }
+    }
 }
 
 /// FFM wire format. Must stay in lockstep with the Java `MemoryLayout`.
@@ -83,24 +112,43 @@ pub struct DatafusionQueryConfig {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct WireDatafusionQueryConfig {
+    /// Layout guard. Java writes [`WIRE_CONFIG_ABI_VERSION`]; Rust rejects
+    /// anything else.
+    ///
+    /// This struct is passed as raw bytes over FFM with no negotiation, so a
+    /// Rust `.so` and a Java plugin built from different revisions would
+    /// silently misread every field — a wrong `batch_size` or an inverted
+    /// pushdown flag, not a crash. Bump the constant on both sides whenever a
+    /// field is added, removed, reordered, or resized.
+    pub abi_version: i32,
+    /// Explicit padding so `batch_size` stays 8-byte aligned and the layout is
+    /// identical on every target, rather than relying on implicit `repr(C)`
+    /// padding that Java's `MemoryLayout` would have to mirror by guesswork.
+    pub _pad: i32,
     pub batch_size: i64,
     pub target_partitions: i64,
-    pub min_skip_run_default: i64,
-    pub min_skip_run_selectivity_threshold: f64,
     /// 0 = false, 1 = true
     pub listing_table_pushdown_filters: i32,
     /// 0 = false, 1 = true
     pub indexed_pushdown_filters: i32,
-    /// -1 = None, 0 = RowSelection, 1 = BooleanMask.
-    /// Backed by the `datafusion.indexed.force_strategy` cluster setting.
-    pub force_strategy: i32,
     pub cost_predicate: i32,
     pub cost_collector: i32,
+    pub min_skip_run_default: i64,
+    pub min_skip_run_selectivity_threshold: f64,
+    /// `-1` = None (selectivity decides), `0` = RowSelection, `1` = BooleanMask.
+    pub force_strategy: i32,
     /// 0 = false, 1 = true
-    pub indexed_multi_rg_decode: i32,
-    /// 0 = false, 1 = true
-    pub route_pure_parquet_through_indexed: i32,
+    pub indexed_decode_time_refinement: i32,
 }
+
+/// Current FFM layout version for [`WireDatafusionQueryConfig`].
+///
+/// Bump on any field add, remove, reorder, or resize, and bump
+/// `WireConfigSnapshot.ABI_VERSION` on the Java side in the same change.
+/// Layouts before this field existed were unversioned, so there is no version
+/// 0 to be compatible with — a mismatched pair simply fails the assert in
+/// [`DatafusionQueryConfig::from_ffm_ptr`].
+pub const WIRE_CONFIG_ABI_VERSION: i32 = 3;
 
 impl DatafusionQueryConfig {
     /// Fallback values used when Java passes a null config pointer (0).
@@ -112,14 +160,13 @@ impl DatafusionQueryConfig {
             batch_size: 8192,
             target_partitions: 4,
             listing_table_pushdown_filters: false,
-            min_skip_run_default: 1024,
-            min_skip_run_selectivity_threshold: 0.03,
             indexed_pushdown_filters: true,
-            force_strategy: None,
             cost_predicate: 1,
             cost_collector: 10,
-            indexed_multi_rg_decode: false,
-            route_pure_parquet_through_indexed: false,
+            min_skip_run_default: 1024,
+            min_skip_run_selectivity_threshold: 0.03,
+            force_strategy: None,
+            indexed_decode_time_refinement: false,
         }
     }
 
@@ -149,6 +196,13 @@ impl DatafusionQueryConfig {
             "from_ffm_ptr: null query config pointer — Java must always provide a valid config"
         );
         let wire = &*(ptr as *const WireDatafusionQueryConfig);
+        assert_eq!(
+            wire.abi_version, WIRE_CONFIG_ABI_VERSION,
+            "query-config ABI mismatch: Java wrote version {} but this native \
+             library expects {}. The Rust .so and the Java plugin are from \
+             different builds; every field after the header would be misread.",
+            wire.abi_version, WIRE_CONFIG_ABI_VERSION
+        );
         Self::from_wire(wire)
     }
 
@@ -157,20 +211,13 @@ impl DatafusionQueryConfig {
             batch_size: w.batch_size as usize,
             target_partitions: w.target_partitions as usize,
             listing_table_pushdown_filters: w.listing_table_pushdown_filters != 0,
-            min_skip_run_default: w.min_skip_run_default as usize,
-            min_skip_run_selectivity_threshold: w.min_skip_run_selectivity_threshold,
             indexed_pushdown_filters: w.indexed_pushdown_filters != 0,
-            // `force_strategy` is backed by a cluster setting; `-1` means None
-            // (selectivity heuristic decides).
-            force_strategy: match w.force_strategy {
-                0 => Some(FilterStrategy::RowSelection),
-                1 => Some(FilterStrategy::BooleanMask),
-                _ => None,
-            },
             cost_predicate: w.cost_predicate as u32,
             cost_collector: w.cost_collector as u32,
-            indexed_multi_rg_decode: w.indexed_multi_rg_decode != 0,
-            route_pure_parquet_through_indexed: w.route_pure_parquet_through_indexed != 0,
+            min_skip_run_default: w.min_skip_run_default.max(1) as usize,
+            min_skip_run_selectivity_threshold: w.min_skip_run_selectivity_threshold,
+            force_strategy: FilterStrategy::from_wire(w.force_strategy),
+            indexed_decode_time_refinement: w.indexed_decode_time_refinement != 0,
         }
     }
 }
@@ -195,20 +242,8 @@ impl DatafusionQueryConfigBuilder {
         self.0.listing_table_pushdown_filters = v;
         self
     }
-    pub fn min_skip_run_default(mut self, v: usize) -> Self {
-        self.0.min_skip_run_default = v;
-        self
-    }
-    pub fn min_skip_run_selectivity_threshold(mut self, v: f64) -> Self {
-        self.0.min_skip_run_selectivity_threshold = v;
-        self
-    }
     pub fn indexed_pushdown_filters(mut self, v: bool) -> Self {
         self.0.indexed_pushdown_filters = v;
-        self
-    }
-    pub fn force_strategy(mut self, v: Option<FilterStrategy>) -> Self {
-        self.0.force_strategy = v;
         self
     }
     pub fn cost_predicate(mut self, v: u32) -> Self {
@@ -219,12 +254,20 @@ impl DatafusionQueryConfigBuilder {
         self.0.cost_collector = v;
         self
     }
-    pub fn indexed_multi_rg_decode(mut self, v: bool) -> Self {
-        self.0.indexed_multi_rg_decode = v;
+    pub fn min_skip_run_default(mut self, v: usize) -> Self {
+        self.0.min_skip_run_default = v;
         self
     }
-    pub fn route_pure_parquet_through_indexed(mut self, v: bool) -> Self {
-        self.0.route_pure_parquet_through_indexed = v;
+    pub fn min_skip_run_selectivity_threshold(mut self, v: f64) -> Self {
+        self.0.min_skip_run_selectivity_threshold = v;
+        self
+    }
+    pub fn force_strategy(mut self, v: Option<FilterStrategy>) -> Self {
+        self.0.force_strategy = v;
+        self
+    }
+    pub fn indexed_decode_time_refinement(mut self, v: bool) -> Self {
+        self.0.indexed_decode_time_refinement = v;
         self
     }
     pub fn build(self) -> DatafusionQueryConfig {
@@ -242,14 +285,9 @@ mod tests {
         assert_eq!(c.batch_size, 8192);
         assert_eq!(c.target_partitions, 4);
         assert!(!c.listing_table_pushdown_filters);
-        assert_eq!(c.min_skip_run_default, 1024);
-        assert!((c.min_skip_run_selectivity_threshold - 0.03).abs() < 1e-9);
         assert!(c.indexed_pushdown_filters);
-        assert_eq!(c.force_strategy, None);
         assert_eq!(c.cost_predicate, 1);
         assert_eq!(c.cost_collector, 10);
-        assert!(!c.indexed_multi_rg_decode);
-        assert!(!c.route_pure_parquet_through_indexed);
     }
 
     #[test]
@@ -260,18 +298,68 @@ mod tests {
 
     #[test]
     fn wire_layout_matches_java_snapshot() {
+        // Mirrors the offset table documented on Java's
+        // `WireConfigSnapshot.writeTo`. Any change here must change both.
         assert_eq!(std::mem::size_of::<WireDatafusionQueryConfig>(), 64);
-        assert_eq!(
-            std::mem::offset_of!(WireDatafusionQueryConfig, indexed_multi_rg_decode),
-            52
-        );
-        assert_eq!(
-            std::mem::offset_of!(
-                WireDatafusionQueryConfig,
-                route_pure_parquet_through_indexed
+        for (name, got, want) in [
+            (
+                "abi_version",
+                std::mem::offset_of!(WireDatafusionQueryConfig, abi_version),
+                0,
             ),
-            56
-        );
+            (
+                "batch_size",
+                std::mem::offset_of!(WireDatafusionQueryConfig, batch_size),
+                8,
+            ),
+            (
+                "target_partitions",
+                std::mem::offset_of!(WireDatafusionQueryConfig, target_partitions),
+                16,
+            ),
+            (
+                "listing_table_pushdown_filters",
+                std::mem::offset_of!(WireDatafusionQueryConfig, listing_table_pushdown_filters),
+                24,
+            ),
+            (
+                "indexed_pushdown_filters",
+                std::mem::offset_of!(WireDatafusionQueryConfig, indexed_pushdown_filters),
+                28,
+            ),
+            (
+                "cost_predicate",
+                std::mem::offset_of!(WireDatafusionQueryConfig, cost_predicate),
+                32,
+            ),
+            (
+                "cost_collector",
+                std::mem::offset_of!(WireDatafusionQueryConfig, cost_collector),
+                36,
+            ),
+            (
+                "min_skip_run_default",
+                std::mem::offset_of!(WireDatafusionQueryConfig, min_skip_run_default),
+                40,
+            ),
+            (
+                "min_skip_run_selectivity_threshold",
+                std::mem::offset_of!(WireDatafusionQueryConfig, min_skip_run_selectivity_threshold),
+                48,
+            ),
+            (
+                "force_strategy",
+                std::mem::offset_of!(WireDatafusionQueryConfig, force_strategy),
+                56,
+            ),
+            (
+                "indexed_decode_time_refinement",
+                std::mem::offset_of!(WireDatafusionQueryConfig, indexed_decode_time_refinement),
+                60,
+            ),
+        ] {
+            assert_eq!(got, want, "offset of {name} drifted from the Java layout");
+        }
     }
 
     #[test]
@@ -295,52 +383,69 @@ mod tests {
     #[test]
     fn wire_decode_round_trips_all_fields() {
         let wire = WireDatafusionQueryConfig {
+            abi_version: WIRE_CONFIG_ABI_VERSION,
+            _pad: 0,
             batch_size: 16384,
             target_partitions: 8,
-            min_skip_run_default: 512,
-            min_skip_run_selectivity_threshold: 0.07,
             listing_table_pushdown_filters: 1,
             indexed_pushdown_filters: 0,
-            force_strategy: 1,
             cost_predicate: 3,
             cost_collector: 17,
-            indexed_multi_rg_decode: 1,
-            route_pure_parquet_through_indexed: 1,
+            min_skip_run_default: 512,
+            min_skip_run_selectivity_threshold: 0.07,
+            force_strategy: 1,
+            indexed_decode_time_refinement: 0,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
         assert_eq!(c.batch_size, 16384);
         assert_eq!(c.target_partitions, 8);
-        assert_eq!(c.min_skip_run_default, 512);
-        assert!((c.min_skip_run_selectivity_threshold - 0.07).abs() < 1e-9);
         assert!(c.listing_table_pushdown_filters);
         assert!(!c.indexed_pushdown_filters);
-        assert_eq!(c.force_strategy, Some(FilterStrategy::BooleanMask));
         assert_eq!(c.cost_predicate, 3);
         assert_eq!(c.cost_collector, 17);
-        assert!(c.indexed_multi_rg_decode);
-        assert!(c.route_pure_parquet_through_indexed);
+        assert_eq!(c.min_skip_run_default, 512);
+        assert_eq!(c.min_skip_run_selectivity_threshold, 0.07);
+        assert_eq!(c.force_strategy, Some(FilterStrategy::BooleanMask));
+        assert!(!c.indexed_decode_time_refinement);
     }
 
+    /// `min_skip_run_default` is clamped to at least 1: `0` would mean "coalesce
+    /// nothing" in the wire encoding but underflow the `<= 1` disable check.
     #[test]
-    fn wire_decode_force_fields_none_sentinels() {
+    fn min_skip_run_default_is_clamped_to_one() {
         let wire = WireDatafusionQueryConfig {
+            abi_version: WIRE_CONFIG_ABI_VERSION,
+            _pad: 0,
             batch_size: 8192,
             target_partitions: 4,
-            min_skip_run_default: 1024,
-            min_skip_run_selectivity_threshold: 0.03,
             listing_table_pushdown_filters: 0,
             indexed_pushdown_filters: 1,
-            force_strategy: -1,
             cost_predicate: 1,
             cost_collector: 10,
-            indexed_multi_rg_decode: 0,
-            route_pure_parquet_through_indexed: 0,
+            min_skip_run_default: 0,
+            min_skip_run_selectivity_threshold: 0.03,
+            force_strategy: -1,
+            indexed_decode_time_refinement: 1,
         };
         let ptr = &wire as *const _ as i64;
         let c = unsafe { DatafusionQueryConfig::from_ffm_ptr(ptr) };
+        assert_eq!(c.min_skip_run_default, 1);
         assert_eq!(c.force_strategy, None);
-        assert!(!c.indexed_multi_rg_decode);
-        assert!(!c.route_pure_parquet_through_indexed);
+    }
+
+    #[test]
+    fn filter_strategy_from_wire_decodes_sentinels() {
+        assert_eq!(FilterStrategy::from_wire(-1), None);
+        assert_eq!(
+            FilterStrategy::from_wire(0),
+            Some(FilterStrategy::RowSelection)
+        );
+        assert_eq!(
+            FilterStrategy::from_wire(1),
+            Some(FilterStrategy::BooleanMask)
+        );
+        // Unknown values are forward-compatible: treated as None.
+        assert_eq!(FilterStrategy::from_wire(9), None);
     }
 }

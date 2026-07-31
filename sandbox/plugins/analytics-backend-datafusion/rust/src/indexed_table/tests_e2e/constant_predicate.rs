@@ -56,7 +56,6 @@ async fn run_predicate_only(
     residual: Arc<dyn PhysicalExpr>,
     predicate_columns: Vec<usize>,
     pushdown_filters: bool,
-    multi_rg_decode: bool,
 ) -> (usize, Arc<dyn ExecutionPlan>) {
     let tmp = write_fixture_parquet();
     let path = tmp.path().to_path_buf();
@@ -122,9 +121,7 @@ async fn run_predicate_only(
     let store_url = ObjectStoreUrl::local_filesystem();
     let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
         .target_partitions(1)
-        .force_strategy(None)
         .indexed_pushdown_filters(pushdown_filters)
-        .indexed_multi_rg_decode(multi_rg_decode)
         .build();
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
@@ -135,6 +132,7 @@ async fn run_predicate_only(
         pushdown_predicate: Some(residual),
         query_config: std::sync::Arc::new(qc),
         predicate_columns,
+        evaluator_needs_row_positions: true,
         emit_row_ids: false,
         prune_tree_config: None,
         sort_fields: vec![],
@@ -163,21 +161,17 @@ async fn run_predicate_only(
 async fn constant_true_predicate_keeps_all_rows() {
     // 1 > 0 → true for every row → full 16-row fixture passes.
     for pushdown_filters in [false, true] {
-        for multi_rg_decode in [false, true] {
-            let (rows, _) = run_predicate_only(
-                None,
-                const_predicate(1, Operator::Gt, 0),
-                vec![],
-                pushdown_filters,
-                multi_rg_decode,
-            )
-            .await;
-            assert_eq!(
-                16, rows,
-                "constant-true residual should keep every row \
-                 (pushdown={pushdown_filters}, multi_rg_decode={multi_rg_decode})"
-            );
-        }
+        let (rows, _) = run_predicate_only(
+            None,
+            const_predicate(1, Operator::Gt, 0),
+            vec![],
+            pushdown_filters,
+        )
+        .await;
+        assert_eq!(
+            16, rows,
+            "constant-true residual should keep every row (pushdown={pushdown_filters})"
+        );
     }
 }
 
@@ -185,21 +179,17 @@ async fn constant_true_predicate_keeps_all_rows() {
 async fn constant_false_predicate_drops_all_rows() {
     // 1 < 0 → false for every row → zero rows emitted.
     for pushdown_filters in [false, true] {
-        for multi_rg_decode in [false, true] {
-            let (rows, _) = run_predicate_only(
-                None,
-                const_predicate(1, Operator::Lt, 0),
-                vec![],
-                pushdown_filters,
-                multi_rg_decode,
-            )
-            .await;
-            assert_eq!(
-                0, rows,
-                "constant-false residual should drop every row \
-                 (pushdown={pushdown_filters}, multi_rg_decode={multi_rg_decode})"
-            );
-        }
+        let (rows, _) = run_predicate_only(
+            None,
+            const_predicate(1, Operator::Lt, 0),
+            vec![],
+            pushdown_filters,
+        )
+        .await;
+        assert_eq!(
+            0, rows,
+            "constant-false residual should drop every row (pushdown={pushdown_filters})"
+        );
     }
 }
 
@@ -211,39 +201,34 @@ async fn predicate_only_retains_post_decode_refinement() {
         Arc::clone(&predicate),
         vec![1],
         false,
-        false,
     )
     .await;
     assert_eq!(11, baseline);
 
-    for multi_rg_decode in [false, true] {
-        let (rows, plan) = run_predicate_only(
-            Some(Arc::clone(&predicate)),
-            Arc::clone(&predicate),
-            vec![1],
-            true,
-            multi_rg_decode,
-        )
-        .await;
-        assert_eq!(baseline, rows);
+    let (rows, plan) = run_predicate_only(
+        Some(Arc::clone(&predicate)),
+        Arc::clone(&predicate),
+        vec![1],
+        true,
+    )
+    .await;
+    assert_eq!(baseline, rows);
 
-        let metrics = super::metrics::aggregate_metrics(&plan);
-        let on_batch_mask_time: usize = metrics
+    let metrics = super::metrics::aggregate_metrics(&plan);
+    let on_batch_mask_time: usize = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == "on_batch_mask_time")
+        .map(|metric| metric.value().as_usize())
+        .sum();
+    assert!(
+        on_batch_mask_time > 0,
+        "predicate-only scans retain post-decode refinement"
+    );
+    assert!(
+        metrics
             .iter()
-            .filter(|metric| metric.value().name() == "on_batch_mask_time")
-            .map(|metric| metric.value().as_usize())
-            .sum();
-        assert!(
-            on_batch_mask_time > 0,
-            "predicate-only scans retain post-decode refinement \
-             (multi_rg_decode={multi_rg_decode})"
-        );
-        assert!(
-            metrics
-                .iter()
-                .filter(|metric| metric.value().name() == "build_mask_time")
-                .all(|metric| metric.value().as_usize() == 0),
-            "direct page selection should not build a mask (multi_rg_decode={multi_rg_decode})"
-        );
-    }
+            .filter(|metric| metric.value().name() == "build_mask_time")
+            .all(|metric| metric.value().as_usize() == 0),
+        "direct page selection should not build a mask"
+    );
 }
