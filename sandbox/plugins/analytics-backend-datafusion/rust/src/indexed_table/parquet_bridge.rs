@@ -150,12 +150,14 @@ pub async fn load_parquet_metadata_with_meta(
 pub struct ReadIoStats {
     pub total_ns: AtomicU64,
     pub count: AtomicU64,
+    pub bytes: AtomicU64,
 }
 
-fn record_io(stats: &ReadIoStats, dur: Duration) {
+fn record_io(stats: &ReadIoStats, dur: Duration, bytes: u64) {
     let ns = dur.as_nanos() as u64;
     stats.total_ns.fetch_add(ns, Ordering::Relaxed);
     stats.count.fetch_add(1, Ordering::Relaxed);
+    stats.bytes.fetch_add(bytes, Ordering::Relaxed);
 }
 
 /// Configuration for creating a per-row-group parquet stream.
@@ -421,11 +423,12 @@ impl AsyncFileReader for CachedMetadataReader {
         let io_stats = Arc::clone(&self.io_stats);
         async move {
             let t0 = Instant::now();
+            let bytes = range.end - range.start;
             let r = store
                 .get_range(&location, range)
                 .await
                 .map_err(|e| datafusion::parquet::errors::ParquetError::External(Box::new(e)));
-            record_io(&io_stats, t0.elapsed());
+            record_io(&io_stats, t0.elapsed(), bytes);
             r
         }
         .boxed()
@@ -446,7 +449,7 @@ impl AsyncFileReader for CachedMetadataReader {
                 .get_ranges(&location, &ranges)
                 .await
                 .map_err(|e| datafusion::parquet::errors::ParquetError::External(Box::new(e)));
-            record_io(&io_stats, t0.elapsed());
+            record_io(&io_stats, t0.elapsed(), total);
             r
         }
         .boxed()

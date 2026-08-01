@@ -48,6 +48,12 @@ public final class PageCache {
     public int[] byteOffsets;
 
     /**
+     * Repeated columns: CSR offsets from rows to flattened primitive/binary elements.
+     * Length is {@code rowsInPage + 1}; null for single-valued columns.
+     */
+    public int[] listOffsets;
+
+    /**
      * Off-heap view of the packed presence bitset: bit {@code i} set when row
      * {@code firstRow + i} is non-null. One {@code long} word per 64 rows.
      */
