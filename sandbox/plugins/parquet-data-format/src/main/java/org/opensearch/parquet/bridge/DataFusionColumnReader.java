@@ -172,11 +172,8 @@ public final class DataFusionColumnReader implements Closeable, NumericPageReade
      * reached on a backward request, which the common single-iterator forward path never makes.
      */
     private void reopen() throws IOException {
-        long stale = handle;
-        handle = CLOSED_HANDLE;
         cache = null;
-        RustBridge.dfCloseIter(stale);
-        handle = RustBridge.dfOpenIter(file.toString(), column, initialBatchSize);
+        RustBridge.dfResetIter(handle);
     }
 
     /** One native batch call. Fetches pooled buffers itself so a retry after growth sees the new capacity. */

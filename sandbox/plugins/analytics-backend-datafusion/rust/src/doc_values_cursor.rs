@@ -1015,6 +1015,27 @@ pub unsafe extern "C" fn parquet_df_close_iter(handle: i64) -> i64 {
     Ok(RC_OK)
 }
 
+/// Rewinds a cursor to row zero without tearing it down: only the inner
+/// Parquet decoder is rebuilt; metadata, page index, cache registrations and
+/// column handles are retained. Concurrent segment-search slices interleave
+/// reads over shared per-field cursors, so backward seeks are routine — a
+/// full close/open cycle per seek dominated cold sparse profiles.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn parquet_df_reset_iter(handle: i64) -> i64 {
+    let cursor = cursor_for(handle, "parquet_df_reset_iter")?;
+    let mut cursor = cursor.lock();
+    cursor
+        .reader
+        .reset()
+        .map_err(|e| format!("parquet_df_reset_iter: {e}"))?;
+    cursor.batch_size = cursor.initial_batch_size;
+    cursor.has_decoded_batch = false;
+    cursor.pending_batch = None;
+    cursor.borrowed_batch = None;
+    Ok(RC_OK)
+}
+
 #[no_mangle]
 pub extern "C" fn parquet_df_open_iter_count() -> i64 {
     CURSORS.len() as i64

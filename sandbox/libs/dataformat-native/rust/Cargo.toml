@@ -82,9 +82,9 @@ proptest = "=1.4.0"
 # uncommitted cold-parity + population-worker changes in
 # ~/Documents/dev/liquid-cache (under review). Bump this rev after those are
 # committed and pushed, or builds will silently lose the cold-path fixes.
-liquid-cache-datafusion-local = { git = "https://github.com/bharath-techie/liquid-cache.git", rev = "1cf6c64a3b40b9151f43d4d43dd09047319a366e", package = "liquid-cache-datafusion-local" }
-liquid-cache-datafusion = { git = "https://github.com/bharath-techie/liquid-cache.git", rev = "1cf6c64a3b40b9151f43d4d43dd09047319a366e", package = "liquid-cache-datafusion" }
-liquid-cache = { git = "https://github.com/bharath-techie/liquid-cache.git", rev = "1cf6c64a3b40b9151f43d4d43dd09047319a366e", package = "liquid-cache" }
+liquid-cache-datafusion-local = { path = "../../../../../liquid-cache/src/datafusion-local", package = "liquid-cache-datafusion-local" } # TEMP-LOCAL
+liquid-cache-datafusion = { path = "../../../../../liquid-cache/src/datafusion", package = "liquid-cache-datafusion" } # TEMP-LOCAL
+liquid-cache = { path = "../../../../../liquid-cache/src/core", package = "liquid-cache" } # TEMP-LOCAL
 # t4 store backing the codec-owned liquid cache (same version liquid-cache core uses).
 t4 = "=0.1.7"
 

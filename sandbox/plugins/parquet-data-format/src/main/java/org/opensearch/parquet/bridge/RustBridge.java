@@ -67,6 +67,7 @@ public class RustBridge {
     private static final MethodHandle DECODE_PAGE_AT_ROW;
     private static final MethodHandle DF_OPEN_ITER;
     private static final MethodHandle DF_CLOSE_ITER;
+    private static final MethodHandle DF_RESET_ITER;
     private static final MethodHandle DF_OPEN_ITER_COUNT;
     private static final MethodHandle DF_ROW_COUNT;
     private static final MethodHandle DF_PAGE_COUNT;
@@ -450,6 +451,10 @@ public class RustBridge {
         );
         DF_CLOSE_ITER = linker.downcallHandle(
             lib.find("parquet_df_close_iter").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+        );
+        DF_RESET_ITER = linker.downcallHandle(
+            lib.find("parquet_df_reset_iter").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
         );
         DF_OPEN_ITER_COUNT = linker.downcallHandle(
@@ -1218,6 +1223,11 @@ public class RustBridge {
     /** Releases a DataFusion/Arrow cursor. */
     public static void dfCloseIter(long handle) throws IOException {
         invokeChecked(DF_CLOSE_ITER, handle);
+    }
+
+    /** Rewinds a cursor to row zero, retaining metadata, page index and cache registrations. */
+    static void dfResetIter(long handle) throws IOException {
+        invokeChecked(DF_RESET_ITER, handle);
     }
 
     /** Number of live DataFusion/Arrow cursors, for lifecycle tests. */
