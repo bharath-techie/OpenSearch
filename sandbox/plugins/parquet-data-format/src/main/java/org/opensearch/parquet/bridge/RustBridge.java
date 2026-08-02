@@ -499,7 +499,11 @@ public class RustBridge {
                 ValueLayout.JAVA_LONG,  // out_value_buf_cap
                 ValueLayout.ADDRESS,    // out_value_actual_len
                 ValueLayout.ADDRESS,    // out_presence_bitset
-                ValueLayout.JAVA_LONG   // out_presence_bits_cap
+                ValueLayout.JAVA_LONG,  // out_presence_bits_cap
+                ValueLayout.ADDRESS,    // out_values_addr (borrowed Arrow buffer)
+                ValueLayout.ADDRESS,    // out_validity_addr (borrowed validity bitmap)
+                ValueLayout.ADDRESS,    // out_validity_bit_offset
+                ValueLayout.ADDRESS     // out_value_kind (0 = copied)
             )
         );
         DF_NEXT_BINARY_BATCH = linker.downcallHandle(
@@ -1306,7 +1310,11 @@ public class RustBridge {
         long outValueBufCap,
         MemorySegment outValueActualLen,
         MemorySegment outPresenceBitset,
-        long outPresenceBitsCap
+        long outPresenceBitsCap,
+        MemorySegment outValuesAddr,
+        MemorySegment outValidityAddr,
+        MemorySegment outValidityBitOffset,
+        MemorySegment outValueKind
     ) throws IOException {
         return invokeChecked(
             DF_NEXT_BATCH,
@@ -1318,7 +1326,11 @@ public class RustBridge {
             outValueBufCap,
             outValueActualLen,
             outPresenceBitset,
-            outPresenceBitsCap
+            outPresenceBitsCap,
+            outValuesAddr,
+            outValidityAddr,
+            outValidityBitOffset,
+            outValueKind
         );
     }
 

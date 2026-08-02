@@ -686,19 +686,14 @@ pub fn create_global_runtime(
         .build()?;
 
     let liquid_cache_optimizer = if liquid_cache_enabled {
-        #[cfg(target_os = "linux")]
-        {
-            let liquid_runtime = crate::liquid_cache::LiquidOnlyRuntime::init(
-                liquid_cache_size as u64,
-                liquid_cache_max_disk_bytes as u64,
-                liquid_cache_dir,
-                liquid_cache_eviction_policy,
-                tokio_handle,
-            )?;
-            Some(liquid_runtime.optimizer())
-        }
-        #[cfg(not(target_os = "linux"))]
-        { None }
+        let liquid_runtime = crate::liquid_cache::LiquidOnlyRuntime::init(
+            liquid_cache_size as u64,
+            liquid_cache_max_disk_bytes as u64,
+            liquid_cache_dir,
+            liquid_cache_eviction_policy,
+            tokio_handle,
+        )?;
+        Some(liquid_runtime.optimizer())
     } else {
         None
     };
@@ -1439,7 +1434,6 @@ pub fn cancel_query(context_id: i64) {
 /// Clears all caching layers: Liquid Cache (in-memory index + disk) and
 /// DataFusion metadata caches (parquet footers + column statistics).
 pub unsafe fn clear_liquid_cache(runtime_ptr: i64) {
-    #[cfg(target_os = "linux")]
     crate::liquid_cache::LiquidOnlyRuntime::reset_cache_if_initialized();
 
     if runtime_ptr == 0 {

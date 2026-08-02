@@ -239,10 +239,9 @@ fn create_stream_with_access_plan(
     // decoded-batch cache without filter pushdown. The BoolNode evaluator handles
     // all filtering externally. When LC is disabled, fall through to the standard
     // path which may apply predicate pushdown.
-    // LC engagement (Linux only — requires io-uring): wrap when ALL projected
-    // columns are cacheable (numeric/date/timestamp/boolean) and no predicate
-    // column is string. The opener decides per-file whether to STREAM or DELEGATE.
-    #[cfg(target_os = "linux")]
+    // LC engagement: wrap when ALL projected columns are cacheable
+    // (numeric/date/timestamp/boolean) and no predicate column is string.
+    // The opener decides per-file whether to STREAM or DELEGATE.
     let use_lc = {
         let lc_globally_enabled = crate::liquid_cache::LiquidOnlyRuntime::is_enabled_globally();
         let max_cols = crate::liquid_cache::lc_max_columns();
@@ -282,10 +281,7 @@ fn create_stream_with_access_plan(
         );
         result
     };
-    #[cfg(not(target_os = "linux"))]
-    let use_lc = false;
 
-    #[cfg(target_os = "linux")]
     let config_builder = if use_lc {
         if let Some(cache_ref) = crate::liquid_cache::LiquidOnlyRuntime::cache_ref_globally() {
             let mut source = parquet_source;
@@ -317,23 +313,6 @@ fn create_stream_with_access_plan(
                 .with_file(partitioned_file)
         }
     } else {
-        let mut source = parquet_source;
-        if push_predicate {
-            if let Some(ref pred) = config.predicate {
-                source = source
-                    .with_predicate(Arc::clone(pred))
-                    .with_pushdown_filters(true)
-                    .with_reorder_filters(true);
-            }
-        }
-        FileScanConfigBuilder::new(config.store_url.clone(), Arc::new(source))
-            .with_file(partitioned_file)
-    };
-
-    #[cfg(not(target_os = "linux"))]
-    let config_builder = {
-        let _ = use_lc;
-        let _ = selectivity;
         let mut source = parquet_source;
         if push_predicate {
             if let Some(ref pred) = config.predicate {

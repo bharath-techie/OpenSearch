@@ -64,6 +64,10 @@ public final class DataFusionColumnReader implements Closeable, NumericPageReade
     private final String bytesSlot;
     private final String byteOffsetsSlot;
     private final String rowOffsetsSlot;
+    private final String valuesAddrSlot;
+    private final String validityAddrSlot;
+    private final String validityBitOffsetSlot;
+    private final String valueKindSlot;
     private final String slotPrefix;
 
     private long handle;
@@ -99,6 +103,10 @@ public final class DataFusionColumnReader implements Closeable, NumericPageReade
         this.bytesSlot = slotPrefix + "bytes";
         this.byteOffsetsSlot = slotPrefix + "byteOffsets";
         this.rowOffsetsSlot = slotPrefix + "rowOffsets";
+        this.valuesAddrSlot = slotPrefix + "valuesAddr";
+        this.validityAddrSlot = slotPrefix + "validityAddr";
+        this.validityBitOffsetSlot = slotPrefix + "validityBitOffset";
+        this.valueKindSlot = slotPrefix + "valueKind";
         // Capacity is independent of the adaptive decode window. Reserving the
         // bounded maximum avoids an FFM overflow probe on every window growth.
         this.outputRowsCapacity = Math.max(initialBatchSize, MAX_BATCH_ROWS);
@@ -197,6 +205,10 @@ public final class DataFusionColumnReader implements Closeable, NumericPageReade
         MemorySegment firstRowOut = bufferPool.longOut(firstRowSlot);
         MemorySegment lastRowOut = bufferPool.longOut(lastRowSlot);
         MemorySegment valueLenOut = bufferPool.longOut(valueLenSlot);
+        MemorySegment valuesAddrOut = bufferPool.longOut(valuesAddrSlot);
+        MemorySegment validityAddrOut = bufferPool.longOut(validityAddrSlot);
+        MemorySegment validityBitOffsetOut = bufferPool.longOut(validityBitOffsetSlot);
+        MemorySegment valueKindOut = bufferPool.longOut(valueKindSlot);
 
         // outputRowsCapacity always covers MAX_BATCH_ROWS (see constructor), so this call cannot
         // overflow in practice; the retry protocol is kept for uniformity with the other shapes.
@@ -212,7 +224,11 @@ public final class DataFusionColumnReader implements Closeable, NumericPageReade
                 valueCap,
                 valueLenOut,
                 bufferPool.longs(presenceSlot, presenceWords),
-                presenceWords
+                presenceWords,
+                valuesAddrOut,
+                validityAddrOut,
+                validityBitOffsetOut,
+                valueKindOut
             );
         }, () -> growRowCapacity(firstRowOut, lastRowOut));
 
@@ -223,8 +239,33 @@ public final class DataFusionColumnReader implements Closeable, NumericPageReade
         PageCache next = new PageCache();
         next.firstRow = firstRow;
         next.lastRow = lastRow;
-        next.values = longsSlice(valuesSlot, batchRows);
-        next.presenceBits = longsSlice(presenceSlot, presenceWords(batchRows));
+        int kind = (int) valueKindOut.get(ValueLayout.JAVA_LONG, 0);
+        if (kind != 0) {
+            // Borrowed Arrow buffers, read in place: O(rows accessed), no copy.
+            // Valid until the next native call on this cursor; the resident
+            // PageCache is always replaced before that call.
+            long valuesAddr = valuesAddrOut.get(ValueLayout.JAVA_LONG, 0);
+            long validityAddr = validityAddrOut.get(ValueLayout.JAVA_LONG, 0);
+            int bitOffset = (int) validityBitOffsetOut.get(ValueLayout.JAVA_LONG, 0);
+            int width = switch (kind) {
+                case PageCache.KIND_LONG -> Long.BYTES;
+                case PageCache.KIND_INT, PageCache.KIND_UINT_BITS -> Integer.BYTES;
+                case PageCache.KIND_SHORT, PageCache.KIND_USHORT -> Short.BYTES;
+                default -> Byte.BYTES;
+            };
+            next.valueKind = kind;
+            next.values = MemorySegment.ofAddress(valuesAddr).reinterpret((long) batchRows * width);
+            if (validityAddr == 0) {
+                next.presenceBits = null;
+            } else {
+                long presenceWords = ((long) bitOffset + batchRows + 63) >>> 6;
+                next.presenceBits = MemorySegment.ofAddress(validityAddr).reinterpret(presenceWords * Long.BYTES);
+                next.presenceBitOffset = bitOffset;
+            }
+        } else {
+            next.values = longsSlice(valuesSlot, batchRows);
+            next.presenceBits = longsSlice(presenceSlot, presenceWords(batchRows));
+        }
         cache = next;
     }
 

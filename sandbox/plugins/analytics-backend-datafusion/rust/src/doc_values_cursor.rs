@@ -27,9 +27,9 @@ use arrow::record_batch::RecordBatch;
 use dashmap::DashMap;
 use datafusion::execution::cache::cache_manager::FileMetadataCache;
 use datafusion::execution::cache::DefaultFilesMetadataCache;
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion_datasource::PartitionedFile;
-use datafusion_datasource_parquet::ParquetForwardBatchReader;
+use datafusion_datasource_parquet::ParquetForwardBatchReaderFactory;
+use liquid_cache_datafusion::{LiquidForwardBatchReader, LiquidForwardReaderConfig};
 use native_bridge_common::ffm_safe;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
@@ -201,8 +201,14 @@ fn io_runtime() -> Arc<Runtime> {
         .unwrap_or_else(|| Arc::clone(&FALLBACK_RUNTIME))
 }
 
+fn liquid_cache() -> Option<liquid_cache_datafusion::LiquidCacheParquetRef> {
+    crate::liquid_cache::LiquidOnlyRuntime::is_enabled_globally()
+        .then(crate::liquid_cache::LiquidOnlyRuntime::cache_ref_globally)
+        .flatten()
+}
+
 struct DocValuesCursor {
-    reader: ParquetForwardBatchReader,
+    reader: LiquidForwardBatchReader,
     physical_type: PhysicalType,
     repeated: bool,
     row_count: i64,
@@ -210,6 +216,10 @@ struct DocValuesCursor {
     batch_size: usize,
     has_decoded_batch: bool,
     pending_batch: Option<(i64, RecordBatch)>,
+    /// Keeps the most recently borrowed-out batch's buffers alive. Java reads
+    /// the exported pointers until its next call on this cursor, so the array
+    /// must outlive exactly one call cycle; each export replaces the previous.
+    borrowed_batch: Option<ArrayRef>,
     stats: Arc<ReadIoStats>,
 }
 
@@ -231,7 +241,7 @@ impl DocValuesCursor {
             .head(&location)
             .await
             .map_err(|e| format!("df_docvalues: object-store head {location}: {e}"))?;
-        let (_schema, file_size, footer) = load_parquet_metadata_with_meta(
+        let (arrow_schema, file_size, footer) = load_parquet_metadata_with_meta(
             Arc::clone(&store),
             &location,
             object_meta,
@@ -253,6 +263,14 @@ impl DocValuesCursor {
             })
             .ok_or_else(|| format!("df_docvalues: column '{column}' not found in {filename}"))?;
         let descriptor = schema.column(leaf_idx);
+        let root_column = descriptor
+            .path()
+            .parts()
+            .first()
+            .ok_or_else(|| format!("df_docvalues: column '{column}' has no root path"))?;
+        let root_column_id = arrow_schema.index_of(root_column).map_err(|e| {
+            format!("df_docvalues: root column '{root_column}' missing from Arrow schema: {e}")
+        })?;
         let physical_type = descriptor.physical_type();
         if !matches!(
             physical_type,
@@ -280,31 +298,34 @@ impl DocValuesCursor {
         let projection =
             ProjectionMask::leaves(metadata.file_metadata().schema_descr(), [leaf_idx]);
         let batch_size = batch_size.clamp(1, MAX_BATCH_SIZE);
-        let reader = if std::path::Path::new(filename).is_file() {
-            let file = std::fs::File::open(filename)
-                .map_err(|e| format!("df_docvalues: open local file {filename}: {e}"))?;
-            ParquetForwardBatchReader::try_new_with_chunk_reader(
-                file, metadata, projection, batch_size,
-            )
-        } else {
-            let metrics = ExecutionPlanMetricsSet::new();
-            let factory =
-                CachedMetadataReaderFactory::new(store, Arc::clone(&metadata), Arc::clone(&stats));
-            let partitioned_file = PartitionedFile::new(location.to_string(), file_size);
-            let async_reader = factory
-                .create_reader(0, partitioned_file, None, &metrics)
-                .map_err(|e| {
-                    format!("df_docvalues: create DataFusion reader for {filename}: {e}")
-                })?;
-            ParquetForwardBatchReader::try_new(
-                async_reader,
-                file_size,
+        let reader_factory: Arc<dyn ParquetFileReaderFactory> = Arc::new(
+            CachedMetadataReaderFactory::new(store, Arc::clone(&metadata), Arc::clone(&stats)),
+        );
+        let factory = Arc::new(
+            ParquetForwardBatchReaderFactory::new(
+                reader_factory,
+                PartitionedFile::new(location.to_string(), file_size),
                 metadata,
                 projection,
                 batch_size,
-                runtime,
+                Arc::clone(&runtime),
             )
-        }
+            .with_local_file_if_exists(filename),
+        );
+        let reader = LiquidForwardBatchReader::try_new(
+            factory,
+            LiquidForwardReaderConfig {
+                cache: liquid_cache(),
+                file_path: normalize_path(filename),
+                file_schema: arrow_schema,
+                root_column_id,
+                runtime,
+                // Fixed-width cache hits may serve up to the Java buffer
+                // capacity (one probe absorbs the page remainder); the Java
+                // side always reserves MAX_BATCH_SIZE rows.
+                hit_serve_limit: MAX_BATCH_SIZE,
+            },
+        )
         .map_err(|e| format!("df_docvalues: build forward reader for {filename}: {e}"))?;
         let row_count = reader.row_count() as i64;
         let repeated = reader.is_repeated();
@@ -318,6 +339,7 @@ impl DocValuesCursor {
             batch_size,
             has_decoded_batch: false,
             pending_batch: None,
+            borrowed_batch: None,
             stats,
         })
     }
@@ -879,6 +901,63 @@ unsafe fn write_out(ptr: *mut i64, value: i64) {
     }
 }
 
+/// Java-side interpretation of a borrowed values buffer. Mirrors the
+/// `KIND_*` constants in `PageCache.java`; keep in sync.
+const BORROW_KIND_LONG: i64 = 1; // i64 / u64 / f64 raw bits, 8 bytes per row
+const BORROW_KIND_INT: i64 = 2; // i32 / date32, sign-extended, 4 bytes per row
+const BORROW_KIND_UINT_BITS: i64 = 3; // u32 / f32 raw bits, zero-extended, 4 bytes per row
+const BORROW_KIND_SHORT: i64 = 4; // i16, sign-extended, 2 bytes per row
+const BORROW_KIND_USHORT: i64 = 5; // u16, zero-extended, 2 bytes per row
+const BORROW_KIND_BYTE: i64 = 6; // i8, sign-extended, 1 byte per row
+const BORROW_KIND_UBYTE: i64 = 7; // u8, zero-extended, 1 byte per row
+
+struct BorrowedBuffers {
+    values_addr: usize,
+    validity_addr: usize,
+    validity_bit_offset: usize,
+    kind: i64,
+}
+
+/// Exposes an Arrow primitive array's buffers for zero-copy reads from Java.
+///
+/// Sparse readers touch a handful of rows per served batch; copying — and for
+/// narrow integers like `Int16`, running a whole-array cast kernel — per probe
+/// dominated the warm profile. Instead Java reads the Arrow values buffer and
+/// validity bitmap in place, widening per accessed row: O(rows accessed), not
+/// O(rows served). Keyed on the Arrow type (the decode output), not the
+/// Parquet physical type: Parquet INT32 arrives as Int8/Int16/Int32/Date32
+/// depending on the logical type. Boolean stays on the copy path (bit-packed)
+/// as do binary and repeated shapes.
+fn borrowable_buffers(array: &dyn Array, _physical: PhysicalType) -> Option<BorrowedBuffers> {
+    use arrow::datatypes::DataType as DT;
+    let (kind, width) = match array.data_type() {
+        DT::Int64 | DT::UInt64 | DT::Float64 | DT::Date64 | DT::Timestamp(_, _) => {
+            (BORROW_KIND_LONG, 8usize)
+        }
+        DT::Int32 | DT::Date32 | DT::Time32(_) => (BORROW_KIND_INT, 4),
+        DT::UInt32 | DT::Float32 => (BORROW_KIND_UINT_BITS, 4),
+        DT::Int16 => (BORROW_KIND_SHORT, 2),
+        DT::UInt16 => (BORROW_KIND_USHORT, 2),
+        DT::Int8 => (BORROW_KIND_BYTE, 1),
+        DT::UInt8 => (BORROW_KIND_UBYTE, 1),
+        _ => return None,
+    };
+    debug_assert_eq!(array.data_type().primitive_width(), Some(width));
+    let data = array.to_data();
+    let buffer = data.buffers().first()?;
+    let values_addr = buffer.as_ptr() as usize + data.offset() * width;
+    let (validity_addr, validity_bit_offset) = match data.nulls() {
+        None => (0, 0),
+        Some(nulls) => (nulls.buffer().as_ptr() as usize, nulls.offset()),
+    };
+    Some(BorrowedBuffers {
+        values_addr,
+        validity_addr,
+        validity_bit_offset,
+        kind,
+    })
+}
+
 fn open(filename: &str, column: &str, initial_batch_size: usize) -> Result<i64, String> {
     let runtime = io_runtime();
     let cursor = runtime.block_on(DocValuesCursor::open(
@@ -1067,6 +1146,10 @@ pub unsafe extern "C" fn parquet_df_next_batch(
     out_value_actual_len: *mut i64,
     out_presence_bitset: *mut i64,
     out_presence_bits_cap: i64,
+    out_values_addr: *mut i64,
+    out_validity_addr: *mut i64,
+    out_validity_bit_offset: *mut i64,
+    out_value_kind: *mut i64,
 ) -> i64 {
     const FN: &str = "parquet_df_next_batch";
     let cursor = cursor_for(handle, FN)?;
@@ -1076,30 +1159,45 @@ pub unsafe extern "C" fn parquet_df_next_batch(
         return Ok(RC_EOF);
     }
 
-    let (_, rows) = cursor.planned_batch(target_row)?;
-    let value_bytes = (rows * std::mem::size_of::<i64>()) as i64;
-    let presence_words = rows.div_ceil(64) as i64;
-
+    // Decode first: a page-grid cache hit may serve more rows than the
+    // planned window (up to MAX_BATCH_SIZE), so sizes are known only after
+    // the read. The batch is staged across an overflow retry.
+    let batch = take_pending_or_decode(&mut cursor, target_row, FN)?;
+    let rows = batch.num_rows();
+    if rows == 0 || rows > MAX_BATCH_SIZE {
+        return Err(format!("{FN}: Arrow returned {rows} rows"));
+    }
     write_out(out_first_row, target_row);
     write_out(out_last_row, target_row + rows as i64 - 1);
+
+    // Zero-copy fast path: hand Java the Arrow buffers directly. The array is
+    // retained on the cursor so the pointers stay valid until Java's next
+    // call on this handle (Java swaps its resident batch before that call).
+    let array = batch.column(0);
+    if let Some(borrow) = borrowable_buffers(array.as_ref(), cursor.physical_type) {
+        write_out(out_value_actual_len, 0);
+        write_out(out_values_addr, borrow.values_addr as i64);
+        write_out(out_validity_addr, borrow.validity_addr as i64);
+        write_out(out_validity_bit_offset, borrow.validity_bit_offset as i64);
+        write_out(out_value_kind, borrow.kind);
+        cursor.borrowed_batch = Some(Arc::clone(array));
+        return Ok(RC_OK);
+    }
+
+    // Copy fallback (boolean): widen into the caller's pooled buffers.
+    write_out(out_values_addr, 0);
+    write_out(out_validity_addr, 0);
+    write_out(out_validity_bit_offset, 0);
+    write_out(out_value_kind, 0);
+    let value_bytes = (rows * std::mem::size_of::<i64>()) as i64;
+    let presence_words = rows.div_ceil(64) as i64;
     write_out(out_value_actual_len, value_bytes);
     if out_value_buf.is_null()
         || out_presence_bitset.is_null()
         || out_value_buf_cap < value_bytes
         || out_presence_bits_cap < presence_words
     {
-        // Fixed-width output sizes are known before decoding, so nothing is staged:
-        // the retry re-plans the same batch without having decoded anything.
-        note_overflow_probe();
-        return Ok(RC_OVERFLOW);
-    }
-
-    let batch = cursor.next_batch(target_row)?;
-    if batch.num_rows() != rows {
-        return Err(format!(
-            "{FN}: expected {rows} rows, Arrow returned {}",
-            batch.num_rows()
-        ));
+        return Ok(stage_overflow(&mut cursor, target_row, batch));
     }
     copy_array_out(
         batch.column(0).as_ref(),

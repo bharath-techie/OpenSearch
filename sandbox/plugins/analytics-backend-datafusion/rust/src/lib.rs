@@ -60,7 +60,6 @@ pub mod task_monitors;
 pub mod scoped_index_optimizer;
 pub mod scoped_page_index_reader;
 
-#[cfg(target_os = "linux")]
 pub mod liquid_cache;
 
 // Path aliases — old module names still resolve unchanged.
