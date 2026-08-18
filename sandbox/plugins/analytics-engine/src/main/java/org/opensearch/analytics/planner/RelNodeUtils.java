@@ -34,6 +34,7 @@ import org.opensearch.analytics.planner.rel.OpenSearchSort;
 import org.opensearch.analytics.planner.rel.OpenSearchTableScan;
 import org.opensearch.analytics.planner.rel.OpenSearchUnion;
 import org.opensearch.analytics.planner.rel.OpenSearchValues;
+import org.opensearch.analytics.schema.OpenSearchSchemaBuilder;
 import org.opensearch.analytics.spi.FieldStorageInfo;
 import org.opensearch.core.common.Strings;
 
@@ -234,10 +235,11 @@ public class RelNodeUtils {
             String tableName = names.get(names.size() - 1);
             // PPL multi-source queries (source=a,b) produce a single TableScan with a
             // comma-delimited table name. Split so each index is evaluated independently
-            // by the security filter — same logic as IndexResolution.
+            // by the security filter — same logic as IndexResolution. System companion
+            // tables (`x__system`) resolve to their base index for permission purposes.
             for (String idx : Strings.splitStringByCommaToArray(tableName)) {
                 if (!idx.isEmpty()) {
-                    indices.add(idx);
+                    indices.add(OpenSearchSchemaBuilder.stripSystemSuffix(idx));
                 }
             }
         }

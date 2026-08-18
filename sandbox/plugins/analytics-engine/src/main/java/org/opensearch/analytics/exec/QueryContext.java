@@ -16,6 +16,7 @@ import org.opensearch.analytics.exec.task.AnalyticsQueryTask;
 import org.opensearch.analytics.planner.dag.QueryDAG;
 import org.opensearch.analytics.planner.dag.ShardExecutionTarget;
 import org.opensearch.analytics.settings.AnalyticsQuerySettings;
+import org.opensearch.analytics.spi.ExchangeSink;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -48,6 +49,17 @@ public class QueryContext {
     private final BufferAllocator allocator;
     private final boolean ownsAllocator;
     private final boolean profile;
+    /**
+     * Optional caller-supplied terminal sink. When non-null, the root stage's output is
+     * routed into this sink instead of a fresh coordinator-buffering
+     * {@link RowProducingSink} — batches are pushed incrementally as they arrive, so a
+     * consumer that forwards them elsewhere (e.g. bulk-writing into a target index for
+     * materialization jobs) never accumulates the full result set on the coordinator and
+     * is not subject to the buffering sink's row cap. Must also implement
+     * {@link org.opensearch.analytics.backend.ExchangeSource} — the root stage contract
+     * ({@code DataProducer.outputSource()}) reads the terminal result through that view.
+     */
+    private final ExchangeSink terminalSink;
     private volatile ExecutorService localTaskExecutor;
     private boolean closed;  // guarded by `this`
     /**
@@ -80,6 +92,33 @@ public class QueryContext {
         boolean ownsAllocator,
         boolean profile
     ) {
+        this(
+            dag,
+            threadPool,
+            parentTask,
+            maxConcurrentShardRequestsPerNode,
+            preFilterShardSize,
+            operationListeners,
+            allocator,
+            ownsAllocator,
+            profile,
+            null
+        );
+    }
+
+    /** Full-parameter constructor including an optional caller-supplied terminal sink. */
+    public QueryContext(
+        QueryDAG dag,
+        ThreadPool threadPool,
+        AnalyticsQueryTask parentTask,
+        int maxConcurrentShardRequestsPerNode,
+        int preFilterShardSize,
+        List<AnalyticsOperationListener> operationListeners,
+        BufferAllocator allocator,
+        boolean ownsAllocator,
+        boolean profile,
+        ExchangeSink terminalSink
+    ) {
         this.dag = dag;
         this.threadPool = threadPool;
         this.parentTask = parentTask;
@@ -89,6 +128,15 @@ public class QueryContext {
         this.allocator = allocator;
         this.ownsAllocator = ownsAllocator;
         this.profile = profile;
+        this.terminalSink = terminalSink;
+    }
+
+    /**
+     * The caller-supplied terminal sink for the root stage's output, or {@code null} when
+     * the default coordinator-buffering sink should be used. See the field Javadoc.
+     */
+    public ExchangeSink terminalSink() {
+        return terminalSink;
     }
 
     public QueryDAG dag() {

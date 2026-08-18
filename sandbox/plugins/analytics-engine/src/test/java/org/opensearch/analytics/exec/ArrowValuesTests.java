@@ -234,12 +234,14 @@ public class ArrowValuesTests extends OpenSearchTestCase {
         }
     }
 
-    public void testToSourceValueBinaryDropped() {
+    public void testToSourceValueBinaryBase64Encoded() {
+        // Opaque state payloads (HLL sketches) round-trip as base64 — the `binary`
+        // mapping type's source form.
         try (VarBinaryVector v = new VarBinaryVector("b", allocator)) {
             v.allocateNew();
             v.setSafe(0, new byte[] { 1, 2, 3 });
             v.setValueCount(1);
-            assertNull(ArrowValues.toSourceValue(v, 0));
+            assertEquals(java.util.Base64.getEncoder().encodeToString(new byte[] { 1, 2, 3 }), ArrowValues.toSourceValue(v, 0));
         }
     }
 

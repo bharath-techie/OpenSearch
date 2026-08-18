@@ -117,3 +117,58 @@ impl Accumulator for Utf8ViewToUtf8Accumulator {
         self.inner.size()
     }
 }
+
+
+#[cfg(test)]
+mod merge_compat_tests {
+    use super::*;
+    use datafusion::execution::FunctionRegistry;
+    use datafusion::prelude::SessionContext;
+    use std::sync::Arc;
+
+    /// The materialized-view merge-compatibility convention: a UDAF that SHADOWS a
+    /// built-in registry name must expose the built-in's exact state layout, because
+    /// the parquet PartialReduce merge resolves functions from a PLAIN registry by the
+    /// spec's `fn` name and folds the stored state columns with whatever it resolves.
+    /// If this test fails, views built with the custom function would be folded with an
+    /// incompatible accumulator — fix the state_fields delegation, never the test.
+    #[test]
+    fn shadowing_udaf_state_fields_match_builtin() {
+        let plain = SessionContext::new();
+        let builtin = plain.state().udaf("approx_distinct").expect("built-in exists");
+
+        for data_type in [
+            arrow_schema::DataType::Int64,
+            arrow_schema::DataType::Utf8,
+            arrow_schema::DataType::Binary,
+        ] {
+            let input = Arc::new(arrow_schema::Field::new("x", data_type.clone(), true));
+            let return_field = Arc::new(arrow_schema::Field::new(
+                "out",
+                arrow_schema::DataType::UInt64,
+                true,
+            ));
+            let args = StateFieldsArgs {
+                name: "dc",
+                input_fields: std::slice::from_ref(&input),
+                return_field: Arc::clone(&return_field),
+                ordering_fields: &[],
+                is_distinct: false,
+            };
+            let custom = SafeApproxDistinct::new().state_fields(args).expect("custom state fields");
+            let args2 = StateFieldsArgs {
+                name: "dc",
+                input_fields: std::slice::from_ref(&input),
+                return_field,
+                ordering_fields: &[],
+                is_distinct: false,
+            };
+            let expected = builtin.inner().state_fields(args2).expect("builtin state fields");
+            assert_eq!(
+                custom.iter().map(|f| (f.name().clone(), f.data_type().clone())).collect::<Vec<_>>(),
+                expected.iter().map(|f| (f.name().clone(), f.data_type().clone())).collect::<Vec<_>>(),
+                "state layout must match the built-in for input {data_type:?}"
+            );
+        }
+    }
+}

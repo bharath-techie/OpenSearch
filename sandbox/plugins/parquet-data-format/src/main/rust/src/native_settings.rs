@@ -29,6 +29,10 @@ pub struct NativeSettings {
     pub bloom_filter_fpp: Option<f64>,
     pub bloom_filter_ndv: Option<u64>,
     pub sort_columns: Vec<String>,
+    /// Materialized-view spec (JSON, see `merge::partial::MvStateSpec`): when set,
+    /// background merges fold equal-key partial aggregate states instead of
+    /// concatenating.
+    pub mv_spec: Option<String>,
     pub reverse_sorts: Vec<bool>,
     pub nulls_first: Vec<bool>,
     pub sort_in_memory_threshold_bytes: Option<u64>,

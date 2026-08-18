@@ -47,6 +47,7 @@ public class RustBridge {
     private static final MethodHandle GET_FILTERED_BYTES;
     private static final MethodHandle ON_SETTINGS_UPDATE;
     private static final MethodHandle REMOVE_SETTINGS;
+    private static final MethodHandle SET_MV_SPEC;
     private static final MethodHandle MERGE_FILES;
     private static final MethodHandle FREE_MERGE_RESULT;
     private static final MethodHandle READ_AS_JSON;
@@ -138,6 +139,16 @@ public class RustBridge {
                 ValueLayout.ADDRESS,
                 ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS
+            )
+        );
+        SET_MV_SPEC = linker.downcallHandle(
+            lib.find("parquet_set_mv_spec").orElseThrow(),
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG,   // index_name
+                ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG    // spec json
             )
         );
         ON_SETTINGS_UPDATE = linker.downcallHandle(
@@ -454,6 +465,18 @@ public class RustBridge {
         try (var call = new NativeCall()) {
             var p = call.str(pathPrefix);
             return call.invoke(GET_FILTERED_BYTES, p.segment(), p.len());
+        }
+    }
+
+    /**
+     * Registers the materialized-view spec (JSON) for an index: background merges then
+     * fold equal-key partial aggregate states instead of concatenating.
+     */
+    public static void setMvSpec(String indexName, String specJson) throws IOException {
+        try (var call = new NativeCall()) {
+            var idx = call.str(indexName);
+            var spec = call.str(specJson);
+            call.invokeIO(SET_MV_SPEC, idx.segment(), idx.len(), spec.segment(), spec.len());
         }
     }
 

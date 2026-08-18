@@ -44,6 +44,7 @@ import org.opensearch.analytics.planner.dag.PlanForker;
 import org.opensearch.analytics.planner.dag.QueryDAG;
 import org.opensearch.analytics.settings.AnalyticsQuerySettings;
 import org.opensearch.analytics.settings.PlannerSettings;
+import org.opensearch.analytics.spi.ExchangeSink;
 import org.opensearch.analytics.stats.AnalyticsStatsCollector;
 import org.opensearch.arrow.allocator.AllocationRejection;
 import org.opensearch.cluster.ClusterState;
@@ -192,6 +193,57 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         );
     }
 
+    /**
+     * Executes the given logical fragment, streaming the root stage's output batches into
+     * {@code terminalSink} as they arrive instead of accumulating them on the coordinator.
+     * The listener fires when the query reaches a terminal state: at that point every batch
+     * has been {@link ExchangeSink#feed fed} to the sink (successful terminal) or the query
+     * failed. The sink's own downstream completion (e.g. in-flight bulk writes) is the
+     * caller's responsibility to await — typically via a sink-specific finish hook.
+     *
+     * <p>Routed through the same transport action as {@link #execute}, so the security
+     * filter evaluates index-level permissions identically.
+     *
+     * <p>{@code terminalSink} must also implement
+     * {@link org.opensearch.analytics.backend.ExchangeSource}; the root gather stage reads
+     * its terminal view through that contract.
+     */
+    public void executeStreaming(
+        RelNode logicalFragment,
+        QueryRequestContext queryCtx,
+        ExchangeSink terminalSink,
+        ActionListener<Void> listener
+    ) {
+        executeStreaming(logicalFragment, queryCtx, terminalSink, false, listener);
+    }
+
+    /**
+     * Streams the root stage's output into {@code terminalSink}. With
+     * {@code emitAggregateStates} set (materialized-view refresh), the coordinator
+     * reduce folds partial aggregate states and streams folded states — never
+     * finalized values — and the backend delivers the derived state spec to the sink
+     * via {@link org.opensearch.analytics.spi.StateSpecConsumer} before the first batch.
+     */
+    public void executeStreaming(
+        RelNode logicalFragment,
+        QueryRequestContext queryCtx,
+        ExchangeSink terminalSink,
+        boolean emitAggregateStates,
+        ActionListener<Void> listener
+    ) {
+        String[] indices = RelNodeUtils.extractIndices(logicalFragment);
+        AnalyticsQueryRequest request = new AnalyticsQueryRequest(
+            logicalFragment,
+            queryCtx,
+            indices,
+            false,
+            terminalSink,
+            emitAggregateStates
+        );
+        applyParentTask(request, queryCtx);
+        client.execute(AnalyticsQueryAction.INSTANCE, request, ActionListener.wrap(resp -> listener.onResponse(null), listener::onFailure));
+    }
+
     @Override
     public void executeWithProfile(RelNode logicalFragment, QueryRequestContext queryCtx, ActionListener<ProfiledResult> listener) {
         // Route through the framework action (profile=true) just like execute(), so a profiling
@@ -233,6 +285,8 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         RelNode logicalFragment,
         QueryRequestContext queryCtx,
         boolean profile,
+        ExchangeSink terminalSink,
+        boolean emitAggregateStates,
         ActionListener<ProfiledResult> listener
     ) {
         RelMetadataQueryBase.THREAD_PROVIDERS.set(JaninoRelMetadataProvider.of(logicalFragment.getCluster().getMetadataProvider()));
@@ -261,7 +315,18 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
             preferMetadataDriver
         );
         plannerContext.setPlannerSettings(plannerSettings);
+        plannerContext.setEmitAggregateStates(emitAggregateStates);
         RelNode plan = PlannerImpl.createPlan(logicalFragment, plannerContext);
+        if (emitAggregateStates) {
+            // State emission needs a coordinator reduce; single-shard plans finalize in
+            // one SINGLE-mode step, so force the PARTIAL/FINAL split post-costing.
+            plan = org.opensearch.analytics.planner.rules.OpenSearchAggregateSplitRule.forceStateEmissionSplit(plan, plannerContext);
+        }
+        if (queryCtx != null && queryCtx.mvReadTarget() != null) {
+            // The front-end matched this query to a fresh materialized view: answer from
+            // the view's state columns (falls back to the source plan on any mismatch).
+            plan = org.opensearch.analytics.planner.MVStateReadRewriter.rewrite(plan, queryCtx.mvReadTarget(), plannerContext);
+        }
         final String fullPlan = profile ? RelOptUtil.toString(plan) : null;
         QueryDAG dag = DAGBuilder.build(plan, capabilityRegistry, clusterService, indexNameExpressionResolver);
         PlanForker.forkAll(dag, capabilityRegistry);
@@ -269,7 +334,7 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         // Collapse multi-backend stages to a single chosen alternative before conversion
         // so the convertor runs once per stage and the wire request carries one PlanAlternative.
         PlanAlternativeSelector.selectAll(dag, capabilityRegistry, preferMetadataDriver);
-        FragmentConversionDriver.convertAll(dag, capabilityRegistry);
+        FragmentConversionDriver.convertAll(dag, capabilityRegistry, emitAggregateStates);
         final long planningTimeNanos = System.nanoTime() - planStartNanos;
         final long planningTimeMs = TimeUnit.NANOSECONDS.toMillis(planningTimeNanos);
         logger.debug("[DefaultPlanExecutor] QueryDAG:\n{}", dag);
@@ -311,7 +376,8 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
                 List.of(queryListener),
                 queryAllocator,
                 ownsAllocator,
-                profile
+                profile,
+                terminalSink
             );
         } catch (Exception e) {
             if (ownsAllocator) queryAllocator.close();
@@ -441,6 +507,8 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
                     request.getPlan(),
                     request.getQueryCtx(),
                     request.isProfile(),
+                    request.getTerminalSink(),
+                    request.isEmitAggregateStates(),
                     ActionListener.wrap(result -> {
                         if (result.isSuccess()) {
                             convertingListener.onResponse(

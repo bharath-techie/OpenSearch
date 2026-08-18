@@ -175,8 +175,27 @@ public class CatalogSnapshotManager implements Closeable {
             );
         }
 
-        // Row count conservation: merged output must have the same total rows as the inputs
-        if (!assertRowCountConservation(segmentsToRemove, segmentToAdd)) {
+        // Row count conservation: merged output must have the same total rows as the inputs.
+        // Aggregating merges (e.g. materialized-view merges that collapse rows sharing the
+        // same grouping keys) intentionally shrink the row count; for those only guard
+        // against row duplication (output exceeding input).
+        if (mergeResult.isAggregating()) {
+            long inputRows = segmentsToRemove.stream()
+                .flatMap(s -> s.dfGroupedSearchableFiles().values().stream())
+                .mapToLong(WriterFileSet::numRows)
+                .sum();
+            long outputRows = segmentToAdd.dfGroupedSearchableFiles().values().stream().mapToLong(WriterFileSet::numRows).sum();
+            if (outputRows > inputRows) {
+                throw new IllegalStateException(
+                    "Aggregating merge produced more rows than its inputs: input segments have "
+                        + inputRows
+                        + " total rows but merged output has "
+                        + outputRows
+                        + " rows"
+                );
+            }
+            logger.debug("Aggregating merge collapsed {} input rows to {} output rows", inputRows, outputRows);
+        } else if (!assertRowCountConservation(segmentsToRemove, segmentToAdd)) {
             long inputRows = segmentsToRemove.stream()
                 .flatMap(s -> s.dfGroupedSearchableFiles().values().stream())
                 .mapToLong(WriterFileSet::numRows)
@@ -692,7 +711,9 @@ public class CatalogSnapshotManager implements Closeable {
      * via writer generation) relies on that invariant to pick the right leaf. A mismatch
      * here means the writers dropped or duplicated rows against each other during a
      * single refresh — which produces silent correctness issues like different counts
-     * from {@code match} vs {@code LIKE} over the same field.
+     * from {@code match} vs {@code LIKE} over the same field. Materialized-view merges
+     * preserve this invariant too: the folded rows are new rows, and every secondary
+     * format's segment is rebuilt 1:1 from the folded primary output.
      */
     private void verifyPerSegmentCrossFormatRowCountParity(List<Segment> segments) {
         for (Segment seg : segments) {

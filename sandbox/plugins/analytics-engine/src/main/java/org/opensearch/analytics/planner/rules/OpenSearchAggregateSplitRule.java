@@ -32,6 +32,7 @@ import org.opensearch.analytics.planner.rel.AggregateMode;
 import org.opensearch.analytics.planner.rel.OpenSearchAggregate;
 import org.opensearch.analytics.planner.rel.OpenSearchConvention;
 import org.opensearch.analytics.planner.rel.OpenSearchDistribution;
+import org.opensearch.analytics.planner.rel.OpenSearchExchangeReducer;
 import org.opensearch.analytics.planner.rel.OpenSearchFilter;
 import org.opensearch.analytics.planner.rel.OpenSearchJoin;
 import org.opensearch.analytics.planner.rel.OpenSearchProject;
@@ -53,6 +54,96 @@ public class OpenSearchAggregateSplitRule extends RelOptRule {
     public OpenSearchAggregateSplitRule(PlannerContext context) {
         super(operand(OpenSearchAggregate.class, operand(RelNode.class, any())), "OpenSearchAggregateSplitRule");
         this.context = context;
+    }
+
+    /**
+     * Post-Volcano transform for state emission (materialized-view refresh): replaces a
+     * {@code SINGLE}-mode aggregate with the PARTIAL → gather → FINAL split, so the plan
+     * has a coordinator reduce stage to fold-and-emit states from.
+     *
+     * <p>Volcano cannot produce this shape itself: over unpartitioned (single-shard /
+     * gathered) input the cost model prices PARTIAL-over-singleton out (deliberately —
+     * the split is pure overhead for a normal query). State emission is not a normal
+     * query: without the split there is nothing to emit, so the split is forced
+     * deterministically after costing, using the exact construction {@link #onMatch}
+     * uses for partitioned input. Plans that already carry a FINAL aggregate
+     * (multi-shard) are returned unchanged.
+     */
+    public static RelNode forceStateEmissionSplit(RelNode plan, PlannerContext context) {
+        if (containsMode(plan, AggregateMode.FINAL)) {
+            return plan;
+        }
+        return replaceFirstSingleAggregate(plan, context);
+    }
+
+    private static boolean containsMode(RelNode node, AggregateMode mode) {
+        if (node instanceof OpenSearchAggregate agg && agg.getMode() == mode) {
+            return true;
+        }
+        for (RelNode input : node.getInputs()) {
+            if (containsMode(input, mode)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static RelNode replaceFirstSingleAggregate(RelNode node, PlannerContext context) {
+        if (node instanceof OpenSearchAggregate aggregate && aggregate.getMode() == AggregateMode.SINGLE) {
+            return splitSingleAggregate(aggregate, context);
+        }
+        List<RelNode> inputs = node.getInputs();
+        for (int i = 0; i < inputs.size(); i++) {
+            RelNode rewritten = replaceFirstSingleAggregate(inputs.get(i), context);
+            if (rewritten != inputs.get(i)) {
+                List<RelNode> newInputs = new java.util.ArrayList<>(inputs);
+                newInputs.set(i, rewritten);
+                return node.copy(node.getTraitSet(), newInputs);
+            }
+        }
+        return node;
+    }
+
+    /** The same PARTIAL → gather → FINAL construction {@link #onMatch} emits, applied post-Volcano. */
+    private static RelNode splitSingleAggregate(OpenSearchAggregate aggregate, PlannerContext context) {
+        RelNode child = aggregate.getInput();
+        List<AggregateCall> partialAggCalls = repairLossyReturnTypes(aggregate.getAggCallList(), child);
+        OpenSearchAggregate partial = new OpenSearchAggregate(
+            aggregate.getCluster(),
+            child.getTraitSet(),
+            child,
+            aggregate.getGroupSet(),
+            aggregate.getGroupSets(),
+            partialAggCalls,
+            AggregateMode.PARTIAL,
+            aggregate.getViableBackends(),
+            aggregate.getCallAnnotations()
+        );
+        RelTraitSet finalTraits = partial.getTraitSet().replace(context.getDistributionTraitDef().coordSingleton());
+        RelNode gathered = new OpenSearchExchangeReducer(aggregate.getCluster(), finalTraits, partial, aggregate.getViableBackends());
+        Map<Integer, List<RexLiteral>> finalExtraLiterals = captureLiteralArgsForFinal(aggregate.getAggCallList(), child);
+        List<IntermediateField> intermediateFields = FinalAggCallBuilder.classify(aggregate.getAggCallList());
+        List<AggregateCall> finalAggCalls = FinalAggCallBuilder.buildFinalCalls(
+            aggregate.getAggCallList(),
+            intermediateFields,
+            aggregate.getGroupSet().cardinality(),
+            gathered,
+            aggregate.getGroupSet().isEmpty()
+        );
+        OpenSearchAggregate finalAggregate = new OpenSearchAggregate(
+            aggregate.getCluster(),
+            finalTraits,
+            gathered,
+            aggregate.getGroupSet(),
+            aggregate.getGroupSets(),
+            finalAggCalls,
+            AggregateMode.FINAL,
+            aggregate.getViableBackends(),
+            aggregate.getCallAnnotations(),
+            finalExtraLiterals,
+            intermediateFields
+        );
+        return wrapWithCastIfNeeded(finalAggregate, aggregate);
     }
 
     @Override

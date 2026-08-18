@@ -59,6 +59,44 @@ public class OpenSearchSchemaBuilderTests extends OpenSearchTestCase {
     }
 
     /**
+     * The `__system` companion table exposes the base fields PLUS metadata columns
+     * (_seq_no) — while the base table's row type stays clean, so star expansion of user
+     * queries never leaks metadata. This is the contract change-detection and incremental
+     * view maintenance queries rely on.
+     */
+    public void testSystemCompanionTableExposesSeqNo() throws Exception {
+        ClusterState clusterState = buildClusterState(Map.of("logs", Map.of("status", "keyword", "latency", "long")));
+
+        SchemaPlus schema = OpenSearchSchemaBuilder.buildSchema(clusterState);
+
+        Table base = schema.getTable("logs");
+        assertNotNull(base);
+        RelDataType baseType = base.getRowType(new org.apache.calcite.jdbc.JavaTypeFactoryImpl());
+        assertEquals("base table must not expose metadata columns", 2, baseType.getFieldCount());
+        assertNull(baseType.getField(OpenSearchSchemaBuilder.SEQ_NO_COLUMN, true, false));
+
+        Table system = schema.getTable("logs" + OpenSearchSchemaBuilder.SYSTEM_TABLE_SUFFIX);
+        assertNotNull("system companion table should resolve", system);
+        RelDataType systemType = system.getRowType(new org.apache.calcite.jdbc.JavaTypeFactoryImpl());
+        assertEquals(3, systemType.getFieldCount());
+        assertFieldType(systemType, "status", SqlTypeName.VARCHAR);
+        assertFieldType(systemType, "latency", SqlTypeName.BIGINT);
+        assertFieldType(systemType, OpenSearchSchemaBuilder.SEQ_NO_COLUMN, SqlTypeName.BIGINT);
+    }
+
+    public void testSystemSuffixOnMissingIndexReturnsNull() throws Exception {
+        ClusterState clusterState = buildClusterState(Map.of("logs", Map.of("status", "keyword")));
+        SchemaPlus schema = OpenSearchSchemaBuilder.buildSchema(clusterState);
+        assertNull(schema.getTable("missing" + OpenSearchSchemaBuilder.SYSTEM_TABLE_SUFFIX));
+        assertNull(schema.getTable(OpenSearchSchemaBuilder.SYSTEM_TABLE_SUFFIX));
+    }
+
+    public void testStripSystemSuffix() {
+        assertEquals("logs", OpenSearchSchemaBuilder.stripSystemSuffix("logs__system"));
+        assertEquals("logs", OpenSearchSchemaBuilder.stripSystemSuffix("logs"));
+    }
+
+    /**
      * Test integer, float, boolean type mappings.
      */
     public void testBuildSchemaWithIntegerFloatBoolean() throws Exception {

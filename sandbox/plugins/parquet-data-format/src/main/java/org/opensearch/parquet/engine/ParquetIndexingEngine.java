@@ -18,9 +18,11 @@ import org.opensearch.index.engine.dataformat.IndexingExecutionEngine;
 import org.opensearch.index.engine.dataformat.Merger;
 import org.opensearch.index.engine.dataformat.RefreshInput;
 import org.opensearch.index.engine.dataformat.RefreshResult;
+import org.opensearch.index.engine.dataformat.RowJsonReader;
 import org.opensearch.index.engine.dataformat.Writer;
 import org.opensearch.index.engine.dataformat.WriterConfig;
 import org.opensearch.index.engine.exec.Segment;
+import org.opensearch.index.engine.exec.WriterFileSet;
 import org.opensearch.index.engine.exec.commit.IndexStoreProvider;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.FormatChecksumStrategy;
@@ -66,7 +68,9 @@ import static org.opensearch.parquet.ParquetDataFormatPlugin.PARQUET_DATA_FORMAT
  * time, where writer-specific settings (e.g., {@code parquet.max_rows_per_vsr}) are
  * extracted and applied.
  */
-public class ParquetIndexingEngine implements IndexingExecutionEngine<ParquetDataFormat, ParquetDocumentInput> {
+public class ParquetIndexingEngine implements
+    IndexingExecutionEngine<ParquetDataFormat, ParquetDocumentInput>,
+    RowJsonReader {
 
     private static final Logger logger = LogManager.getLogger(ParquetIndexingEngine.class);
 
@@ -235,9 +239,19 @@ public class ParquetIndexingEngine implements IndexingExecutionEngine<ParquetDat
             .build();
         try {
             RustBridge.onSettingsUpdate(config);
+            pushMvSpec(settings);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to push Parquet settings to Rust store", e);
         }
+    }
+
+    /** Registers the MV spec so background merges fold this index's bucket states. */
+    private void pushMvSpec(Settings settings) throws IOException {
+        String spec = ParquetSettings.MV_SPEC.get(settings);
+        if (spec == null || spec.isEmpty()) {
+            return;
+        }
+        RustBridge.setMvSpec(indexSettings.getIndex().getName(), spec);
     }
 
     @Override
@@ -274,6 +288,44 @@ public class ParquetIndexingEngine implements IndexingExecutionEngine<ParquetDat
     @Override
     public Merger getMerger() {
         return parquetMerger;
+    }
+
+    /**
+     * Reads all rows of the given parquet file set back as a JSON array of row objects,
+     * in row-id order. Binary columns are rendered as base64 strings and timestamps as
+     * epoch milliseconds — the same forms the document mapper accepts on ingest.
+     *
+     * <p>Used by the composite engine's materialized-view merge path to rebuild secondary
+     * format segments 1:1 from the folded (aggregated) primary output.
+     */
+    @Override
+    public String readRowsAsJson(WriterFileSet fileSet) throws IOException {
+        List<String> parquetFiles = fileSet.files()
+            .stream()
+            .filter(f -> f.endsWith(FILE_NAME_EXT))
+            .sorted()
+            .map(f -> Path.of(fileSet.directory()).resolve(f).toString())
+            .toList();
+        if (parquetFiles.isEmpty()) {
+            throw new IOException("No parquet files in file set for generation " + fileSet.writerGeneration());
+        }
+        if (parquetFiles.size() == 1) {
+            return RustBridge.readAsJson(parquetFiles.get(0));
+        }
+        // Multiple files: concatenate the per-file JSON arrays preserving file order.
+        StringBuilder combined = new StringBuilder("[");
+        for (String file : parquetFiles) {
+            String rows = RustBridge.readAsJson(file).trim();
+            // strip enclosing brackets
+            String inner = rows.substring(1, rows.length() - 1).trim();
+            if (inner.isEmpty() == false) {
+                if (combined.length() > 1) {
+                    combined.append(',');
+                }
+                combined.append(inner);
+            }
+        }
+        return combined.append(']').toString();
     }
 
     @Override

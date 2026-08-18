@@ -15,6 +15,7 @@ import org.opensearch.action.IndicesRequest;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.analytics.QueryRequestContext;
 import org.opensearch.analytics.exec.task.AnalyticsQueryTask;
+import org.opensearch.analytics.spi.ExchangeSink;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.tasks.TaskId;
@@ -46,6 +47,18 @@ public class AnalyticsQueryRequest extends ActionRequest implements IndicesReque
     private final transient RelNode plan;
     private final transient QueryRequestContext queryCtx;
     private final boolean profile;
+    /**
+     * Optional caller-supplied terminal sink for streaming the root stage's output
+     * (materialization jobs). Transient — this request is local-dispatch only.
+     * See {@link org.opensearch.analytics.exec.QueryContext#terminalSink()}.
+     */
+    private final transient ExchangeSink terminalSink;
+    /**
+     * Materialized-view refresh: coordinator-reduce aggregation folds partial states
+     * and emits folded states (columns {@code {alias}__st_i}) instead of finalized
+     * values. Requires a {@link #terminalSink}.
+     */
+    private final boolean emitAggregateStates;
     private String[] indices;
 
     public AnalyticsQueryRequest(RelNode plan, QueryRequestContext queryCtx, String[] indices) {
@@ -53,10 +66,27 @@ public class AnalyticsQueryRequest extends ActionRequest implements IndicesReque
     }
 
     public AnalyticsQueryRequest(RelNode plan, QueryRequestContext queryCtx, String[] indices, boolean profile) {
+        this(plan, queryCtx, indices, profile, null);
+    }
+
+    public AnalyticsQueryRequest(RelNode plan, QueryRequestContext queryCtx, String[] indices, boolean profile, ExchangeSink terminalSink) {
+        this(plan, queryCtx, indices, profile, terminalSink, false);
+    }
+
+    public AnalyticsQueryRequest(
+        RelNode plan,
+        QueryRequestContext queryCtx,
+        String[] indices,
+        boolean profile,
+        ExchangeSink terminalSink,
+        boolean emitAggregateStates
+    ) {
         this.plan = plan;
         this.queryCtx = queryCtx;
         this.indices = indices;
         this.profile = profile;
+        this.terminalSink = terminalSink;
+        this.emitAggregateStates = emitAggregateStates;
     }
 
     public AnalyticsQueryRequest(StreamInput in) throws IOException {
@@ -79,6 +109,16 @@ public class AnalyticsQueryRequest extends ActionRequest implements IndicesReque
 
     public boolean isProfile() {
         return profile;
+    }
+
+    /** The caller-supplied terminal sink for streaming results, or {@code null}. */
+    public ExchangeSink getTerminalSink() {
+        return terminalSink;
+    }
+
+    /** Whether coordinator-reduce aggregation emits folded states instead of finals. */
+    public boolean isEmitAggregateStates() {
+        return emitAggregateStates;
     }
 
     @Override

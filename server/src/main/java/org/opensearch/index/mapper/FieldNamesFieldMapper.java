@@ -182,6 +182,17 @@ public class FieldNamesFieldMapper extends MetadataFieldMapper {
         protected FieldTypeCapabilities.Capability searchCapability() {
             return FieldTypeCapabilities.Capability.FULL_TEXT_SEARCH;
         }
+
+        @Override
+        public java.util.Set<FieldTypeCapabilities.Capability> requestedCapabilities() {
+            // A disabled _field_names writes no postings and rejects queries — it needs
+            // no storage capability, so it must not constrain pluggable data-format
+            // selection (e.g. parquet-only indices).
+            if (isEnabled() == false) {
+                return java.util.Set.of();
+            }
+            return super.requestedCapabilities();
+        }
     }
 
     private final Explicit<Boolean> enabled;

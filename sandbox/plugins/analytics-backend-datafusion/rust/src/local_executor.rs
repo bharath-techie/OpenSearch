@@ -278,6 +278,31 @@ impl LocalSession {
             .expect("execute_prepared called without a prepared plan");
         datafusion::physical_plan::execute_stream(Arc::clone(plan), self.ctx.task_ctx())
     }
+
+    /// Prepares a state-emitting reduce for materialized-view refresh: the same
+    /// Substrait fragment as [`Self::prepare_final_plan`], but the FINAL aggregate runs
+    /// as `PartialReduce` — folding the shards' partial states by group key and emitting
+    /// folded states named `{call_alias}__st_i` instead of finalized values. Returns the
+    /// describe JSON (merge spec + state schema) derived from the same plan, so callers
+    /// can provision the view index from the exact layout that will be written.
+    pub async fn prepare_state_emitting_plan(
+        &mut self,
+        substrait_bytes: &[u8],
+    ) -> Result<String, DataFusionError> {
+        let plan = Plan::decode(substrait_bytes).map_err(|e| {
+            DataFusionError::Execution(format!(
+                "prepare_state_emitting_plan: failed to decode Substrait: {}",
+                e
+            ))
+        })?;
+        let logical_plan = from_substrait_plan(&self.ctx.state(), &plan).await?;
+        let dataframe = self.ctx.execute_logical_plan(logical_plan).await?;
+        let physical_plan = dataframe.create_physical_plan().await?;
+        let describe = crate::agg_mode::describe_state_plan(&physical_plan)?;
+        let state_plan = crate::agg_mode::to_state_emitting_plan(physical_plan)?;
+        self.prepared_plan = Some(state_plan);
+        Ok(describe)
+    }
 }
 
 #[cfg(test)]

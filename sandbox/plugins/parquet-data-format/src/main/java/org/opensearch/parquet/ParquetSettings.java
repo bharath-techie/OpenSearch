@@ -93,6 +93,16 @@ public final class ParquetSettings {
     );
 
     /** Data page size limit in bytes (default 1MB). */
+    /**
+     * Materialized-view spec (JSON). Describes the view's group-key columns and, per
+     * aggregate output, the DataFusion aggregate function name and raw input types:
+     * {@code {"key_columns":[...],"aggs":[{"output":"a","fn":"avg","input_types":["Float64"]}]}}.
+     * When set, segments hold partial aggregate states (columns {@code o__st_i});
+     * background merges fold equal-key states via DataFusion's PartialReduce-mode
+     * aggregation instead of concatenating, and reads finalize across segments.
+     */
+    public static final Setting<String> MV_SPEC = Setting.simpleString("index.parquet.mv.spec", Setting.Property.IndexScope);
+
     public static final Setting<ByteSizeValue> PAGE_SIZE_BYTES = Setting.byteSizeSetting(
         "index.parquet.page_size_bytes",
         new ByteSizeValue(1, ByteSizeUnit.MB),
@@ -835,6 +845,7 @@ public final class ParquetSettings {
     public static List<Setting<?>> getSettings() {
         return List.of(
             PAGE_SIZE_BYTES,
+            MV_SPEC,
             PAGE_ROW_LIMIT,
             DICT_SIZE_BYTES,
             COMPRESSION_TYPE,

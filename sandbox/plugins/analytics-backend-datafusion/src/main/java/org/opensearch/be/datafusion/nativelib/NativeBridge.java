@@ -149,6 +149,7 @@ public final class NativeBridge {
     private static final MethodHandle DF_NATIVE_NODE_STATS;
     private static final MethodHandle PREPARE_PARTIAL_PLAN;
     private static final MethodHandle PREPARE_FINAL_PLAN;
+    private static final MethodHandle PREPARE_STATE_EMITTING_PLAN;
     private static final MethodHandle EXECUTE_LOCAL_PREPARED_PLAN;
     private static final MethodHandle FETCH_BY_ROW_IDS;
     private static final MethodHandle UPDATE_CONCURRENCY_GATE;
@@ -608,6 +609,21 @@ public final class NativeBridge {
         PREPARE_FINAL_PLAN = linker.downcallHandle(
             lib.find("df_prepare_final_plan").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        );
+
+        // i64 df_prepare_state_emitting_plan(session_ptr, bytes_ptr, bytes_len,
+        // out_ptr, out_cap, out_len)
+        PREPARE_STATE_EMITTING_PLAN = linker.downcallHandle(
+            lib.find("df_prepare_state_emitting_plan").orElseThrow(),
+            FunctionDescriptor.of(
+                ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS
+            )
         );
 
         // i64 df_execute_local_prepared_plan(session_ptr, context_id)
@@ -1597,6 +1613,36 @@ public final class NativeBridge {
         NativeHandle.validatePointer(sessionPtr, "session");
         try (var call = new NativeCall()) {
             call.invoke(PREPARE_FINAL_PLAN, sessionPtr, call.bytes(substraitBytes), (long) substraitBytes.length);
+        }
+    }
+
+    /**
+     * Prepares a state-emitting reduce plan on a local session (materialized-view
+     * refresh): the same fragment as {@link #prepareFinalPlan}, but the FINAL aggregate
+     * runs as PartialReduce — folding the shards' partial states by group key and
+     * emitting folded accumulator states named {@code {call_alias}__st_i} instead of
+     * finalized values. Returns the describe JSON derived from the prepared plan: the
+     * parquet merge spec ({@code key_columns} + {@code aggs}) and the state-column
+     * schema, from which the view index is provisioned.
+     *
+     * @param sessionPtr pointer returned by {@link #createLocalSession}
+     * @param substraitBytes Substrait plan bytes
+     * @return describe JSON (merge spec + state schema)
+     */
+    public static String prepareStateEmittingPlan(long sessionPtr, byte[] substraitBytes) {
+        NativeHandle.validatePointer(sessionPtr, "session");
+        try (var call = new NativeCall()) {
+            var out = call.outBuffer(64 * 1024);
+            call.invoke(
+                PREPARE_STATE_EMITTING_PLAN,
+                sessionPtr,
+                call.bytes(substraitBytes),
+                (long) substraitBytes.length,
+                out.data(),
+                (long) out.capacity(),
+                out.lenOut()
+            );
+            return new String(out.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
         }
     }
 

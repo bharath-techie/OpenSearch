@@ -68,7 +68,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
         List<Object[]> rows = new ArrayList<>();
         rows.add(new Object[] { "server-1", 200 });
         PPLResponse expectedResponse = new PPLResponse(List.of("host", "status"), rows);
-        when(mockUnifiedQueryService.execute("source=logs")).thenReturn(expectedResponse);
+        when(mockUnifiedQueryService.execute("source=logs", null)).thenReturn(expectedResponse);
 
         AtomicReference<PPLResponse> captured = new AtomicReference<>();
         ActionListener<PPLResponse> listener = new ActionListener<>() {
@@ -86,7 +86,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
 
         assertBusy(() -> assertNotNull("onResponse should be called", captured.get()));
         assertSame(expectedResponse, captured.get());
-        verify(mockUnifiedQueryService).execute("source=logs");
+        verify(mockUnifiedQueryService).execute("source=logs", null);
     }
 
     /**
@@ -95,7 +95,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
      */
     public void testFailurePathCallsOnFailure() throws Exception {
         RuntimeException expectedException = new RuntimeException("PPL execution failed");
-        when(mockUnifiedQueryService.execute(any(String.class))).thenThrow(expectedException);
+        when(mockUnifiedQueryService.execute(any(String.class), any())).thenThrow(expectedException);
 
         AtomicReference<Exception> captured = new AtomicReference<>();
         ActionListener<PPLResponse> listener = new ActionListener<>() {
@@ -113,7 +113,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
 
         assertBusy(() -> assertNotNull("onFailure should be called", captured.get()));
         assertSame(expectedException, captured.get());
-        verify(mockUnifiedQueryService).execute("invalid query");
+        verify(mockUnifiedQueryService).execute("invalid query", null);
     }
 
     /**
@@ -121,7 +121,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
      */
     public void testExactlyOneCallbackOnSuccess() throws Exception {
         PPLResponse response = new PPLResponse(Collections.emptyList(), Collections.emptyList());
-        when(mockUnifiedQueryService.execute(any(String.class))).thenReturn(response);
+        when(mockUnifiedQueryService.execute(any(String.class), any())).thenReturn(response);
 
         AtomicInteger responseCount = new AtomicInteger(0);
         AtomicInteger failureCount = new AtomicInteger(0);
@@ -148,7 +148,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
      * Exactly-one-callback on failure: only {@code onFailure} is called, never {@code onResponse}.
      */
     public void testExactlyOneCallbackOnFailure() throws Exception {
-        when(mockUnifiedQueryService.execute(any(String.class))).thenThrow(new RuntimeException("fail"));
+        when(mockUnifiedQueryService.execute(any(String.class), any())).thenThrow(new RuntimeException("fail"));
 
         AtomicInteger responseCount = new AtomicInteger(0);
         AtomicInteger failureCount = new AtomicInteger(0);
@@ -180,7 +180,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
      */
     public void testCorrectArgumentsPassedToUnifiedQueryService() throws Exception {
         PPLResponse response = new PPLResponse(Collections.emptyList(), Collections.emptyList());
-        when(mockUnifiedQueryService.execute(any(String.class))).thenReturn(response);
+        when(mockUnifiedQueryService.execute(any(String.class), any())).thenReturn(response);
 
         AtomicReference<PPLResponse> captured = new AtomicReference<>();
         ActionListener<PPLResponse> listener = new ActionListener<>() {
@@ -197,7 +197,7 @@ public class TestPPLTransportActionTests extends OpenSearchTestCase {
         action.execute(null, new PPLRequest("source=metrics | where status=500"), listener);
 
         assertBusy(() -> assertNotNull(captured.get()));
-        verify(mockUnifiedQueryService).execute("source=metrics | where status=500");
+        verify(mockUnifiedQueryService).execute("source=metrics | where status=500", null);
         verifyNoMoreInteractions(mockUnifiedQueryService);
     }
 }

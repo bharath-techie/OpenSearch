@@ -40,6 +40,22 @@ import java.util.Map;
  */
 public class OpenSearchSchemaBuilder {
 
+    /**
+     * Suffix that resolves an index expression's system companion table: same backing
+     * indices, plus per-row storage metadata columns ({@link #SEQ_NO_COLUMN}).
+     */
+    public static final String SYSTEM_TABLE_SUFFIX = "__system";
+
+    /** Sequence-number metadata column exposed on system companion tables. */
+    public static final String SEQ_NO_COLUMN = "_seq_no";
+
+    /** Strips {@link #SYSTEM_TABLE_SUFFIX} if present — the base index expression. */
+    public static String stripSystemSuffix(String tableName) {
+        return tableName.endsWith(SYSTEM_TABLE_SUFFIX)
+            ? tableName.substring(0, tableName.length() - SYSTEM_TABLE_SUFFIX.length())
+            : tableName;
+    }
+
     private OpenSearchSchemaBuilder() {}
 
     public static SchemaPlus buildSchema(ClusterState clusterState) {
@@ -104,6 +120,17 @@ public class OpenSearchSchemaBuilder {
      */
     @SuppressWarnings("unchecked")
     private static Table resolveTable(ClusterState clusterState, IndexNameExpressionResolver resolver, String expression) {
+        // System companion table: `<expr>__system` resolves the same indices as `<expr>` but
+        // its row type additionally exposes per-row storage metadata columns (_seq_no). Kept
+        // out of the base table so `fields *` / star expansion never leaks metadata into user
+        // results; change-detection and incremental-maintenance queries opt in by name.
+        final boolean systemTable = expression.endsWith(SYSTEM_TABLE_SUFFIX);
+        if (systemTable) {
+            expression = expression.substring(0, expression.length() - SYSTEM_TABLE_SUFFIX.length());
+            if (expression.isEmpty()) {
+                return null;
+            }
+        }
         // Short-circuit literal alias / data stream names so the resolver's lenientExpandOpen
         // (which does not include hidden backings) doesn't filter out data stream backings. The
         // alias / data-stream abstraction already carries the full backing list — use it directly.
@@ -155,7 +182,7 @@ public class OpenSearchSchemaBuilder {
         if (merged.isEmpty()) {
             return null;
         }
-        return buildTable(merged);
+        return buildTable(merged, systemTable);
     }
 
     /**
@@ -292,12 +319,19 @@ public class OpenSearchSchemaBuilder {
         return typeFactory.createTypeWithNullability(base, true);
     }
 
-    private static AbstractTable buildTable(Map<String, Object> properties) {
+    private static AbstractTable buildTable(Map<String, Object> properties, boolean systemColumns) {
         return new AbstractTable() {
             @Override
             public RelDataType getRowType(RelDataTypeFactory typeFactory) {
                 RelDataTypeFactory.Builder builder = typeFactory.builder();
                 addLeafFields(builder, typeFactory, properties, "");
+                if (systemColumns) {
+                    // Per-row storage metadata: the parquet data format persists _seq_no as a
+                    // non-nullable long on every row (MetadataFieldPlugin) and Lucene indexes
+                    // it as doc values (SeqNoFieldMapper). Exposed only on the __system
+                    // companion table so user-facing star expansion never sees it.
+                    builder.add(SEQ_NO_COLUMN, typeFactory.createSqlType(SqlTypeName.BIGINT));
+                }
                 return builder.build();
             }
         };

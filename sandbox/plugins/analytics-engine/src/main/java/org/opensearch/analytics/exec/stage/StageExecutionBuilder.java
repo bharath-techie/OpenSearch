@@ -89,7 +89,10 @@ public class StageExecutionBuilder {
      */
     public StageExecution buildRootExecution(Stage rootStage, QueryContext config) {
         // TODO: Update to read directly from back-end provided ExchangeSource when the root stage has a fragment
-        StageExecution rootExec = buildStageExecution(rootStage, new RowProducingSink(), config);
+        // A caller-supplied terminal sink (materialization jobs) replaces the default
+        // coordinator-buffering sink; batches then stream to the caller as they arrive.
+        ExchangeSink terminalSink = config.terminalSink() != null ? config.terminalSink() : new RowProducingSink();
+        StageExecution rootExec = buildStageExecution(rootStage, terminalSink, config);
         if ((rootExec instanceof DataProducer) == false) {
             throw new IllegalStateException(
                 "Root execution "

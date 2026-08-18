@@ -57,6 +57,11 @@ public class UnifiedQueryService {
         return execute(pplText, false);
     }
 
+    /** Query-path overload carrying a matched materialized view (see {@link #plan(String, org.opensearch.analytics.MVReadTarget)}). */
+    public PPLResponse execute(String pplText, org.opensearch.analytics.MVReadTarget mvReadTarget) {
+        return execute(pplText, false, mvReadTarget);
+    }
+
     /**
      * Executes a PPL query with profiling: PPL text → RelNode →
      * planExecutor.executeWithProfile() → PPLResponse with profile.
@@ -65,7 +70,27 @@ public class UnifiedQueryService {
         return execute(pplText, true);
     }
 
-    private PPLResponse execute(String pplText, boolean profile) {
+    /**
+     * A planned PPL query: the logical plan, the output column names derived from its row
+     * type, and the per-query request context snapshot to execute it under.
+     */
+    public record PlannedQuery(RelNode plan, List<String> columns, QueryRequestContext queryCtx) {
+    }
+
+    /**
+     * Plans PPL text into a logical {@link RelNode} without executing it. Shared by the
+     * query path ({@link #execute}) and the materialize path (which streams the result into
+     * a target index instead of returning rows).
+     */
+    public PlannedQuery plan(String pplText) {
+        return plan(pplText, null);
+    }
+
+    /**
+     * Planning overload carrying a matched materialized view: the engine's read rewrite
+     * answers the query from the view's state columns instead of rescanning the source.
+     */
+    public PlannedQuery plan(String pplText, org.opensearch.analytics.MVReadTarget mvReadTarget) {
         // Wrap the SchemaPlus in a delegating AbstractSchema that preserves lazy table resolution.
         // The underlying OpenSearchSchemaBuilder resolves wildcard/comma/exclusion expressions
         // lazily via getTable(name) — a static copy would lose that.
@@ -112,8 +137,6 @@ public class UnifiedQueryService {
                 .setting("plugins.calcite.enabled", true)
                 .build()
         ) {
-
-            // Log what the context's root schema looks like
             logger.info("[UnifiedQueryService] Context built, planning PPL: {}", pplText);
             UnifiedQueryPlanner planner = new UnifiedQueryPlanner(context);
             RelNode logicalPlan = planner.plan(pplText);
@@ -127,6 +150,28 @@ public class UnifiedQueryService {
 
             QueryRequestContext baseCtx = contextProvider.getContext();
             QueryRequestContext queryCtx = new QueryRequestContext(baseCtx.clusterState(), baseCtx.schema(), pplText);
+            if (mvReadTarget != null) {
+                queryCtx = queryCtx.withMvReadTarget(mvReadTarget);
+            }
+            return new PlannedQuery(logicalPlan, columns, queryCtx);
+        } catch (Exception e) {
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException("Failed to plan PPL query: " + e.getMessage(), e);
+        }
+    }
+
+    private PPLResponse execute(String pplText, boolean profile) {
+        return execute(pplText, profile, null);
+    }
+
+    private PPLResponse execute(String pplText, boolean profile, org.opensearch.analytics.MVReadTarget mvReadTarget) {
+        try {
+            PlannedQuery planned = plan(pplText, mvReadTarget);
+            RelNode logicalPlan = planned.plan();
+            List<String> columns = planned.columns();
+            QueryRequestContext queryCtx = planned.queryCtx();
 
             if (profile) {
                 PlainActionFuture<ProfiledResult> future = new PlainActionFuture<>();

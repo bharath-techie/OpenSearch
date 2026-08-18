@@ -12,6 +12,7 @@ pub mod error;
 pub mod heap;
 pub mod io_task;
 pub mod metrics;
+pub mod partial;
 pub mod schema;
 mod sorted;
 mod unsorted;

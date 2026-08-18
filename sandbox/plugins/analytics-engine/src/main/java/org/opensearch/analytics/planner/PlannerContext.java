@@ -31,6 +31,7 @@ public class PlannerContext {
     private final OpenSearchDistributionTraitDef distributionTraitDef;
     private final boolean profilingEnabled;
     private final boolean preferMetadataDriver;
+    private boolean emitAggregateStates = false;
     private int annotationIdCounter;
     private RuleProfilingListener.PlannerProfile lastProfile;
     // Cluster settings the planner consults at planning time (oversampling factor + delegation
@@ -113,6 +114,22 @@ public class PlannerContext {
     /** Inject the live, settings-backed planner settings. Called by {@code DefaultPlanExecutor} before planning. */
     public void setPlannerSettings(PlannerSettings plannerSettings) {
         this.plannerSettings = plannerSettings;
+    }
+
+    /**
+     * Materialized-view refresh: the coordinator reduce must fold partial aggregate
+     * states and emit them, so the PARTIAL/FINAL split is mandatory even over
+     * unpartitioned (single-shard / gathered) input — a SINGLE-mode aggregate has no
+     * reduce stage to emit states from. Set by {@code DefaultPlanExecutor} before
+     * planning when the request demands state emission.
+     */
+    public void setEmitAggregateStates(boolean emitAggregateStates) {
+        this.emitAggregateStates = emitAggregateStates;
+    }
+
+    /** Whether this planning pass must produce a state-emitting reduce. */
+    public boolean emitAggregateStates() {
+        return emitAggregateStates;
     }
 
     public ClusterState getClusterState() {

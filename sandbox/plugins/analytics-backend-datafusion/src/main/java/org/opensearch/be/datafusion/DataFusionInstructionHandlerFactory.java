@@ -71,6 +71,11 @@ public class DataFusionInstructionHandlerFactory implements FragmentInstructionH
         return Optional.of(new FinalAggregateInstructionNode());
     }
 
+    @Override
+    public Optional<InstructionNode> createStateEmittingFinalAggregateNode() {
+        return Optional.of(new FinalAggregateInstructionNode(true));
+    }
+
     // ── Data node: create handlers ──
 
     @SuppressWarnings("unchecked")

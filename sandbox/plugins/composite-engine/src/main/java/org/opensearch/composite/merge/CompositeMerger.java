@@ -17,6 +17,7 @@ import org.opensearch.index.engine.dataformat.IndexingExecutionEngine;
 import org.opensearch.index.engine.dataformat.MergeInput;
 import org.opensearch.index.engine.dataformat.MergeResult;
 import org.opensearch.index.engine.dataformat.Merger;
+import org.opensearch.index.engine.dataformat.RowJsonReader;
 import org.opensearch.index.engine.exec.Segment;
 import org.opensearch.index.engine.exec.WriterFileSet;
 import org.opensearch.plugin.stats.StatsRecorder;
@@ -47,8 +48,34 @@ public class CompositeMerger implements Merger {
     public CompositeMerger(CompositeIndexingExecutionEngine engine, CompositeDataFormat compositeDataFormat) {
         this.primaryFormat = compositeDataFormat.getPrimaryDataFormat();
         this.secondaryFormats = resolveSecondaryFormats(compositeDataFormat, primaryFormat);
-        this.executor = new CompositeMergeExecutor(buildMergerMap(engine));
+        // MV indices (index.parquet.mv.spec set): the primary runs an aggregating merge
+        // that folds rows, and every secondary is rebuilt 1:1 from the folded output so
+        // cross-format row parity holds unconditionally.
+        boolean mvMode = engine.getIndexSettings() != null
+            && engine.getIndexSettings().getSettings().get("index.parquet.mv.spec", "").isEmpty() == false;
+        this.executor = new CompositeMergeExecutor(buildMergerMap(engine), mvMode ? buildMvContext(engine) : null);
         this.statsTracker = engine.statsTracker();
+    }
+
+    private static CompositeMergeExecutor.MvRebuildContext buildMvContext(CompositeIndexingExecutionEngine engine) {
+        IndexingExecutionEngine<?, ?> primary = engine.getPrimaryDelegate();
+        if (primary instanceof RowJsonReader == false) {
+            throw new IllegalStateException(
+                "MV index requires the primary format ["
+                    + primary.getDataFormat().name()
+                    + "] to support reading merged rows back (RowJsonReader)"
+            );
+        }
+        RowJsonReader rowReader = (RowJsonReader) primary;
+        Map<DataFormat, IndexingExecutionEngine<?, ?>> secondaryEngines = new HashMap<>();
+        for (IndexingExecutionEngine<?, ?> secondary : engine.getSecondaryDelegates()) {
+            secondaryEngines.put(secondary.getDataFormat(), secondary);
+        }
+        MvSecondaryRebuilder rebuilder = new MvSecondaryRebuilder(
+            engine.getMapperService(),
+            engine.getIndexSettings().getIndex().getName()
+        );
+        return new CompositeMergeExecutor.MvRebuildContext(rowReader, Map.copyOf(secondaryEngines), rebuilder);
     }
 
     @Override

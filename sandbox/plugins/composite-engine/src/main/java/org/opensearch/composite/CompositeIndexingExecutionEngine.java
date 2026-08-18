@@ -82,6 +82,7 @@ public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine
     private final CompositeDataFormat compositeDataFormat;
     private final Committer committer;
     private final IndexSettings indexSettings;
+    private final MapperService mapperService;
     private final CompositeMerger merger;
     private final CompositeShardStatsTracker statsTracker = new CompositeShardStatsTracker();
     private final ShardId shardId;
@@ -156,6 +157,7 @@ public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine
         this.compositeDataFormat = new CompositeDataFormat(primaryFormat, allFormats);
         this.committer = committer;
         this.indexSettings = indexSettings;
+        this.mapperService = mapperService;
         this.merger = new CompositeMerger(this, compositeDataFormat);
         this.shardId = store != null ? store.shardId() : null;
 
@@ -530,6 +532,16 @@ public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine
     /** Returns this shard's composite stats tracker, used by the writer and merger to count. */
     public CompositeShardStatsTracker statsTracker() {
         return statsTracker;
+    }
+
+    /** The index settings this engine was created with (composite + MV configuration). */
+    public IndexSettings getIndexSettings() {
+        return indexSettings;
+    }
+
+    /** The mapper service for this shard's index, used by the MV merge path to rebuild documents. */
+    public MapperService getMapperService() {
+        return mapperService;
     }
 
     /**

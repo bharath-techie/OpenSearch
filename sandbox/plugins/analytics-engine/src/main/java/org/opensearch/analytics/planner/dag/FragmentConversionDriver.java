@@ -81,18 +81,39 @@ public class FragmentConversionDriver {
      * {@link StagePlan#convertedBytes()} on each plan.
      */
     public static void convertAll(QueryDAG dag, CapabilityRegistry registry) {
-        convertStage(dag.rootStage(), registry);
+        convertAll(dag, registry, false);
+    }
+
+    /**
+     * Converts all {@link StagePlan} alternatives in the DAG, populating
+     * {@link StagePlan#convertedBytes()} on each plan.
+     *
+     * <p>{@code emitAggregateStates}: materialized-view refresh — coordinator-reduce
+     * stages with a FINAL aggregate are instructed to fold partial states and emit
+     * folded states instead of finalized values. Fails loudly when the query has no
+     * such reduce stage or the backend cannot emit states: silently finalizing would
+     * write unmergeable values into the view.
+     */
+    public static void convertAll(QueryDAG dag, CapabilityRegistry registry, boolean emitAggregateStates) {
+        boolean[] stateNodeCreated = new boolean[1];
+        convertStage(dag.rootStage(), registry, emitAggregateStates, stateNodeCreated);
         // Root stage executes locally at coordinator — store factory for instruction dispatch.
         Stage root = dag.rootStage();
         if (root.getExchangeSinkProvider() != null && !root.getPlanAlternatives().isEmpty()) {
             AnalyticsSearchBackendPlugin backend = registry.getBackend(root.getPlanAlternatives().getFirst().backendId());
             root.setInstructionHandlerFactory(backend.getInstructionHandlerFactory());
         }
+        if (emitAggregateStates && !stateNodeCreated[0]) {
+            throw new IllegalStateException(
+                "state emission requested but the plan has no state-capable coordinator reduce; "
+                    + "a materialized-view definition must aggregate (stats ... by ...)"
+            );
+        }
     }
 
-    private static void convertStage(Stage stage, CapabilityRegistry registry) {
+    private static void convertStage(Stage stage, CapabilityRegistry registry, boolean emitAggregateStates, boolean[] stateNodeCreated) {
         for (Stage child : stage.getChildStages()) {
-            convertStage(child, registry);
+            convertStage(child, registry, emitAggregateStates, stateNodeCreated);
         }
         // After children are converted, surface any decorator-induced schema delta as
         // postDecorationSchemaBytes on the child plans. The reduce sink consults this when
@@ -127,7 +148,14 @@ public class FragmentConversionDriver {
 
             // Assemble instruction list
             List<DelegatedExpression> delegated = delegationBytes.getResult();
-            List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
+            List<InstructionNode> instructions = assembleInstructions(
+                backend,
+                plan,
+                treeShape,
+                delegationBytes,
+                emitAggregateStates,
+                stateNodeCreated
+            );
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
             LOGGER.debug(
@@ -225,7 +253,9 @@ public class FragmentConversionDriver {
         AnalyticsSearchBackendPlugin backend,
         StagePlan plan,
         FilterTreeShape treeShape,
-        IntraOperatorDelegationBytes delegationBytes
+        IntraOperatorDelegationBytes delegationBytes,
+        boolean emitAggregateStates,
+        boolean[] stateNodeCreated
     ) {
         FragmentInstructionHandlerFactory factory = backend.getInstructionHandlerFactory();
         LinkedList<InstructionNode> instructions = new LinkedList<>();
@@ -245,10 +275,28 @@ public class FragmentConversionDriver {
             if (containsPartialAggregate(resolvedFragment)) {
                 factory.createPartialAggregateNode().ifPresent(instructions::add);
             }
+        } else if (leaf instanceof OpenSearchStageInputScan && emitAggregateStates && containsFinalAggregate(resolvedFragment)) {
+            // Materialized-view refresh: the reduce must fold states, never finalize.
+            InstructionNode stateNode = factory.createStateEmittingFinalAggregateNode()
+                .orElseThrow(
+                    () -> new IllegalStateException(
+                        "backend [" + plan.backendId() + "] cannot emit aggregate states required for materialization"
+                    )
+                );
+            instructions.add(stateNode);
+            stateNodeCreated[0] = true;
         } else if (leaf instanceof OpenSearchStageInputScan && containsEngineNativeAggregate(resolvedFragment, AggregateMode.FINAL)) {
             factory.createFinalAggregateNode().ifPresent(instructions::add);
         }
         return instructions;
+    }
+
+    private static boolean containsFinalAggregate(RelNode root) {
+        if (root instanceof OpenSearchAggregate agg && agg.getMode() == AggregateMode.FINAL) return true;
+        for (RelNode child : root.getInputs()) {
+            if (containsFinalAggregate(child)) return true;
+        }
+        return false;
     }
 
     // TODO: consolidate with isAggregatePath / findBuriedPartialAggregate into a shared utility

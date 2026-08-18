@@ -14,6 +14,7 @@ import org.opensearch.analytics.spi.CommonExecutionContext;
 import org.opensearch.analytics.spi.ExchangeSinkContext;
 import org.opensearch.analytics.spi.FinalAggregateInstructionNode;
 import org.opensearch.analytics.spi.FragmentInstructionHandler;
+import org.opensearch.analytics.spi.StateSpecConsumer;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 
 import java.util.ArrayList;
@@ -57,7 +58,18 @@ public class FinalAggregateInstructionHandler implements FragmentInstructionHand
                 senders.add(new DatafusionPartitionSender(registered.pointer()));
                 inputSchemas.add(ArrowSchemaIpc.fromBytes(registered.schemaIpc()));
             }
-            NativeBridge.prepareFinalPlan(session.getPointer(), ctx.fragmentBytes());
+            if (node.emitStates()) {
+                // Materialized-view refresh: fold partial states, emit states. The
+                // describe JSON (merge spec + state schema, derived from the prepared
+                // plan) goes to the terminal sink before any batch flows so it can
+                // provision the view index.
+                String describeJson = NativeBridge.prepareStateEmittingPlan(session.getPointer(), ctx.fragmentBytes());
+                if (ctx.downstream() instanceof StateSpecConsumer consumer) {
+                    consumer.onStateSpec(describeJson);
+                }
+            } else {
+                NativeBridge.prepareFinalPlan(session.getPointer(), ctx.fragmentBytes());
+            }
         } catch (RuntimeException e) {
             for (DatafusionPartitionSender sender : senders) {
                 try {

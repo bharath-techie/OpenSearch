@@ -17,16 +17,32 @@ import java.io.IOException;
  * Instruction node for final aggregate in coordinator reduce — ExchangeSink path,
  * remove partial agg, preserve final-only for the driving backend's reduce execution.
  *
- * <p>TODO: add backend-specific config fields as final aggregate implementation is built out.
+ * <p>When {@link #emitStates()} is set (materialized-view refresh), the reduce folds
+ * the shards' partial aggregate states by group key and emits the folded states
+ * (columns named {@code {call_alias}__st_i}) instead of finalized values, so the
+ * materialize sink writes re-mergeable state segments.
  *
  * @opensearch.internal
  */
 public class FinalAggregateInstructionNode implements InstructionNode {
 
-    public FinalAggregateInstructionNode() {}
+    private final boolean emitStates;
+
+    public FinalAggregateInstructionNode() {
+        this(false);
+    }
+
+    public FinalAggregateInstructionNode(boolean emitStates) {
+        this.emitStates = emitStates;
+    }
 
     public FinalAggregateInstructionNode(StreamInput in) throws IOException {
-        // TODO: read config fields when added
+        this.emitStates = in.readBoolean();
+    }
+
+    /** Whether the reduce emits folded aggregate states instead of finalized values. */
+    public boolean emitStates() {
+        return emitStates;
     }
 
     @Override
@@ -36,6 +52,6 @@ public class FinalAggregateInstructionNode implements InstructionNode {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        // TODO: write config fields when added
+        out.writeBoolean(emitStates);
     }
 }

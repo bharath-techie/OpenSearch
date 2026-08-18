@@ -24,8 +24,10 @@ import static org.mockito.Mockito.when;
 /** Unit tests for {@link PassThroughStageExecution}. */
 public class PassThroughStageExecutionTests extends OpenSearchTestCase {
 
-    public void testCtorRejectsNonRowProducingSink() {
-        ExchangeSink notRowProducing = new ExchangeSink() {
+    public void testCtorRejectsWriteOnlySink() {
+        // The root gather needs a bidirectional exchange: children feed() in, the query
+        // execution reads the terminal via outputSource(). A write-only sink can't serve that.
+        ExchangeSink writeOnly = new ExchangeSink() {
             @Override
             public void feed(VectorSchemaRoot batch) {}
 
@@ -34,9 +36,37 @@ public class PassThroughStageExecutionTests extends OpenSearchTestCase {
         };
         IllegalArgumentException e = expectThrows(
             IllegalArgumentException.class,
-            () -> new PassThroughStageExecution(stageWithId(0), mockContext(), notRowProducing)
+            () -> new PassThroughStageExecution(stageWithId(0), mockContext(), writeOnly)
         );
-        assertTrue(e.getMessage().contains("RowProducingSink"));
+        assertTrue(e.getMessage().contains("ExchangeSource"));
+    }
+
+    public void testCtorAcceptsAnyBidirectionalSink() {
+        // A caller-supplied terminal sink (materialization) qualifies as long as it also
+        // implements ExchangeSource — it does not have to be a RowProducingSink.
+        final class ForwardingSink implements ExchangeSink, org.opensearch.analytics.backend.ExchangeSource {
+            @Override
+            public void feed(VectorSchemaRoot batch) {
+                batch.close();
+            }
+
+            @Override
+            public void close() {}
+
+            @Override
+            public Iterable<VectorSchemaRoot> readResult() {
+                return java.util.List.of();
+            }
+
+            @Override
+            public long getRowCount() {
+                return 0;
+            }
+        }
+        ForwardingSink sink = new ForwardingSink();
+        PassThroughStageExecution exec = new PassThroughStageExecution(stageWithId(0), mockContext(), sink);
+        assertSame(sink, exec.inputSink(1));
+        assertSame(sink, exec.outputSource());
     }
 
     public void testInputSinkReturnsOwnedSinkForAnyChildId() {

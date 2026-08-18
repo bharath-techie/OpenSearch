@@ -10,7 +10,6 @@ package org.opensearch.analytics.exec.stage.coordinator;
 
 import org.opensearch.analytics.backend.ExchangeSource;
 import org.opensearch.analytics.exec.QueryContext;
-import org.opensearch.analytics.exec.RowProducingSink;
 import org.opensearch.analytics.exec.stage.AbstractStageExecution;
 import org.opensearch.analytics.exec.stage.SinkProvidingStageExecution;
 import org.opensearch.analytics.exec.stage.StageTask;
@@ -21,22 +20,30 @@ import org.opensearch.analytics.spi.ExchangeSink;
 import java.util.List;
 
 /**
- * LOCAL pass-through (root gather) stage. Owns a {@link RowProducingSink} that
- * children write into and the root reads from. Runs a no-op LOCAL task so the
+ * LOCAL pass-through (root gather) stage. Owns a bidirectional exchange (an
+ * {@link ExchangeSink} that also implements {@link ExchangeSource} — by default a
+ * {@code RowProducingSink}, or a caller-supplied terminal sink for materialization)
+ * that children write into and the root reads from. Runs a no-op LOCAL task so the
  * scheduler-driven dispatch path stays uniform.
  *
  * @opensearch.internal
  */
 public final class PassThroughStageExecution extends AbstractStageExecution implements SinkProvidingStageExecution {
 
-    private final RowProducingSink ownedSink;
+    private final ExchangeSink ownedSink;
 
     public PassThroughStageExecution(Stage stage, QueryContext config, ExchangeSink sink) {
         super(stage, config.queryId(), config.operationListeners(), config.parentTask());
-        if ((sink instanceof RowProducingSink) == false) {
-            throw new IllegalArgumentException("PassThroughStageExecution requires a RowProducingSink");
+        // The root gather contract needs both directions: children feed() into the sink and
+        // the query execution reads the terminal result via outputSource(). RowProducingSink
+        // is the default; a caller-supplied terminal sink (materialization) also qualifies
+        // as long as it exposes the read view.
+        if ((sink instanceof ExchangeSource) == false) {
+            throw new IllegalArgumentException(
+                "PassThroughStageExecution requires a sink implementing ExchangeSource, got " + sink.getClass().getSimpleName()
+            );
         }
-        this.ownedSink = (RowProducingSink) sink;
+        this.ownedSink = sink;
         this.runner = new LocalTaskRunner(config.schedulerExecutor());
     }
 
@@ -52,6 +59,6 @@ public final class PassThroughStageExecution extends AbstractStageExecution impl
 
     @Override
     public ExchangeSource outputSource() {
-        return ownedSink;
+        return (ExchangeSource) ownedSink;
     }
 }

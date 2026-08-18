@@ -95,6 +95,9 @@ public final class IndexResolution {
      * resolved members.
      */
     public static IndexResolution resolve(String name, ClusterState clusterState, IndexNameExpressionResolver resolver) {
+        // A system companion table (`<expr>__system`) resolves to the same concrete indices as
+        // its base expression; only its row type differs (schema-side, OpenSearchSchemaBuilder).
+        name = OpenSearchSchemaBuilder.stripSystemSuffix(name);
         SortedMap<String, IndexAbstraction> lookup = clusterState.metadata().getIndicesLookup();
         IndexAbstraction abstraction = lookup == null ? null : lookup.get(name);
         if (abstraction != null) {

@@ -56,6 +56,16 @@ public interface FragmentInstructionHandlerFactory {
     /** Creates a final aggregate instruction node for coordinator reduce. */
     Optional<InstructionNode> createFinalAggregateNode();
 
+    /**
+     * Creates a state-emitting final aggregate instruction node (materialized-view
+     * refresh): the reduce folds partial states by group key and emits folded states
+     * instead of finalized values. Backends that cannot emit states return empty,
+     * failing the materialization loudly rather than writing finalized values.
+     */
+    default Optional<InstructionNode> createStateEmittingFinalAggregateNode() {
+        return Optional.empty();
+    }
+
     // ── Data-node-side: create handler for an instruction node ──
 
     /**

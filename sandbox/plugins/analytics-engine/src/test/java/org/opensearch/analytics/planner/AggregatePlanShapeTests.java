@@ -56,6 +56,22 @@ public class AggregatePlanShapeTests extends PlanShapeTestBase {
             """, result);
     }
 
+    /**
+     * State emission (materialized-view refresh) mandates the PARTIAL/FINAL split even on
+     * a single shard: a SINGLE-mode aggregate finalizes in one step, leaving no reduce
+     * stage to fold-and-emit states from. The split is forced post-Volcano.
+     */
+    public void testStateEmissionForcesSplitOn1Shard() {
+        PlannerContext context = singleShardContext();
+        context.setEmitAggregateStates(true);
+        RelNode result = runPlanner(nonPrefixGroupedSum(), context);
+        result = org.opensearch.analytics.planner.rules.OpenSearchAggregateSplitRule.forceStateEmissionSplit(result, context);
+        String plan = org.apache.calcite.plan.RelOptUtil.toString(result);
+        assertTrue("expected FINAL aggregate in plan:\n" + plan, plan.contains("mode=[FINAL]"));
+        assertTrue("expected PARTIAL aggregate in plan:\n" + plan, plan.contains("mode=[PARTIAL]"));
+        assertTrue("expected exchange between the halves:\n" + plan, plan.contains("OpenSearchExchangeReducer"));
+    }
+
     public void testNonPrefixGroupSet_2shard() {
         // FINAL groups on {0} (key fronted by PARTIAL), NOT the original {1}. Before the fix FINAL
         // carried {1} and grouped on the SUM column instead of the key.

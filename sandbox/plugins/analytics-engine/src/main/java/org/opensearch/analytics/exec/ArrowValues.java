@@ -68,8 +68,9 @@ public final class ArrowValues {
 
     /**
      * Reads an Arrow cell as a JSON-friendly scalar: numerics coerced to
-     * {@code long}/{@code double}, timestamps rendered as ISO-8601 UTC strings. Binary and
-     * complex (list/struct/decimal) types are not yet supported and return {@code null}.
+     * {@code long}/{@code double}, timestamps rendered as ISO-8601 UTC strings, binary
+     * payloads base64-encoded (the {@code binary} mapping type's source form). Complex
+     * (list/struct/decimal) types are not yet supported and return {@code null}.
      */
     public static Object toSourceValue(FieldVector vec, int idx) {
         if (vec == null || vec.isNull(idx)) return null;
@@ -80,7 +81,10 @@ public final class ArrowValues {
             case LargeBinary:
             case FixedSizeBinary:
             case BinaryView:
-                return null;
+                // Opaque state payloads (HLL sketches etc.): the `binary` mapping type
+                // accepts base64 text in _source and stores the decoded bytes.
+                Object bytes = vec.getObject(idx);
+                return bytes instanceof byte[] b ? java.util.Base64.getEncoder().encodeToString(b) : null;
             default:
                 break;
         }

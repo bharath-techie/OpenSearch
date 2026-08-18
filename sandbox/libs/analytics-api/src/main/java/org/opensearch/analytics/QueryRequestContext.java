@@ -26,15 +26,29 @@ import org.opensearch.tasks.Task;
  * <p>{@code parentTask} is the front-end request task used to link the analytics query task for
  * cancellation propagation (see {@code DefaultPlanExecutor}). May be {@code null}.
  *
+ * <p>{@code mvReadTarget} is non-null when the front-end matched the query to a fresh
+ * materialized view; the engine then answers from the view's state columns instead of
+ * rescanning the source (see {@code MVStateReadRewriter}).
+ *
  * @opensearch.internal
  */
-public record QueryRequestContext(ClusterState clusterState, SchemaPlus schema, String querySource, Task parentTask) {
+public record QueryRequestContext(ClusterState clusterState, SchemaPlus schema, String querySource, Task parentTask,
+    MVReadTarget mvReadTarget) {
+
+    public QueryRequestContext(ClusterState clusterState, SchemaPlus schema, String querySource, Task parentTask) {
+        this(clusterState, schema, querySource, parentTask, null);
+    }
 
     public QueryRequestContext(ClusterState clusterState, SchemaPlus schema, String querySource) {
-        this(clusterState, schema, querySource, null);
+        this(clusterState, schema, querySource, null, null);
     }
 
     public QueryRequestContext(ClusterState clusterState, SchemaPlus schema) {
-        this(clusterState, schema, null, null);
+        this(clusterState, schema, null, null, null);
+    }
+
+    /** Copy with a matched materialized-view read target attached. */
+    public QueryRequestContext withMvReadTarget(MVReadTarget target) {
+        return new QueryRequestContext(clusterState, schema, querySource, parentTask, target);
     }
 }

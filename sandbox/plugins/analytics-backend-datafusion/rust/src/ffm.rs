@@ -1528,6 +1528,48 @@ pub unsafe extern "C" fn df_prepare_final_plan(
     Ok(0)
 }
 
+/// Prepares a state-emitting reduce plan on a local session (materialized-view
+/// refresh): same fragment as `df_prepare_final_plan`, but the FINAL aggregate runs as
+/// `PartialReduce` and emits folded accumulator states named `{call_alias}__st_i`.
+/// Writes the describe JSON (merge spec + state schema derived from the prepared plan)
+/// into the caller-provided `out_ptr` buffer of capacity `out_cap`, setting `out_len`.
+///
+/// Returns 0 on success; < 0 is a negated error-string pointer.
+///
+/// # Safety
+/// `session_ptr` must be a valid pointer returned by `df_create_local_session`.
+/// `bytes_ptr` must point to `bytes_len` valid bytes of a Substrait plan.
+/// `out_ptr` must point to a writable buffer of at least `out_cap` bytes.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn df_prepare_state_emitting_plan(
+    session_ptr: i64,
+    bytes_ptr: *const u8,
+    bytes_len: usize,
+    out_ptr: *mut u8,
+    out_cap: i64,
+    out_len: *mut i64,
+) -> i64 {
+    let session = &mut *(session_ptr as *mut crate::local_executor::LocalSession);
+    let bytes = slice::from_raw_parts(bytes_ptr, bytes_len);
+    let mgr = get_rt_manager()?;
+    let describe = mgr
+        .io_runtime
+        .block_on(
+            crate::task_monitors::plan_setup_monitor()
+                .instrument(session.prepare_state_emitting_plan(bytes)),
+        )
+        .map_err(|e| e.to_string())?;
+    write_out_buffer(
+        describe.as_bytes(),
+        out_ptr,
+        out_cap,
+        out_len,
+        "prepare_state_emitting_plan describe JSON",
+    )?;
+    Ok(0)
+}
+
 /// Executes the previously prepared final-aggregate plan on a local session.
 ///
 /// Returns a stream pointer (same shape as `df_execute_local_plan`) that can

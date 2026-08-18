@@ -20,17 +20,29 @@ import java.util.Objects;
  * input data for a merge operation.
  * Use {@link Builder} to construct instances.
  *
+ * <p>When {@code replacementFileSet} is non-null, the merge must consume the input
+ * {@code segments} but produce a merged segment whose content is exactly the rows of the
+ * replacement file set (already written by a writer of this format at
+ * {@code newWriterGeneration}), rather than the concatenation of the input segments.
+ * This is used by the composite engine's materialized-view merge path, where the primary
+ * format's aggregating merge folds rows and each secondary segment is rebuilt 1:1 from
+ * the folded output.
+ *
  * @opensearch.experimental
  */
 @ExperimentalApi
-public record MergeInput(List<Segment> segments, RowIdMapping rowIdMapping, long newWriterGeneration) {
+public record MergeInput(List<Segment> segments, RowIdMapping rowIdMapping, long newWriterGeneration, WriterFileSet replacementFileSet) {
 
     public MergeInput {
         segments = List.copyOf(segments);
     }
 
+    public MergeInput(List<Segment> segments, RowIdMapping rowIdMapping, long newWriterGeneration) {
+        this(segments, rowIdMapping, newWriterGeneration, null);
+    }
+
     private MergeInput(Builder builder) {
-        this(new ArrayList<>(builder.segments), builder.rowIdMapping, builder.newWriterGeneration);
+        this(new ArrayList<>(builder.segments), builder.rowIdMapping, builder.newWriterGeneration, builder.replacementFileSet);
     }
 
     /**
@@ -60,6 +72,7 @@ public record MergeInput(List<Segment> segments, RowIdMapping rowIdMapping, long
         private List<Segment> segments = new ArrayList<>();
         private RowIdMapping rowIdMapping;
         private long newWriterGeneration;
+        private WriterFileSet replacementFileSet;
 
         private Builder() {}
 
@@ -104,6 +117,17 @@ public record MergeInput(List<Segment> segments, RowIdMapping rowIdMapping, long
          */
         public Builder newWriterGeneration(long newWriterGeneration) {
             this.newWriterGeneration = newWriterGeneration;
+            return this;
+        }
+
+        /**
+         * Sets the replacement content for the merged segment (see class javadoc).
+         *
+         * @param replacementFileSet flushed file set whose rows become the merged segment's content
+         * @return this builder
+         */
+        public Builder replacementFileSet(WriterFileSet replacementFileSet) {
+            this.replacementFileSet = replacementFileSet;
             return this;
         }
 

@@ -14,7 +14,7 @@
 use std::slice;
 use std::str;
 
-use native_bridge_common::{ffm_safe, log_debug};
+use native_bridge_common::ffm_safe;
 
 use crate::field_config::FieldConfig;
 use crate::merge;
@@ -634,6 +634,37 @@ pub unsafe extern "C" fn parquet_on_settings_update(
     Ok(0)
 }
 
+/// Registers the materialized-view spec for an index: a JSON document carrying the
+/// group-key columns and, per aggregate output, the DataFusion function name and raw
+/// input types (see `merge::partial::MvStateSpec`). When present, `parquet_merge_files`
+/// folds equal-key partial aggregate states instead of concatenating.
+#[ffm_safe]
+#[no_mangle]
+pub unsafe extern "C" fn parquet_set_mv_spec(
+    index_name_ptr: *const u8,
+    index_name_len: i64,
+    spec_ptr: *const u8,
+    spec_len: i64,
+) -> i64 {
+    let index_name = str_from_raw(index_name_ptr, index_name_len)
+        .map_err(|e| format!("parquet_set_mv_spec index_name: {}", e))?
+        .to_string();
+    let spec_json = str_from_raw(spec_ptr, spec_len)
+        .map_err(|e| format!("parquet_set_mv_spec spec: {}", e))?
+        .to_string();
+    // Validate eagerly: a malformed spec must fail index setup, not the first merge.
+    merge::partial::MvStateSpec::parse(&spec_json)
+        .map_err(|e| format!("parquet_set_mv_spec: {}", e))?;
+    let mut config = SETTINGS_STORE
+        .get(&index_name)
+        .map(|r| r.clone())
+        .unwrap_or_default();
+    config.index_name = Some(index_name.clone());
+    config.mv_spec = Some(spec_json);
+    SETTINGS_STORE.insert(index_name, config);
+    Ok(0)
+}
+
 #[ffm_safe]
 #[no_mangle]
 pub unsafe extern "C" fn parquet_remove_settings(
@@ -705,7 +736,42 @@ pub unsafe extern "C" fn parquet_merge_files(
         }
     };
 
-    let result = if sort_cols.is_empty() {
+    // MV indices: fold equal-key partial aggregate states (PartialReduce merge). Any
+    // failure falls back to concatenation — always correct for MV state segments
+    // (reads fold through the same ⊕), just uncompacted.
+    let mv_spec = SETTINGS_STORE
+        .get(index_name)
+        .and_then(|s| s.mv_spec.clone())
+        .and_then(|json| match merge::partial::MvStateSpec::parse(&json) {
+            Ok(spec) => Some(spec),
+            Err(e) => {
+                crate::log_info!("parquet_merge_files: invalid MV spec for '{}': {}", index_name, e);
+                None
+            }
+        });
+    let mv_result = mv_spec.and_then(|spec| {
+        match merge::partial::merge_partial_states(
+            &input_files,
+            output_path,
+            index_name,
+            output_writer_generation,
+            &spec,
+        ) {
+            Ok(output) => Some(output),
+            Err(e) => {
+                crate::log_info!(
+                    "parquet_merge_files: partial-state merge failed for '{}' ({}), falling back to concatenation",
+                    index_name,
+                    e
+                );
+                None
+            }
+        }
+    });
+
+    let result = if let Some(output) = mv_result {
+        Ok(output)
+    } else if sort_cols.is_empty() {
         merge::merge_unsorted(
             &input_files,
             output_path,
@@ -807,12 +873,14 @@ pub unsafe extern "C" fn parquet_free_merge_result(
 }
 
 // ---------------------------------------------------------------------------
-// Parquet reader (for test verification)
+// Parquet reader (test verification and MV secondary rebuild)
 // ---------------------------------------------------------------------------
 
 /// Reads a parquet file and returns its contents as a JSON string.
 /// Each row is a JSON object. The result is a JSON array of objects.
 /// The JSON bytes are written into `out_buf`, actual length into `out_len`.
+/// Binary values are rendered as base64 strings; timestamps as epoch milliseconds.
+/// Fails on column types with no faithful JSON rendering rather than corrupting data.
 /// Returns 0 on success.
 #[ffm_safe]
 #[no_mangle]
@@ -824,6 +892,7 @@ pub unsafe extern "C" fn parquet_read_as_json(
     out_len: *mut i64,
 ) -> i64 {
     use arrow::array::Array;
+    use base64::prelude::{Engine as _, BASE64_STANDARD};
 
     let filename = str_from_raw(file_ptr, file_len)
         .map_err(|e| format!("parquet_read_as_json: {}", e))?
@@ -850,6 +919,14 @@ pub unsafe extern "C" fn parquet_read_as_json(
                     serde_json::Value::Null
                 } else {
                     match col.data_type() {
+                        arrow::datatypes::DataType::Int8 => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::Int8Array>().unwrap();
+                            serde_json::Value::Number(arr.value(row_idx).into())
+                        }
+                        arrow::datatypes::DataType::Int16 => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::Int16Array>().unwrap();
+                            serde_json::Value::Number(arr.value(row_idx).into())
+                        }
                         arrow::datatypes::DataType::Int32 => {
                             let arr = col
                                 .as_any()
@@ -864,11 +941,19 @@ pub unsafe extern "C" fn parquet_read_as_json(
                                 .unwrap();
                             serde_json::Value::Number(arr.value(row_idx).into())
                         }
+                        arrow::datatypes::DataType::UInt64 => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
+                            serde_json::Value::Number(arr.value(row_idx).into())
+                        }
                         arrow::datatypes::DataType::Utf8 => {
                             let arr = col
                                 .as_any()
                                 .downcast_ref::<arrow::array::StringArray>()
                                 .unwrap();
+                            serde_json::Value::String(arr.value(row_idx).to_string())
+                        }
+                        arrow::datatypes::DataType::LargeUtf8 => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::LargeStringArray>().unwrap();
                             serde_json::Value::String(arr.value(row_idx).to_string())
                         }
                         arrow::datatypes::DataType::Boolean => {
@@ -878,6 +963,10 @@ pub unsafe extern "C" fn parquet_read_as_json(
                                 .unwrap();
                             serde_json::Value::Bool(arr.value(row_idx))
                         }
+                        arrow::datatypes::DataType::Float32 => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::Float32Array>().unwrap();
+                            serde_json::json!(arr.value(row_idx))
+                        }
                         arrow::datatypes::DataType::Float64 => {
                             let arr = col
                                 .as_any()
@@ -885,8 +974,63 @@ pub unsafe extern "C" fn parquet_read_as_json(
                                 .unwrap();
                             serde_json::json!(arr.value(row_idx))
                         }
-                        _ => {
-                            serde_json::Value::String(format!("<unsupported:{}>", col.data_type()))
+                        arrow::datatypes::DataType::Binary => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
+                            serde_json::Value::String(BASE64_STANDARD.encode(arr.value(row_idx)))
+                        }
+                        arrow::datatypes::DataType::LargeBinary => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::LargeBinaryArray>().unwrap();
+                            serde_json::Value::String(BASE64_STANDARD.encode(arr.value(row_idx)))
+                        }
+                        arrow::datatypes::DataType::FixedSizeBinary(_) => {
+                            let arr = col
+                                .as_any()
+                                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+                                .unwrap();
+                            serde_json::Value::String(BASE64_STANDARD.encode(arr.value(row_idx)))
+                        }
+                        arrow::datatypes::DataType::Timestamp(unit, _) => {
+                            use arrow::datatypes::TimeUnit;
+                            let raw = match unit {
+                                TimeUnit::Second => {
+                                    col.as_any().downcast_ref::<arrow::array::TimestampSecondArray>().unwrap().value(row_idx) * 1000
+                                }
+                                TimeUnit::Millisecond => col
+                                    .as_any()
+                                    .downcast_ref::<arrow::array::TimestampMillisecondArray>()
+                                    .unwrap()
+                                    .value(row_idx),
+                                TimeUnit::Microsecond => {
+                                    col.as_any()
+                                        .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+                                        .unwrap()
+                                        .value(row_idx)
+                                        / 1000
+                                }
+                                TimeUnit::Nanosecond => {
+                                    col.as_any()
+                                        .downcast_ref::<arrow::array::TimestampNanosecondArray>()
+                                        .unwrap()
+                                        .value(row_idx)
+                                        / 1_000_000
+                                }
+                            };
+                            serde_json::Value::Number(raw.into())
+                        }
+                        arrow::datatypes::DataType::Date32 => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::Date32Array>().unwrap();
+                            serde_json::Value::Number((arr.value(row_idx) as i64 * 86_400_000).into())
+                        }
+                        arrow::datatypes::DataType::Date64 => {
+                            let arr = col.as_any().downcast_ref::<arrow::array::Date64Array>().unwrap();
+                            serde_json::Value::Number(arr.value(row_idx).into())
+                        }
+                        other => {
+                            return Err(format!(
+                                "parquet_read_as_json: column [{}] has unsupported type [{}]",
+                                field.name(),
+                                other
+                            ));
                         }
                     }
                 };

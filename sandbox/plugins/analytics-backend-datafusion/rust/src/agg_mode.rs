@@ -60,6 +60,195 @@ pub(crate) fn partial_aggregate_schema(
     find_partial_input(Arc::clone(plan)).map(|p| p.schema())
 }
 
+/// The DataFusion version whose accumulator state layouts this build writes and folds.
+/// Stamped into every view's spec; folding across versions is refused (state-schema
+/// versioning in the MV architecture doc).
+pub(crate) const DATAFUSION_VERSION: &str = datafusion::DATAFUSION_VERSION;
+
+/// Manual escape hatch: bump when OUR conventions change incompatibly (state column
+/// naming, sanitization, positional contract) independent of the DataFusion version.
+pub(crate) const STATE_LAYOUT_VERSION: u32 = 1;
+
+/// Converts a reduce plan's FINAL aggregate into a state-emitting `PartialReduce` and
+/// renames its outputs to the materialized-view storage convention.
+///
+/// Used by MV refresh: instead of finalizing, the coordinator folds the shards' partial
+/// states by group key and emits the folded states, which the materialize sink writes to
+/// the view index. Output columns: group keys keep their names; aggregate call `i`'s
+/// accumulator state fields become `{call_alias}__st_0..n-1` — the same convention the
+/// parquet PartialReduce merge and the finalize-on-read path consume. Call aliases come
+/// from the plan itself (Calcite pre-reduces avg/stddev/var to sum/count primitives, so
+/// aliases may be generated names like `$f2`); the read path replans the same definition
+/// with the same rules, so the names are deterministic. No aggregate is ever finalized
+/// on disk, so view segments stay foldable for any DataFusion aggregate with zero
+/// function-specific handling.
+///
+/// The FINAL aggregate is located through single-input wrappers; whatever sits above it
+/// (finalize projections such as avg's `sum/count` DIVIDE, relabels) is dropped — those
+/// compute or rename *final* values, which do not exist in state emission. The read
+/// path reapplies them over the finalized states.
+pub(crate) fn to_state_emitting_plan(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    // Strip the planner-inserted Partial half first — the fragment's input already
+    // carries partial states (from shards at refresh time, from the view scan at read
+    // time). Leaving the Partial in place would run `update_batch` over states as if
+    // they were raw values: associative folds (sum/min/max) survive by luck, but
+    // sketch states would be hashed as opaque blobs. Same strip `prepare_final_plan`
+    // applies.
+    let plan = force_aggregate_mode(plan, AggregateMode::Final, false)?;
+    let agg_node = find_final_agg(&plan).ok_or_else(|| {
+        datafusion_common::DataFusionError::Plan(
+            "state-emitting reduce: no Final/FinalPartitioned aggregate in plan".to_string(),
+        )
+    })?;
+    let agg = agg_node
+        .downcast_ref::<AggregateExec>()
+        .expect("find_final_agg returns AggregateExec nodes");
+    let reduce = Arc::new(AggregateExec::try_new(
+        AggregateMode::PartialReduce,
+        agg.group_expr().clone(),
+        agg.aggr_expr().to_vec(),
+        agg.filter_expr().to_vec(),
+        Arc::clone(agg.input()),
+        agg.input_schema(),
+    )?);
+
+    // Rename projection: positional over the PartialReduce output (groups first, then
+    // each aggregate's state fields in declaration order — the same layout the
+    // aggregation itself consumes and produces).
+    let schema = reduce.schema();
+    let group_len = agg.group_expr().expr().len();
+    let mut exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = Vec::with_capacity(schema.fields().len());
+    for idx in 0..group_len {
+        let name = schema.field(idx).name();
+        exprs.push((Arc::new(Column::new(name, idx)), name.clone()));
+    }
+    let mut idx = group_len;
+    for call in agg.aggr_expr() {
+        let state_count = call.state_fields()?.len();
+        for state_idx in 0..state_count {
+            let name = schema.field(idx).name();
+            exprs.push((Arc::new(Column::new(name, idx)), state_column_name(call.name(), state_idx)));
+            idx += 1;
+        }
+    }
+    if idx != schema.fields().len() {
+        return Err(datafusion_common::DataFusionError::Plan(format!(
+            "state-emitting reduce: consumed {} of {} reduce output columns",
+            idx,
+            schema.fields().len()
+        )));
+    }
+    Ok(Arc::new(ProjectionExec::try_new(exprs, reduce)?))
+}
+
+/// Name of the i-th state column for aggregate output `output` — the shared storage
+/// convention between state emission, the parquet PartialReduce merge, and reads.
+/// The output name is sanitized to mapping-safe form: physical call names such as
+/// `sum(input-0.cnt)` carry dots (object-path separators in index mappings) and
+/// parentheses, so every character outside `[A-Za-z0-9_]` becomes `_`.
+pub(crate) fn state_column_name(output: &str, state_idx: usize) -> String {
+    format!("{}__st_{}", sanitize_output_name(output), state_idx)
+}
+
+/// Mapping-safe form of an aggregate call name (also used as the spec's `output`).
+pub(crate) fn sanitize_output_name(output: &str) -> String {
+    output
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Describes the state-emitting form of a reduce plan as JSON — the single source of
+/// truth from which the view index is provisioned:
+///
+/// ```json
+/// {
+///   "engine": {"datafusion": "54.0.0", "layout": 1},
+///   "key_columns": ["k", "p"],
+///   "aggs": [{"output": "$f2", "fn": "sum", "input_types": ["Float64"]}],
+///   "state_columns": [{"name": "k", "type": "Utf8"}, {"name": "$f2__st_0", "type": "Float64"}]
+/// }
+/// ```
+///
+/// `key_columns`/`aggs` is exactly the parquet merge spec (`index.parquet.mv.spec`);
+/// `state_columns` is the sink schema for view-index mappings. `engine` pins the
+/// accumulator state layout: state fields are an on-disk format, so folding a view
+/// written under a different DataFusion version (or a bumped layout marker) must be
+/// refused rather than risk mis-merging states. Derived from the same plan the refresh
+/// executes, so it can never drift from what gets written.
+pub(crate) fn describe_state_plan(plan: &Arc<dyn ExecutionPlan>) -> Result<String> {
+    let agg_node = find_final_agg(plan).ok_or_else(|| {
+        datafusion_common::DataFusionError::Plan(
+            "describe_state_plan: no Final/FinalPartitioned aggregate in plan".to_string(),
+        )
+    })?;
+    let agg = agg_node
+        .downcast_ref::<AggregateExec>()
+        .expect("find_final_agg returns AggregateExec nodes");
+    let state_plan = to_state_emitting_plan(Arc::clone(&agg_node))?;
+    let state_schema = state_plan.schema();
+    let input_schema = agg.input_schema();
+
+    let mut json = format!(
+        "{{\"engine\":{{\"datafusion\":{:?},\"layout\":{}}},\"key_columns\":[",
+        DATAFUSION_VERSION, STATE_LAYOUT_VERSION
+    );
+    let group_len = agg.group_expr().expr().len();
+    for idx in 0..group_len {
+        if idx > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!("{:?}", state_schema.field(idx).name()));
+    }
+    json.push_str("],\"aggs\":[");
+    for (i, call) in agg.aggr_expr().iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        let input_types: Vec<String> = call
+            .expressions()
+            .iter()
+            .map(|e| e.data_type(&input_schema).map(|t| format!("{}", t)))
+            .collect::<Result<_>>()?;
+        json.push_str(&format!(
+            "{{\"output\":{:?},\"fn\":{:?},\"input_types\":[{}]}}",
+            sanitize_output_name(call.name()),
+            call.fun().name(),
+            input_types.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>().join(",")
+        ));
+    }
+    json.push_str("],\"state_columns\":[");
+    for (idx, field) in state_schema.fields().iter().enumerate() {
+        if idx > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            "{{\"name\":{:?},\"type\":\"{}\"}}",
+            field.name(),
+            field.data_type()
+        ));
+    }
+    json.push_str("]}");
+    Ok(json)
+}
+
+/// Walks through single-input wrappers to the first Final/FinalPartitioned aggregate.
+fn find_final_agg(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
+    if let Some(agg) = plan.downcast_ref::<AggregateExec>() {
+        if matches!(*agg.mode(), AggregateMode::Final | AggregateMode::FinalPartitioned) {
+            return Some(Arc::clone(plan));
+        }
+        return None;
+    }
+    let children = plan.children();
+    if children.len() == 1 {
+        return find_final_agg(children[0]);
+    }
+    None
+}
+
 /// Walks the plan tree and strips the half that doesn't match `target`.
 fn force_aggregate_mode(
     plan: Arc<dyn ExecutionPlan>,
@@ -338,6 +527,163 @@ mod tests {
             "Should contain Final: {}",
             plan_string(&result)
         );
+    }
+
+    /// A state-emitting reduce must fold partial states by group key and emit
+    /// accumulator state columns under the `{output}__st_i` convention — never
+    /// finalized values. Mirrors production: the reduce plan's input carries partial
+    /// STATES (from shards at refresh, from a view scan at read); any planner-inserted
+    /// Partial half is stripped so the aggregation merges rather than re-accumulates.
+    /// avg proves the general case: two state fields per call.
+    #[tokio::test]
+    async fn test_to_state_emitting_plan_emits_folded_states() {
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::execution::FunctionRegistry;
+        use datafusion::physical_expr::aggregate::AggregateExprBuilder;
+        use datafusion::physical_expr::expressions::col;
+        use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
+
+        let raw_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("k", arrow::datatypes::DataType::Utf8, false),
+            arrow::datatypes::Field::new("x", arrow::datatypes::DataType::Float64, false),
+        ]));
+        let batch = |ks: Vec<&str>, xs: Vec<f64>| {
+            arrow_array::RecordBatch::try_new(
+                Arc::clone(&raw_schema),
+                vec![
+                    Arc::new(arrow_array::StringArray::from(ks)),
+                    Arc::new(arrow_array::Float64Array::from(xs)),
+                ],
+            )
+            .unwrap()
+        };
+        let ctx = SessionContext::new();
+        let avg = ctx.state().udaf("avg").unwrap();
+        let sum = ctx.state().udaf("sum").unwrap();
+        let aggs: Vec<Arc<datafusion::physical_expr::aggregate::AggregateFunctionExpr>> = vec![
+            Arc::new(
+                AggregateExprBuilder::new(avg, vec![col("x", &raw_schema).unwrap()])
+                    .schema(Arc::clone(&raw_schema))
+                    .alias("a")
+                    .build()
+                    .unwrap(),
+            ),
+            Arc::new(
+                AggregateExprBuilder::new(sum, vec![col("x", &raw_schema).unwrap()])
+                    .schema(Arc::clone(&raw_schema))
+                    .alias("s")
+                    .build()
+                    .unwrap(),
+            ),
+        ];
+        let groups = PhysicalGroupBy::new_single(vec![(col("k", &raw_schema).unwrap(), "k".to_string())]);
+
+        // Two independent Partial runs → two state partitions (the "shards" / "view segments").
+        let mut state_partitions: Vec<Vec<arrow_array::RecordBatch>> = Vec::new();
+        for b in [batch(vec!["a", "a", "b"], vec![10.0, 20.0, 5.0]), batch(vec!["a"], vec![30.0])] {
+            let input = MemorySourceConfig::try_new_exec(&[vec![b]], Arc::clone(&raw_schema), None).unwrap();
+            let partial = Arc::new(
+                AggregateExec::try_new(
+                    AggregateMode::Partial,
+                    groups.clone(),
+                    aggs.clone(),
+                    vec![None; 2],
+                    input,
+                    Arc::clone(&raw_schema),
+                )
+                .unwrap(),
+            );
+            let states = datafusion::physical_plan::collect(partial, SessionContext::new().task_ctx())
+                .await
+                .unwrap();
+            state_partitions.push(states);
+        }
+        let states2 = state_partitions.pop().unwrap();
+        let states1 = state_partitions.pop().unwrap();
+        let state_schema = states1[0].schema();
+
+        // The reduce plan as production produces it: FINAL over the state-typed input.
+        let input =
+            MemorySourceConfig::try_new_exec(&[states1, states2], Arc::clone(&state_schema), None).unwrap();
+        let coalesced = Arc::new(
+            datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(input),
+        );
+        let final_plan = Arc::new(
+            AggregateExec::try_new(
+                AggregateMode::Final,
+                groups.clone(),
+                aggs.clone(),
+                vec![None; 2],
+                coalesced,
+                Arc::clone(&state_schema),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let describe = describe_state_plan(&final_plan).unwrap();
+        let state_plan = to_state_emitting_plan(final_plan).unwrap();
+
+        // Schema: group key + avg's two state fields + sum's one, named {alias}__st_i.
+        let schema = state_plan.schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, vec!["k", "a__st_0", "a__st_1", "s__st_0"]);
+        assert!(describe.contains("\"fn\":\"avg\""), "describe: {describe}");
+        assert!(describe.contains("\"key_columns\":[\"k\"]"), "describe: {describe}");
+        assert!(
+            describe.contains(&format!("\"datafusion\":\"{}\"", DATAFUSION_VERSION)),
+            "engine version stamped: {describe}"
+        );
+
+        // Executes and folds ACROSS the state partitions: group "a" must be
+        // count=3, sum=60 — merged states, never finalized, never re-accumulated.
+        let batches = datafusion::physical_plan::collect(state_plan, SessionContext::new().task_ctx())
+            .await
+            .unwrap();
+        let all = arrow::compute::concat_batches(&schema, &batches).unwrap();
+        assert_eq!(all.num_rows(), 2, "two groups");
+        let k = all
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .unwrap();
+        let count = all
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        let sum_col = all
+            .column(2)
+            .as_any()
+            .downcast_ref::<arrow_array::Float64Array>()
+            .unwrap();
+        let row_a = (0..all.num_rows()).find(|&i| k.value(i) == "a").unwrap();
+        assert_eq!(count.value(row_a), 3, "avg state count folded across partitions");
+        assert_eq!(sum_col.value(row_a), 60.0, "avg state sum folded, not finalized");
+    }
+
+    /// A plan with no FINAL aggregate (plain scan) must be rejected loudly.
+    #[tokio::test]
+    async fn test_to_state_emitting_plan_rejects_non_aggregate() {
+        let ctx = SessionContext::new_with_state(
+            datafusion::execution::SessionStateBuilder::new()
+                .with_config(SessionConfig::new())
+                .with_default_features()
+                .with_physical_optimizer_rules(physical_optimizer_rules_without_combine())
+                .build(),
+        );
+        let batch = arrow_array::RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![
+                arrow::datatypes::Field::new("x", arrow::datatypes::DataType::Int64, false),
+            ])),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        ctx.register_batch("t", batch).unwrap();
+        let df = ctx.sql("SELECT x FROM t").await.unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+
+        let err = to_state_emitting_plan(plan).err().expect("non-aggregate must fail");
+        assert!(err.to_string().contains("no Final"), "got: {err}");
     }
 
     #[test]

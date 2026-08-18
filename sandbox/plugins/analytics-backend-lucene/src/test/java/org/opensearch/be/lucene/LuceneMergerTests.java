@@ -38,6 +38,7 @@ import org.opensearch.index.engine.dataformat.MergeResult;
 import org.opensearch.index.engine.dataformat.PackedRowIdMapping;
 import org.opensearch.index.engine.dataformat.RowIdMapping;
 import org.opensearch.index.engine.exec.Segment;
+import org.opensearch.index.engine.exec.WriterFileSet;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
@@ -328,6 +329,91 @@ public class LuceneMergerTests extends OpenSearchTestCase {
             }
         }
         return null;
+    }
+
+    /**
+     * Materialized-view path: a merge with {@link MergeInput#replacementFileSet()} consumes
+     * the input segments and installs a merged segment whose content is exactly the
+     * replacement segment's rows — new rows with new row IDs — in one atomic Lucene merge
+     * transaction. Verifies doc count, content, row-id doc values, generation stamping,
+     * and that the input segments are gone.
+     */
+    public void testMergeWithReplacementContentSwapsInRebuiltSegment() throws IOException {
+        long newGeneration = 42L;
+
+        // Input segments: 3 + 2 = 5 "pre-fold" docs.
+        writeSegment(writer, 1L, 0, 3);
+        writeSegment(writer, 2L, 3, 2);
+        writer.commit();
+        assertEquals(5, writer.getDocStats().numDocs);
+
+        // Replacement segment: 3 "folded" docs in an isolated directory (as flushed by a
+        // LuceneWriter at the merged generation), sorted by row id 0..2.
+        Path replacementPath = createTempDir();
+        try (Directory replacementDir = NIOFSDirectory.open(replacementPath)) {
+            IndexWriterConfig riwc = new IndexWriterConfig(new MockAnalyzer(random()));
+            riwc.setMergePolicy(NoMergePolicy.INSTANCE);
+            riwc.setIndexSort(new Sort(new SortedNumericSortField(ROW_ID_FIELD, SortField.Type.LONG)));
+            try (IndexWriter replacementWriter = new IndexWriter(replacementDir, riwc)) {
+                for (int i = 0; i < 3; i++) {
+                    Document doc = new Document();
+                    doc.add(new StringField("id", "bucket_" + i, Field.Store.YES));
+                    doc.add(new StoredField("data", "folded_value_" + i));
+                    doc.add(new SortedNumericDocValuesField(ROW_ID_FIELD, i));
+                    replacementWriter.addDocument(doc);
+                }
+                replacementWriter.commit();
+            }
+
+            java.util.Set<String> replacementFiles = new java.util.HashSet<>();
+            for (String file : replacementDir.listAll()) {
+                if (file.startsWith("segments") == false && file.equals("write.lock") == false) {
+                    replacementFiles.add(file);
+                }
+            }
+            WriterFileSet replacementFileSet = new WriterFileSet(replacementPath.toString(), newGeneration, replacementFiles, 3, 0);
+
+            LuceneMerger merger = new LuceneMerger(writer, new LuceneDataFormat(), dataPath, new LuceneShardStatsTracker());
+            List<Segment> segments = buildSegments(getSegmentInfos(writer));
+            MergeInput input = MergeInput.builder()
+                .segments(segments)
+                .newWriterGeneration(newGeneration)
+                .replacementFileSet(replacementFileSet)
+                .build();
+
+            MergeResult result = merger.merge(input);
+            assertNotNull(result);
+            assertEquals(
+                "Merged file set must report the replacement row count",
+                3L,
+                result.getMergedWriterFileSetForDataformat(new LuceneDataFormat()).numRows()
+            );
+        }
+
+        writer.commit();
+
+        // Old segments consumed; only the merged (replacement-content) segment remains.
+        assertEquals("Only the folded rows must remain", 3, writer.getDocStats().numDocs);
+        SegmentInfos infos = getSegmentInfos(writer);
+        assertNull("Input generation 1 must be consumed", findSegmentWithGeneration(infos, 1L));
+        assertNull("Input generation 2 must be consumed", findSegmentWithGeneration(infos, 2L));
+        SegmentCommitInfo merged = findSegmentWithGeneration(infos, newGeneration);
+        assertNotNull("Merged segment must carry the merged writer generation", merged);
+
+        try (DirectoryReader reader = DirectoryReader.open(writer)) {
+            assertEquals(1, reader.leaves().size());
+            LeafReaderContext leaf = reader.leaves().get(0);
+            assertEquals(3, leaf.reader().maxDoc());
+            SortedNumericDocValues rowIdDV = leaf.reader().getSortedNumericDocValues(ROW_ID_FIELD);
+            assertNotNull(rowIdDV);
+            for (int i = 0; i < 3; i++) {
+                assertTrue(rowIdDV.advanceExact(i));
+                assertEquals("Folded rows carry new sequential row IDs", i, rowIdDV.nextValue());
+                Document doc = leaf.reader().storedFields().document(i);
+                assertEquals("bucket_" + i, doc.get("id"));
+                assertEquals("folded_value_" + i, doc.get("data"));
+            }
+        }
     }
 
     // ========== Helper Methods ==========

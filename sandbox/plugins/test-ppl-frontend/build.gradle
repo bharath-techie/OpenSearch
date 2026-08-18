@@ -63,6 +63,9 @@ dependencies {
   // Analytics framework + Calcite provided at runtime by analytics-engine (parent classloader via extendedPlugins)
   compileOnly project(':sandbox:libs:analytics-api')
   compileOnly project(':sandbox:libs:analytics-framework')
+  // Engine classes (DefaultPlanExecutor.executeStreaming, StreamingIndexSink) for the
+  // materialize action — provided at runtime by the parent analytics-engine plugin.
+  compileOnly project(':sandbox:plugins:analytics-engine')
 
   // Guava for compilation — Calcite API exposes guava types
   calciteCompile "com.google.guava:guava:${versions.guava}"

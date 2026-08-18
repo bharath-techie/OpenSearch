@@ -8,6 +8,7 @@
 
 package org.opensearch.analytics.planner;
 
+import org.opensearch.analytics.schema.OpenSearchSchemaBuilder;
 import org.opensearch.analytics.spi.FieldStorageInfo;
 import org.opensearch.analytics.spi.FieldType;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -75,6 +76,24 @@ public class FieldStorageResolver {
         if (properties != null) {
             populateFromProperties(properties, "", primaryFormat, luceneAvailable);
         }
+        // System metadata columns: persisted on every row by the data formats without
+        // appearing in mapping properties (parquet: MetadataFieldPlugin; lucene:
+        // SeqNoFieldMapper doc values). Only scans of __system companion tables project
+        // them (OpenSearchSchemaBuilder keeps them out of base row types), so this entry
+        // is inert for normal queries.
+        this.fieldStorage.put(
+            OpenSearchSchemaBuilder.SEQ_NO_COLUMN,
+            new FieldStorageInfo(
+                OpenSearchSchemaBuilder.SEQ_NO_COLUMN,
+                "long",
+                FieldType.fromMappingType("long"),
+                List.of(primaryFormat),
+                List.of(),
+                List.of(),
+                false,
+                (String) null
+            )
+        );
     }
 
     @SuppressWarnings("unchecked")

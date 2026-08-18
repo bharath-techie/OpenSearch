@@ -10,11 +10,16 @@ package org.opensearch.be.lucene.merge;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.MergeIndexWriter;
 import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfos;
+import org.apache.lucene.index.SegmentReader;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.MMapDirectory;
 import org.opensearch.be.lucene.stats.LuceneShardStatsTracker;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.annotation.ExperimentalApi;
@@ -158,6 +163,12 @@ public class LuceneMerger implements Merger {
                 generationsToMerge
             );
 
+            // MV path: the merged segment's content is a pre-built replacement (folded
+            // rows rebuilt through the mapper) rather than the concatenated inputs.
+            if (mergeInput.replacementFileSet() != null) {
+                return mergeWithReplacement(mergeInput, matchingSegments);
+            }
+
             // Delegate OneMerge creation to the strategy (primary vs secondary behavior).
             // For the secondary path, the returned RowIdRemappingOneMerge stamps the
             // writer_generation attribute onto the merged SegmentInfo via setMergeInfo, which
@@ -188,6 +199,54 @@ public class LuceneMerger implements Merger {
             throw e;
         } finally {
             stats.addMergeTimeMillis(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+        }
+    }
+
+    /**
+     * Executes a merge whose output content is the replacement file set from
+     * {@link MergeInput#replacementFileSet()} — a segment freshly flushed by a
+     * {@link org.opensearch.be.lucene.index.LuceneWriter} at the merged generation.
+     * The input segments are consumed atomically by the same Lucene merge transaction
+     * that installs the replacement content (see {@link ReplacementContentOneMerge}).
+     */
+    private MergeResult mergeWithReplacement(MergeInput mergeInput, List<SegmentCommitInfo> matchingSegments) throws IOException {
+        WriterFileSet replacementFiles = mergeInput.replacementFileSet();
+        try (Directory replacementDir = new MMapDirectory(Path.of(replacementFiles.directory()))) {
+            try (DirectoryReader replacementReader = DirectoryReader.open(replacementDir)) {
+                List<LeafReaderContext> leaves = replacementReader.leaves();
+                if (leaves.size() != 1 || (leaves.get(0).reader() instanceof SegmentReader) == false) {
+                    throw new IOException(
+                        "Replacement content must be a single flushed segment but has " + leaves.size() + " leaves"
+                    );
+                }
+                SegmentReader replacement = (SegmentReader) leaves.get(0).reader();
+                MergePolicy.OneMerge oneMerge = new ReplacementContentOneMerge(
+                    matchingSegments,
+                    replacement,
+                    mergeInput.newWriterGeneration()
+                );
+                indexWriter.executeMerge(oneMerge, mergeInput.newWriterGeneration());
+
+                SegmentCommitInfo mergedInfo = oneMerge.getMergeInfo();
+                WriterFileSet mergedFileSet = buildMergedFileSet(mergedInfo, mergeInput.newWriterGeneration());
+                if (mergedFileSet.numRows() != replacementFiles.numRows()) {
+                    throw new IllegalStateException(
+                        "Replacement merge wrote "
+                            + mergedFileSet.numRows()
+                            + " docs but replacement content has "
+                            + replacementFiles.numRows()
+                            + " rows"
+                    );
+                }
+                logger.debug(
+                    "LuceneMerger: replaced {} segments with rebuilt content at generation {} ({} docs)",
+                    matchingSegments.size(),
+                    mergeInput.newWriterGeneration(),
+                    mergedInfo.info.maxDoc()
+                );
+                stats.incMergeTotal();
+                return new MergeResult(Map.of(dataFormat, mergedFileSet));
+            }
         }
     }
 
