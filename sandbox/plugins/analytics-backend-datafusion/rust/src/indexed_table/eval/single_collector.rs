@@ -100,6 +100,26 @@ impl DelegatedBackendCollectorFactory for FfmDelegatedBackendCollectorFactory {
     }
 }
 
+/// A performance-delegated (dual-viable) leaf: a predicate that BOTH DataFusion (via its
+/// original `expr` over doc values) AND a peer backend (Lucene, via `annotation_id`) can
+/// evaluate with identical semantics. Per row group the evaluator makes an EXCLUSIVE choice
+/// between the two evaluators (never both) using sound stats:
+///
+/// - if DataFusion's own page-stat pruning of `expr` already narrows the RG below the
+///   selectivity threshold, DataFusion is authoritative — `expr` is applied post-decode and
+///   the peer is NOT consulted;
+/// - otherwise (weak/absent stats) the peer is authoritative — its bitmap is intersected into
+///   the candidates and `expr` is NOT applied for that leaf.
+///
+/// `pruning_predicate` is the `PruningPredicate` compiled from `expr` (or `None` when the
+/// column has no usable parquet stats — treated as "consult the peer").
+#[derive(Clone)]
+pub struct PerformanceLeaf {
+    pub annotation_id: i32,
+    pub expr: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    pub pruning_predicate: Option<Arc<PruningPredicate>>,
+}
+
 /// Per-RG state the evaluator keeps for refinement. In row-granular
 /// mode parquet narrowed fully via `with_predicate` + `RowSelection`
 /// and nothing is needed here. In block-granular mode we need the
@@ -114,6 +134,12 @@ struct SingleCollectorState {
     candidates: RoaringBitmap,
     mask_buffer: datafusion::arrow::buffer::Buffer,
     mask_len: usize,
+    /// Per-RG residual for the DataFusion-selected performance leaves (their `expr`s AND'd
+    /// together), or `None` when no performance leaf chose DataFusion for this RG. Applied
+    /// post-decode in `on_batch_mask` on top of the always-native residual. Performance leaves
+    /// that chose Lucene for this RG are already reflected in `candidates` (peer bitmap
+    /// intersection) and are deliberately absent here — enforcing the per-leaf XOR.
+    perf_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
 }
 
 /// Evaluator holding one collector and applying per-RG page pruning.
@@ -200,6 +226,14 @@ pub struct SingleCollectorEvaluator {
     /// [`with_chunk_doc_bounds`](Self::with_chunk_doc_bounds); `None` (tests,
     /// older callers) falls back to a per-call collector for counts.
     chunk_doc_bounds: Option<(i32, i32)>,
+    /// Performance-delegated (dual-viable) leaves. For each leaf, per RG, the evaluator makes an
+    /// EXCLUSIVE DataFusion-XOR-Lucene choice (see [`PerformanceLeaf`]). The `expr`s here are
+    /// deliberately NOT part of `residual_expr`/`pruning_predicate` (which carry ONLY the
+    /// always-applied native predicates) and are NEVER statically pushed to parquet — so a per-RG
+    /// Lucene choice can make a leaf authoritative without DataFusion also evaluating it. Empty for
+    /// correctness-only queries and for the fuzz harness (which models perf leaves inside its own
+    /// residual with no peer available).
+    performance_leaves: Vec<PerformanceLeaf>,
 }
 
 /// Resources needed for per-RG bloom filter pruning.
@@ -229,6 +263,7 @@ impl SingleCollectorEvaluator {
         bloom_config: Option<BloomConfig>,
         stats_prune_tree: Option<Arc<StatsPruneTree>>,
         rg_index_to_pos: HashMap<usize, usize>,
+        performance_leaves: Vec<PerformanceLeaf>,
     ) -> Self {
         Self {
             collector,
@@ -248,6 +283,7 @@ impl SingleCollectorEvaluator {
             last_next_doc: std::sync::atomic::AtomicI32::new(i32::MIN),
             count_collector: OnceLock::new(),
             chunk_doc_bounds: None,
+            performance_leaves,
         }
     }
 
@@ -560,45 +596,80 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             }
         };
 
-        // Opportunistic peer consultation for performance-delegated leaves. Only fires
-        // when DF page-pruning kept more than the configured fraction of the RG —
-        // skipping the FFM round-trip when DF was already selective. Lazy: lock the
-        // map only if the gate fires; create the provider only once per query × leaf.
-        // TODO(d3): consult ALL performance leaves whose gate fires and AND their
-        // bitsets. Today we consult the first leaf only — sufficient for AND-only
-        // single-call demo. Multi-leaf intersection is part of D3 follow-up.
-        if !self.performance_provider_locks.is_empty()
-            && should_consult_lucene(&page_ranges, rg, HARDCODED_SELECTIVITY_THRESHOLD)
-        {
-            // Pick the smallest annotation_id deterministically so logs/tests are stable.
-            // Avoids the Vec/sort allocation in the common single-leaf case.
-            let annotation_id = *self
-                .performance_provider_locks
-                .keys()
-                .min()
-                .expect("performance_provider_locks is non-empty (just checked)");
-            // Per-RG debug log — `format!` runs unconditionally regardless of log level
-            // (the level filter happens on the Java side). Commented out to avoid
-            // per-RG allocation. Re-enable locally for debugging.
-            // log_debug!(
-            //     "[scf-rust] consulting peer for performance leaf rg={} writer_generation={} range=[{},{}) annotation_id={}",
-            //     rg.index, self.writer_generation, min_doc, max_doc, annotation_id
-            // );
+        // ── Per-leaf XOR: DataFusion OR Lucene for each performance-delegated leaf ──
+        //
+        // For each dual-viable leaf, make an EXCLUSIVE choice for THIS RG using sound stats —
+        // never evaluate both:
+        //   * DataFusion authoritative — the leaf's own page-stat pruning already narrows this RG
+        //     at/below the selectivity threshold: apply the leaf's `expr` post-decode (accumulate
+        //     into `perf_residual`) and do NOT consult the peer.
+        //   * Lucene authoritative — weak/absent stats: intersect the peer bitmap into
+        //     `candidates` and do NOT apply the leaf's `expr` (no DataFusion residual / page
+        //     pruning for this leaf).
+        // Leaves are independent (some may pick DataFusion, others Lucene, in the same RG).
+        // Unrelated native predicates live in `residual_expr`/`pruning_predicate` and always
+        // apply, regardless of any leaf's choice.
+        let mut perf_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>> = None;
+        for leaf in &self.performance_leaves {
+            // Sound-stats selectivity of THIS leaf on THIS RG (independent of other predicates).
+            // `None` == no usable parquet stats for the leaf's column → cannot prove DataFusion is
+            // selective → the peer is authoritative (matches `should_consult_lucene`'s None arm).
+            let leaf_ranges: Option<Vec<(i32, i32)>> =
+                leaf.pruning_predicate.as_ref().and_then(|pp| {
+                    self.page_pruner
+                        .prune_rg(pp, rg.index, self.page_prune_metrics.as_ref())
+                        .map(|sel| {
+                            let mut ranges = Vec::new();
+                            let mut rg_pos: i64 = 0;
+                            for s in sel.iter() {
+                                if !s.skip {
+                                    let abs_min = min_doc + rg_pos as i32;
+                                    let abs_max = min_doc + rg_pos as i32 + s.row_count as i32;
+                                    ranges.push((abs_min, abs_max));
+                                }
+                                rg_pos += s.row_count as i64;
+                            }
+                            ranges
+                        })
+                });
+
+            if !should_consult_lucene(&leaf_ranges, rg, HARDCODED_SELECTIVITY_THRESHOLD) {
+                // DataFusion authoritative: apply the leaf's expr post-decode; no peer call.
+                perf_residual = Some(match perf_residual {
+                    None => Arc::clone(&leaf.expr),
+                    Some(acc) => Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+                        acc,
+                        datafusion::logical_expr::Operator::And,
+                        Arc::clone(&leaf.expr),
+                    )),
+                });
+                continue;
+            }
+
+            // Lucene authoritative: consult the peer and intersect its bitmap. The leaf's
+            // DataFusion `expr` is deliberately NOT added to `perf_residual` — enforcing the XOR.
             let lock = self
                 .performance_provider_locks
-                .get(&annotation_id)
-                .expect("annotation_id was just pulled from the map's keys");
+                .get(&leaf.annotation_id)
+                .ok_or_else(|| {
+                    format!(
+                        "performance leaf annotation_id {} has no provider lock",
+                        leaf.annotation_id
+                    )
+                })?;
             let context_id = self.context_id;
+            let annotation_id = leaf.annotation_id;
             let mut just_initialized = false;
             let provider = lock.get_or_init(|| {
                 just_initialized = true;
-                create_provider(context_id, annotation_id)
-                    .expect("create_provider FFM upcall failed")
+                create_provider(context_id, annotation_id).expect("create_provider FFM upcall failed")
             });
             if just_initialized {
                 log_debug!(
                     "[scf-rust] lazy provider initialized context_id={} annotation_id={} provider_key={}",
-                    context_id, annotation_id, provider.key()
+                    context_id,
+                    annotation_id,
+                    provider.key()
                 );
             }
 
@@ -630,24 +701,14 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             let offset = (min_doc as i64 - rg.first_row) as u32;
             let num_docs = (max_doc - min_doc) as u32;
             let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    result.words.as_ptr() as *const u8,
-                    result.words.len() * 8,
-                )
+                std::slice::from_raw_parts(result.words.as_ptr() as *const u8, result.words.len() * 8)
             };
             let mut peer_bm = RoaringBitmap::from_lsb0_bytes(offset, bytes);
             let upper = offset.saturating_add(num_docs);
             if upper < u32::MAX {
                 peer_bm.remove_range(upper..);
             }
-            // Per-RG debug log — see note above on `format!` cost. Re-enable locally for debugging.
-            // let candidates_before = candidates.len();
-            // let peer_card = peer_bm.len();
             candidates &= peer_bm;
-            // log_debug!(
-            //     "[scf-rust] peer bitset intersected rg={} writer_generation={} candidates_before={} peer_cardinality={} candidates_after={}",
-            //     rg.index, self.writer_generation, candidates_before, peer_card, candidates.len()
-            // );
         }
 
         if candidates.is_empty() {
@@ -669,6 +730,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 candidates,
                 mask_buffer: mask_buffer.clone(),
                 mask_len,
+                perf_residual,
             }),
             mask_buffer: Some(mask_buffer),
         }))
@@ -683,17 +745,42 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         batch_len: usize,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String> {
-        // No residual → no post-decode work. Stream's current_mask
-        // (if built) handles Collector narrowing.
-        let Some(ref residual) = self.residual_expr else {
+        // Fast path: no always-native residual AND no performance leaves ⇒ no post-decode work is
+        // possible (a per-RG `perf_residual` can only exist when `performance_leaves` is non-empty).
+        // Return before touching `rg_state` so this path never requires a `SingleCollectorState`
+        // (the stream's `current_mask`, built from candidates, handles Collector / peer narrowing).
+        if self.residual_expr.is_none() && self.performance_leaves.is_empty() {
             return Ok(None);
-        };
+        }
 
         let state = rg_state
             .downcast_ref::<SingleCollectorState>()
             .ok_or_else(|| {
                 "SingleCollectorEvaluator: rg_state is not SingleCollectorState".to_string()
             })?;
+
+        // Effective post-decode residual = always-native residual AND the per-RG
+        // DataFusion-selected performance-leaf residual (see `SingleCollectorState::perf_residual`).
+        // Performance leaves that chose Lucene for this RG are already reflected in the candidate
+        // bitmap and are intentionally excluded here — the per-leaf XOR. No residual at all → no
+        // post-decode work; the stream's `current_mask` (built from candidates) handles Collector /
+        // peer narrowing.
+        let effective_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>> =
+            match (self.residual_expr.as_ref(), state.perf_residual.as_ref()) {
+                (None, None) => return Ok(None),
+                (Some(r), None) => Some(Arc::clone(r)),
+                (None, Some(p)) => Some(Arc::clone(p)),
+                (Some(r), Some(p)) => Some(Arc::new(
+                    datafusion::physical_expr::expressions::BinaryExpr::new(
+                        Arc::clone(r),
+                        datafusion::logical_expr::Operator::And,
+                        Arc::clone(p),
+                    ),
+                )),
+            };
+        let residual = effective_residual
+            .as_ref()
+            .expect("effective_residual is Some (None,None returned early)");
 
         // Build Collector mask over delivered rows via PositionMap.
         // All paths produce a `BooleanArray` whose underlying
@@ -771,7 +858,12 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
     /// mode; in row-granular mode that guard is inactive and
     /// pushdown proceeds.
     fn forbid_parquet_pushdown(&self) -> bool {
-        false
+        // When there are performance-delegated leaves, the per-RG DataFusion-XOR-Lucene choice
+        // means a leaf's residual is decided per row group and must be applied post-decode by
+        // `on_batch_mask` (never statically pushed to parquet — a per-RG Lucene choice can make the
+        // leaf authoritative instead). Force the post-decode (block-granular) path so that per-RG
+        // residual is honored. Correctness-only queries (no perf leaves) keep pushdown enabled.
+        !self.performance_leaves.is_empty()
     }
 
     /// Stream's `current_mask` construction consults this. When
@@ -879,6 +971,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
 
         let rg = RowGroupInfo {
@@ -910,6 +1003,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let batch = datafusion::arrow::record_batch::RecordBatch::try_new(
@@ -953,6 +1047,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
         assert!(eval.needs_row_mask());
     }
@@ -976,6 +1071,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -1011,6 +1107,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
 
         let rg = RowGroupInfo {
@@ -1048,6 +1145,7 @@ mod tests {
             None,
             Some(Arc::new(spt)),
             HashMap::from([(0, 0)]),
+            Vec::new(),
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -1082,6 +1180,7 @@ mod tests {
             None,
             Some(Arc::new(spt)),
             HashMap::from([(0, 0)]),
+            Vec::new(),
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -1116,6 +1215,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -1183,6 +1283,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
 
         let rg0 = RowGroupInfo {
@@ -1238,6 +1339,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
 
         let rg0 = RowGroupInfo {
@@ -1283,6 +1385,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
 
         let rg0 = RowGroupInfo {
@@ -1328,6 +1431,7 @@ mod tests {
             None,
             None,
             HashMap::new(),
+            Vec::new(),
         );
 
         let rg0 = RowGroupInfo {
@@ -1354,6 +1458,407 @@ mod tests {
             .unwrap()
             .expect("RG1 has boundary doc 8");
         assert_eq!(pf1.candidates.iter().collect::<Vec<_>>(), vec![0u32]); // doc 8 at RG-relative pos 0
+    }
+
+    // ── Performance-leaf per-RG XOR (DataFusion OR Lucene, never both) ──────────
+
+    /// Peer factory that records how many times it was asked to build a collector and
+    /// returns a fixed doc set. Used to assert whether Lucene was consulted for an RG.
+    #[derive(Debug)]
+    struct RecordingPeerFactory {
+        docs: Vec<i32>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl DelegatedBackendCollectorFactory for RecordingPeerFactory {
+        fn create(
+            &self,
+            _context_id: i64,
+            _provider_key: i32,
+            _writer_generation: i64,
+            _doc_min: i32,
+            _doc_max: i32,
+        ) -> Result<Arc<dyn RowGroupDocsCollector>, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Arc::new(StubCollector {
+                docs: self.docs.clone(),
+            }))
+        }
+    }
+
+    fn int_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
+    }
+
+    /// Preset provider locks (one per annotation id) so no real FFM upcall is made.
+    fn preset_locks(ids: &[i32]) -> Arc<HashMap<i32, Arc<OnceLock<ProviderHandle>>>> {
+        let mut m = HashMap::new();
+        for &id in ids {
+            let lock = Arc::new(OnceLock::new());
+            lock.set(ProviderHandle::new_for_test(id)).expect("OnceLock set");
+            m.insert(id, lock);
+        }
+        Arc::new(m)
+    }
+
+    fn int_cmp_expr(
+        op: datafusion::logical_expr::Operator,
+        v: i32,
+    ) -> Arc<dyn datafusion::physical_expr::PhysicalExpr> {
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column as PhysColumn, Literal};
+        use datafusion::physical_expr::PhysicalExpr;
+        let left: Arc<dyn PhysicalExpr> = Arc::new(PhysColumn::new("a", 0));
+        let right: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(v))));
+        Arc::new(BinaryExpr::new(left, op, right))
+    }
+
+    fn perf_leaf(id: i32, op: datafusion::logical_expr::Operator, v: i32) -> PerformanceLeaf {
+        let expr = int_cmp_expr(op, v);
+        let pp = crate::indexed_table::page_pruner::build_pruning_predicate(
+            &expr,
+            int_schema(),
+        );
+        PerformanceLeaf {
+            annotation_id: id,
+            expr,
+            pruning_predicate: pp,
+        }
+    }
+
+    fn perf_state(pf: &PrefetchedRg) -> &SingleCollectorState {
+        pf.context
+            .downcast_ref::<SingleCollectorState>()
+            .expect("SingleCollectorState")
+    }
+
+    /// A performance leaf with no usable stats (pruning_predicate = None) is Lucene-selected:
+    /// the peer IS consulted, its bitmap is AND-intersected into the candidates, and the leaf's
+    /// DataFusion expr is NOT added to the post-decode residual (per-RG XOR).
+    #[test]
+    fn perf_leaf_lucene_selected_consults_peer_and_skips_native_residual() {
+        // Collector matches {0,1,2,3}; peer (Lucene) matches {1,3}. Expected candidates = {1,3}.
+        let collector = Arc::new(StubCollector {
+            docs: vec![0, 1, 2, 3],
+        }) as Arc<dyn RowGroupDocsCollector>;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let leaf = PerformanceLeaf {
+            annotation_id: 7,
+            expr: int_cmp_expr(datafusion::logical_expr::Operator::Eq, 999),
+            pruning_predicate: None, // no stats → Lucene authoritative
+        };
+        let eval = SingleCollectorEvaluator::new(
+            Some(collector),
+            minimal_page_pruner(),
+            None,
+            None, // no always-native residual
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            preset_locks(&[7]),
+            0,
+            Arc::new(RecordingPeerFactory {
+                docs: vec![1, 3],
+                calls: Arc::clone(&calls),
+            }),
+            0,
+            None,
+            None,
+            HashMap::new(),
+            vec![leaf],
+        );
+        let rg = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 8,
+        };
+        let pf = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "peer must be consulted once");
+        let got: Vec<u32> = pf.candidates.iter().collect();
+        assert_eq!(got, vec![1u32, 3], "candidates = collector ∩ peer bitmap");
+        // XOR: the leaf's native expr must NOT be applied as a residual.
+        assert!(perf_state(&pf).perf_residual.is_none(), "Lucene-selected leaf leaves no DF residual");
+    }
+
+    /// A performance leaf whose own page stats prune the RG below the selectivity threshold is
+    /// DataFusion-selected: the peer is NOT consulted, and the leaf's DataFusion expr becomes the
+    /// per-RG post-decode residual. (`a > 100` over the all-zero column prunes to empty.)
+    #[test]
+    fn perf_leaf_datafusion_selected_skips_peer_and_evaluates_native() {
+        let collector = Arc::new(StubCollector {
+            docs: vec![0, 1, 2, 3],
+        }) as Arc<dyn RowGroupDocsCollector>;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let leaf = perf_leaf(7, datafusion::logical_expr::Operator::Gt, 100);
+        let eval = SingleCollectorEvaluator::new(
+            Some(collector),
+            minimal_page_pruner(),
+            None,
+            None,
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            preset_locks(&[7]),
+            0,
+            Arc::new(RecordingPeerFactory {
+                docs: vec![1, 3],
+                calls: Arc::clone(&calls),
+            }),
+            0,
+            None,
+            None,
+            HashMap::new(),
+            vec![leaf],
+        );
+        let rg = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 8,
+        };
+        let pf = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("collector matched");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "DataFusion-selected leaf must NOT consult the peer"
+        );
+        // Candidates are the collector's docs (unnarrowed by the peer)...
+        let got: Vec<u32> = pf.candidates.iter().collect();
+        assert_eq!(got, vec![0u32, 1, 2, 3]);
+        // ...and the leaf's native expr is carried as the per-RG residual for post-decode.
+        assert!(
+            perf_state(&pf).perf_residual.is_some(),
+            "DataFusion-selected leaf must carry its native residual"
+        );
+    }
+
+    /// Empty performance_leaves: no peer factory call, behavior is unchanged from a plain
+    /// correctness+native query. Guards the fuzz-harness / correctness-only path.
+    #[test]
+    fn no_perf_leaves_does_not_consult_peer() {
+        let collector = Arc::new(StubCollector {
+            docs: vec![0, 2, 4],
+        }) as Arc<dyn RowGroupDocsCollector>;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let eval = SingleCollectorEvaluator::new(
+            Some(collector),
+            minimal_page_pruner(),
+            None,
+            None,
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            Arc::new(HashMap::new()),
+            0,
+            Arc::new(RecordingPeerFactory {
+                docs: vec![0],
+                calls: Arc::clone(&calls),
+            }),
+            0,
+            None,
+            None,
+            HashMap::new(),
+            Vec::new(),
+        );
+        let rg = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 8,
+        };
+        let pf = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(pf.candidates.iter().collect::<Vec<_>>(), vec![0u32, 2, 4]);
+        assert!(perf_state(&pf).perf_residual.is_none());
+    }
+
+    /// `forbid_parquet_pushdown` is true exactly when there are performance leaves — forcing the
+    /// per-RG residual to be honored post-decode (never statically pushed to parquet).
+    #[test]
+    fn forbid_pushdown_iff_perf_leaves_present() {
+        let mk = |leaves: Vec<PerformanceLeaf>, locks| {
+            SingleCollectorEvaluator::new(
+                Some(Arc::new(StubCollector { docs: vec![0] }) as Arc<dyn RowGroupDocsCollector>),
+                minimal_page_pruner(),
+                None,
+                None,
+                None,
+                None,
+                CollectorCallStrategy::FullRange,
+                locks,
+                0,
+                Arc::new(FfmDelegatedBackendCollectorFactory),
+                0,
+                None,
+                None,
+                HashMap::new(),
+                leaves,
+            )
+        };
+        assert!(!mk(Vec::new(), Arc::new(HashMap::new())).forbid_parquet_pushdown());
+        assert!(mk(
+            vec![perf_leaf(1, datafusion::logical_expr::Operator::Eq, 5)],
+            preset_locks(&[1])
+        )
+        .forbid_parquet_pushdown());
+    }
+
+    /// `should_consult_lucene` boundary: strictly greater-than the threshold consults; at/below
+    /// does not; no stats (None) always consults.
+    #[test]
+    fn should_consult_lucene_threshold_boundary() {
+        let rg = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 100,
+        };
+        // 6/100 = 0.06 > 0.05 → consult.
+        assert!(should_consult_lucene(&Some(vec![(0, 6)]), &rg, 0.05));
+        // 5/100 = 0.05, NOT strictly greater → do not consult (DataFusion selective enough).
+        assert!(!should_consult_lucene(&Some(vec![(0, 5)]), &rg, 0.05));
+        // No usable stats → consult.
+        assert!(should_consult_lucene(&None, &rg, 0.05));
+        // Empty ranges → 0 surviving → do not consult.
+        assert!(!should_consult_lucene(&Some(vec![]), &rg, 0.05));
+    }
+
+    /// Mixed choice in a SINGLE row group: two independent performance leaves where one selects
+    /// DataFusion (its own page stats prune the RG empty) and the other selects Lucene (no usable
+    /// stats). Proves the per-leaf XOR: the Lucene-selected leaf's peer bitmap narrows the
+    /// candidates while its native expr is NOT evaluated (never added to the residual), and the
+    /// DataFusion-selected leaf contributes its native expr as the per-RG residual with no peer call.
+    #[test]
+    fn perf_leaf_mixed_datafusion_and_lucene_in_one_rg() {
+        // Collector matches {0,1,2,3}; the Lucene-selected leaf's peer matches {1,3}.
+        let collector = Arc::new(StubCollector {
+            docs: vec![0, 1, 2, 3],
+        }) as Arc<dyn RowGroupDocsCollector>;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Leaf A (annotation 7): no usable stats → Lucene authoritative (peer consulted). Its expr
+        // (`a == 42`) must NOT be evaluated post-decode — if it were, it would falsely drop rows.
+        let lucene_leaf = PerformanceLeaf {
+            annotation_id: 7,
+            expr: int_cmp_expr(datafusion::logical_expr::Operator::Eq, 42),
+            pruning_predicate: None,
+        };
+        // Leaf B (annotation 9): `a > 100` over the all-zero fixture prunes the RG empty → DataFusion
+        // authoritative (peer NOT consulted); its expr becomes the per-RG residual.
+        let df_leaf = perf_leaf(9, datafusion::logical_expr::Operator::Gt, 100);
+        let eval = SingleCollectorEvaluator::new(
+            Some(collector),
+            minimal_page_pruner(),
+            None,
+            None, // no always-native residual
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            preset_locks(&[7]), // only the Lucene-selected leaf needs a provider lock
+            0,
+            Arc::new(RecordingPeerFactory {
+                docs: vec![1, 3],
+                calls: Arc::clone(&calls),
+            }),
+            0,
+            None,
+            None,
+            HashMap::new(),
+            vec![lucene_leaf, df_leaf],
+        );
+        let rg = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 8,
+        };
+        let pf = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
+        // Exactly ONE peer consultation — only the Lucene-selected leaf, never the DataFusion one.
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the Lucene-selected leaf consults the peer"
+        );
+        // Candidates narrowed by the Lucene leaf's peer bitmap (collector ∩ {1,3}); the DataFusion
+        // leaf defers to a post-decode residual and does not narrow candidates here.
+        assert_eq!(pf.candidates.iter().collect::<Vec<_>>(), vec![1u32, 3]);
+        // The DataFusion-selected leaf contributed a per-RG residual; the Lucene leaf did NOT
+        // (per-leaf XOR — its native expr is proven unevaluated by the candidate set above).
+        assert!(
+            perf_state(&pf).perf_residual.is_some(),
+            "DataFusion-selected leaf carries a per-RG residual"
+        );
+    }
+
+    /// The `(Some always-native residual, Some DataFusion-selected perf residual)` arm of
+    /// `on_batch_mask`: the always-native residual AND the DataFusion-selected leaf's expr are
+    /// AND-combined and both applied post-decode. Proves an unrelated always-native residual
+    /// remains in force alongside a DataFusion-selected performance leaf.
+    #[test]
+    fn perf_leaf_and_always_native_residual_both_apply() {
+        use datafusion::arrow::array::BooleanArray;
+        // Always-native residual `a < 300` — no pruning predicate, so it is always applied and is
+        // never itself a performance leaf.
+        let native = int_cmp_expr(datafusion::logical_expr::Operator::Lt, 300);
+        // DataFusion-selected perf leaf `a > 100` (prunes the all-zero fixture empty → DF authoritative).
+        let df_leaf = perf_leaf(7, datafusion::logical_expr::Operator::Gt, 100);
+        // Collector matches all 5 rows so the collector mask doesn't mask the residual's effect.
+        let collector = Arc::new(StubCollector {
+            docs: vec![0, 1, 2, 3, 4],
+        }) as Arc<dyn RowGroupDocsCollector>;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let eval = SingleCollectorEvaluator::new(
+            Some(collector),
+            minimal_page_pruner(),
+            None,
+            Some(native), // always-native residual
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            preset_locks(&[7]),
+            0,
+            Arc::new(RecordingPeerFactory {
+                docs: vec![0],
+                calls: Arc::clone(&calls),
+            }),
+            0,
+            None,
+            None,
+            HashMap::new(),
+            vec![df_leaf],
+        );
+        let rg = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 5,
+        };
+        let pf = eval.prefetch_rg(&rg, 0, 5).unwrap().expect("has matches");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "DataFusion-selected leaf must not consult the peer"
+        );
+        assert!(
+            perf_state(&pf).perf_residual.is_some(),
+            "DataFusion-selected leaf carries a per-RG residual"
+        );
+
+        // Post-decode: combined mask = collector(all-true) AND (a < 300) AND (a > 100).
+        let batch = datafusion::arrow::record_batch::RecordBatch::try_new(
+            int_schema(),
+            vec![Arc::new(datafusion::arrow::array::Int32Array::from(vec![
+                50, 150, 350, 200, 500,
+            ]))],
+        )
+        .unwrap();
+        let pm = PositionMap::Identity { delivered_count: 5 };
+        let mask: BooleanArray = eval
+            .on_batch_mask(pf.context.as_ref(), 0, &pm, 0, 5, &batch)
+            .unwrap()
+            .expect("residual present ⇒ Some(mask)");
+        let kept: Vec<usize> = (0..mask.len()).filter(|&i| mask.value(i)).collect();
+        // 50: native T, perf F → F | 150: T,T → T | 350: native F → F | 200: T,T → T | 500: native F → F.
+        // The result differs from either residual alone, proving BOTH are applied.
+        assert_eq!(
+            kept,
+            vec![1usize, 3],
+            "always-native AND DataFusion-selected perf residual are both applied"
+        );
     }
 
     // Keep the `fmt` import used

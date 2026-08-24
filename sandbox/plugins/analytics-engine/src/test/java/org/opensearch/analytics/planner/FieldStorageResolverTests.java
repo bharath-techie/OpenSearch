@@ -9,6 +9,7 @@
 package org.opensearch.analytics.planner;
 
 import org.opensearch.analytics.spi.FieldStorageInfo;
+import org.opensearch.analytics.spi.FieldType;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.common.settings.Settings;
@@ -123,6 +124,68 @@ public class FieldStorageResolverTests extends OpenSearchTestCase {
         );
         when(indexMetadata.mapping()).thenReturn(null);
         return new FieldStorageResolver(indexMetadata);
+    }
+
+    // ---- Term-equivalence classification (exactTermDelegatable) ----
+    // Gates dual-viability of exact-match (term) predicates: only a single, full-value,
+    // untransformed stored term lets a doc-value backend equal the Lucene term query.
+
+    public void testExactTermDelegatable_keywordNoNormalizer_true() {
+        FieldStorageResolver resolver = newResolver("parquet", Map.of("tag", Map.of("type", "keyword", "index", true)));
+        assertTrue(resolver.resolve(List.of("tag")).get(0).isExactTermDelegatable());
+    }
+
+    public void testExactTermDelegatable_numeric_true() {
+        FieldStorageResolver resolver = newResolver("parquet", Map.of("status", Map.of("type", "integer", "index", true)));
+        assertTrue(resolver.resolve(List.of("status")).get(0).isExactTermDelegatable());
+    }
+
+    public void testExactTermDelegatable_text_false() {
+        FieldStorageResolver resolver = newResolver("parquet", Map.of("body", Map.of("type", "text")));
+        assertFalse(resolver.resolve(List.of("body")).get(0).isExactTermDelegatable());
+    }
+
+    public void testExactTermDelegatable_matchOnlyText_false() {
+        FieldStorageResolver resolver = newResolver("parquet", Map.of("body", Map.of("type", "match_only_text")));
+        assertFalse(resolver.resolve(List.of("body")).get(0).isExactTermDelegatable());
+    }
+
+    public void testExactTermDelegatable_keywordWithNormalizer_false() {
+        FieldStorageResolver resolver = newResolver(
+            "parquet",
+            Map.of("tag", Map.of("type", "keyword", "index", true, "normalizer", "lowercase"))
+        );
+        assertFalse(resolver.resolve(List.of("tag")).get(0).isExactTermDelegatable());
+    }
+
+    public void testExactTermDelegatable_wildcard_false() {
+        FieldStorageResolver resolver = newResolver("parquet", Map.of("w", Map.of("type", "wildcard")));
+        assertFalse(resolver.resolve(List.of("w")).get(0).isExactTermDelegatable());
+    }
+
+    public void testExactTermDelegatable_unknownMapping_false() {
+        FieldStorageResolver resolver = newResolver("parquet", Map.of("mystery", Map.of("type", "some_future_type")));
+        assertFalse(resolver.resolve(List.of("mystery")).get(0).isExactTermDelegatable());
+    }
+
+    /**
+     * The defaulting constructors (no {@code exactTermDelegatable} argument) are conservative: an
+     * un-asserted physical mapping is NOT treated as term-delegatable even when the mapping type
+     * would otherwise qualify, so a term predicate on such a field falls back to Lucene-only
+     * correctness delegation rather than an unsound dual-viable performance leaf. The real
+     * per-mapping value only comes from the resolver path exercised by the tests above.
+     */
+    public void testDefaultingConstructorIsConservativelyNotTermDelegatable() {
+        FieldStorageInfo info = new FieldStorageInfo(
+            "mystery",
+            "keyword",
+            FieldType.KEYWORD,
+            List.of("parquet"),
+            List.of("lucene"),
+            List.of(),
+            false
+        );
+        assertFalse("defaulting ctor must be conservative (not term-delegatable)", info.isExactTermDelegatable());
     }
 
     private static FieldStorageResolver newResolver(String primaryFormat, Map<String, Map<String, Object>> fieldMappings) {

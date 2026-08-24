@@ -648,6 +648,12 @@ fn extract_single_collector_residual(tree: &BoolNode) -> Option<BoolNode> {
     fn strip_collectors(node: &BoolNode) -> Option<BoolNode> {
         match node {
             BoolNode::Collector { .. } => None,
+            // Performance-delegated (dual-viable) leaves are handled separately as
+            // `PerformanceLeaf`s with a per-RG DataFusion-XOR-Lucene choice — they must NOT be
+            // baked into the always-applied residual (which would statically push their expr to
+            // parquet and evaluate them even when the per-RG choice selects Lucene). Strip them
+            // here; the evaluator applies a DataFusion-selected leaf's expr post-decode only.
+            BoolNode::DelegationPossible { .. } => None,
             BoolNode::Predicate(_) => Some(node.clone()),
             BoolNode::And(children) => {
                 let residuals: Vec<BoolNode> =
@@ -1715,11 +1721,13 @@ async unsafe fn execute_indexed_with_context_inner(
             //   - Parquet `with_predicate` pushdown in row-granular mode.
             //   - `on_batch_mask` refinement in block-granular mode.
             //
-            // SingleCollector is AND(Collector?, DelegationPossible*, residual*) so
-            // the residual has zero Collectors — no Literal(true) substitution
-            // needed (unlike bool_tree_to_pruning_expr which handles arbitrary
-            // trees). DelegationPossible leaves contribute their original_expr
-            // to the residual so DF gets to evaluate them natively.
+            // SingleCollector is AND(Collector?, DelegationPossible*, residual*). The residual has
+            // zero Collectors AND zero DelegationPossible leaves — both are stripped by
+            // `extract_single_collector_residual`. Correctness Collectors run eagerly; each
+            // DelegationPossible (dual-viable) leaf is a `PerformanceLeaf` with a per-RG
+            // DataFusion-XOR-Lucene choice (see `SingleCollectorEvaluator`), so its expr must NOT be
+            // in the always-applied residual (which would push it to parquet / evaluate it even when
+            // the per-RG choice selects Lucene).
             let residual_bool = extract_single_collector_residual(&extraction.tree);
             let residual_expr = residual_bool
                 .as_ref()
@@ -1727,6 +1735,26 @@ async unsafe fn execute_indexed_with_context_inner(
             let residual_pruning_predicate: Option<Arc<PruningPredicate>> = residual_expr
                 .as_ref()
                 .and_then(|expr| build_pruning_predicate(expr, Arc::clone(&schema_for_pruner)));
+
+            // Performance-delegated (dual-viable) leaves: each carries its native DataFusion expr
+            // plus a per-leaf `PruningPredicate` used at runtime to make the sound-stats
+            // DataFusion-XOR-Lucene choice per row group.
+            let performance_leaves: Vec<
+                crate::indexed_table::eval::single_collector::PerformanceLeaf,
+            > = extraction
+                .tree
+                .delegation_possible_leaves()
+                .into_iter()
+                .map(|(annotation_id, expr)| {
+                    let pruning_predicate =
+                        build_pruning_predicate(&expr, Arc::clone(&schema_for_pruner));
+                    crate::indexed_table::eval::single_collector::PerformanceLeaf {
+                        annotation_id,
+                        expr,
+                        pruning_predicate,
+                    }
+                })
+                .collect();
 
             let call_strategy = CollectorCallStrategy::PageRangeSplit;
             let bloom_store = Arc::clone(&store);
@@ -1796,6 +1824,7 @@ async unsafe fn execute_indexed_with_context_inner(
                             bloom_config,
                             stats_prune_tree.cloned(),
                             chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
+                            performance_leaves.clone(),
                         ).with_chunk_doc_bounds(chunk.doc_min, chunk.doc_max));
                         Ok(eval)
                     },

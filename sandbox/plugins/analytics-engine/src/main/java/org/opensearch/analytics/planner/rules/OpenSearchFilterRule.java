@@ -55,6 +55,20 @@ public class OpenSearchFilterRule extends RelOptRule {
 
     private static final Logger LOGGER = LogManager.getLogger(OpenSearchFilterRule.class);
 
+    /**
+     * Exact-match (term) filter operators. For these, a doc-value backend's equality is
+     * semantically identical to the index term query ONLY when the field is exact-term
+     * delegatable (see {@link FieldStorageInfo#isExactTermDelegatable()}); otherwise they are
+     * restricted to Lucene-only correctness delegation by the term-equivalence gate in
+     * {@link #resolveViableBackends}. NOT_EQUALS and IN are the negation / set forms of the same
+     * term equivalence, so they gate identically.
+     */
+    private static final Set<ScalarFunction> TERM_FUNCTIONS = Set.of(
+        ScalarFunction.EQUALS,
+        ScalarFunction.NOT_EQUALS,
+        ScalarFunction.IN
+    );
+
     private final PlannerContext context;
 
     public OpenSearchFilterRule(PlannerContext context) {
@@ -267,6 +281,18 @@ public class OpenSearchFilterRule extends RelOptRule {
                 // field only when the field has indexFormats=[lucene] set in the mapping).
                 // TODO: for FULL_TEXT operators, extract required params from RexCall
                 fieldViable = new HashSet<>(registry.filterBackendsForField(function, storageInfo));
+
+                // Term-equivalence gate: an exact-match (term) predicate is only dual-viable when the
+                // field's columnar equality is semantically identical to the index term query. For
+                // tokenized (text/match_only_text), normalized/transformed (keyword+normalizer,
+                // wildcard) or unknown mappings, a doc-value backend (DataFusion) would compare the
+                // raw full-string value — NOT the analyzed/normalized term Lucene matches — so it must
+                // NOT be advertised as viable. Restrict to the index-backed (Lucene) backends, making
+                // the predicate Lucene-only correctness delegation instead of a dual-viable
+                // performance leaf. Non-term operators and exact-term-delegatable fields are unchanged.
+                if (TERM_FUNCTIONS.contains(function) && !storageInfo.isExactTermDelegatable()) {
+                    fieldViable.retainAll(new HashSet<>(registry.filterBackendsForFieldIndexOnly(function, storageInfo)));
+                }
             }
 
             viableSet.retainAll(fieldViable);
