@@ -162,8 +162,64 @@ public class FieldStorageResolver {
             indexFormats,
             storedFieldFormats,
             false,
-            exactMatchSubfieldOf(fieldType, fieldProps)
+            exactMatchSubfieldOf(fieldType, fieldProps),
+            isExactTermDelegatable(fieldType, fieldProps)
         );
+    }
+
+    /**
+     * Decides whether a doc-value (columnar) backend's raw equality on this field is semantically
+     * identical to the index (Lucene) term query — i.e. whether an exact-match (term) predicate on
+     * this field may be dual-viable (performance-delegated) rather than Lucene-only correctness
+     * delegation. See {@link FieldStorageInfo#isExactTermDelegatable()}.
+     *
+     * <p>Conservative by construction — only mappings whose stored term is a single, full-value,
+     * untransformed representation are eligible:
+     *
+     * <ul>
+     *   <li>{@code keyword} / {@code constant_keyword} WITHOUT a {@code normalizer} — the stored
+     *       term is the raw value; doc-value equality matches the term exactly.</li>
+     *   <li>numeric, {@code date}/{@code date_nanos}, {@code boolean}, {@code ip} — point values
+     *       whose columnar equality matches the indexed term exactly.</li>
+     * </ul>
+     *
+     * Everything else is Lucene-only:
+     * <ul>
+     *   <li>{@code text} / {@code match_only_text} — an analyzer tokenizes the value; only the term
+     *       index reproduces the match, a columnar full-string equality does not.</li>
+     *   <li>{@code keyword}/{@code constant_keyword} WITH a {@code normalizer}, {@code wildcard},
+     *       and any transformed mapping — the stored/queried term is rewritten; a doc-value backend
+     *       does not reproduce the transformation.</li>
+     *   <li>unknown / unmapped types — conservative default of Lucene-only.</li>
+     * </ul>
+     */
+    private static boolean isExactTermDelegatable(String mappingType, Map<String, Object> fieldProps) {
+        FieldType type = FieldType.fromMappingType(mappingType);
+        if (type == null) {
+            // Unknown/unmapped type — DataFusion cannot be assumed to reproduce the term semantics.
+            return false;
+        }
+        // Tokenizing text: term match needs the analyzer's token index → Lucene-only.
+        // DELIBERATE MINIMAL POLICY: we keep ALL text/match_only_text Lucene-only even for the rare
+        // field configured with a non-tokenizing (e.g. keyword) analyzer that could in principle be
+        // dual-viable. This is correctness-safe — it only forgoes a performance optimization for an
+        // uncommon mapping — and avoids threading analyzer resolution through here for now.
+        if (FieldType.text().contains(type)) {
+            return false;
+        }
+        // Keyword family: exact full-value term ONLY when no normalizer transforms the stored value.
+        // WILDCARD stores an ngram-transformed representation, so it is never exact-term delegatable.
+        if (type == FieldType.KEYWORD || type == FieldType.CONSTANT_KEYWORD) {
+            return fieldProps.get("normalizer") == null;
+        }
+        if (type == FieldType.WILDCARD_FIELD) {
+            return false;
+        }
+        // Numeric, date, boolean, ip: columnar equality is exact and matches the indexed term.
+        return FieldType.numeric().contains(type)
+            || FieldType.date().contains(type)
+            || type == FieldType.BOOLEAN
+            || type == FieldType.IP;
     }
 
     /**

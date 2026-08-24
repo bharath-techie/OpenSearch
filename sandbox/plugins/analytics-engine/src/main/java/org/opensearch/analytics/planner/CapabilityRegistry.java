@@ -262,6 +262,23 @@ public class CapabilityRegistry {
         return result;
     }
 
+    /**
+     * Backends that can filter on this field using ONLY its index (inverted-index) formats,
+     * ignoring doc-value formats. Used by the term-equivalence gate in the filter rule: for a
+     * field whose columnar equality is not semantically identical to the index term query
+     * (tokenized/normalized/unknown — see {@link FieldStorageInfo#isExactTermDelegatable()}), an
+     * exact-match predicate must be restricted to the index-backed (Lucene) backends so it becomes
+     * correctness delegation rather than a dual-viable performance leaf.
+     */
+    public List<String> filterBackendsForFieldIndexOnly(ScalarFunction function, FieldStorageInfo field) {
+        FieldType fieldType = field.getFieldType();
+        List<String> result = new ArrayList<>();
+        for (String format : field.getIndexFormats()) {
+            result.addAll(filterBackends(function, fieldType, format));
+        }
+        return result;
+    }
+
     /** All backends that can aggregate on this field across all its storage formats. */
     public List<String> aggregateBackendsForField(AggregateFunction function, FieldStorageInfo field) {
         FieldType fieldType = field.getFieldType();

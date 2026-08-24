@@ -96,6 +96,72 @@ public class FilterRuleTests extends BasePlannerRulesTests {
     }
 
     /**
+     * A {@code keyword} field WITH a {@code normalizer} is normalized/transformed — a doc-value
+     * backend does not reproduce the normalizer, so exact-match equality must be Lucene-only. This
+     * exercises the term-equivalence gate directly (the mock DataFusion backend DOES advertise
+     * keyword EQUALS, so without the gate the predicate would be dual-viable — cf.
+     * {@link #testKeywordEqualsAnnotatedWithBothBackends}).
+     */
+    public void testKeywordWithNormalizerEqualsIsLuceneOnly() {
+        OpenSearchFilter result = runFilterWithDelegation(
+            "parquet",
+            Map.of("tag", Map.of("type", "keyword", "index", true, "normalizer", "lowercase")),
+            new String[] { "tag" },
+            new SqlTypeName[] { SqlTypeName.VARCHAR },
+            makeEquals(0, SqlTypeName.VARCHAR, "us")
+        );
+
+        AnnotatedPredicate annotated = (AnnotatedPredicate) result.getCondition();
+        assertEquals(
+            "Normalized keyword EQUALS is Lucene-only",
+            List.of(MockLuceneBackend.NAME),
+            annotated.getViableBackends()
+        );
+        assertFalse(
+            "DataFusion must not be viable for a normalized-keyword term",
+            annotated.getViableBackends().contains(MockDataFusionBackend.NAME)
+        );
+
+        // Stronger than viability: narrowing a Lucene-only term yields NO performance-delegation
+        // (DelegationPossible) peer, so the combiner emits correctness delegation (delegated_predicate)
+        // — never a dual-viable performance leaf. Contrast {@link #testKeywordNoNormalizerEqualsStaysDualViable}.
+        AnnotatedPredicate narrowed = (AnnotatedPredicate) annotated.narrowTo(MockLuceneBackend.NAME);
+        assertTrue(
+            "Lucene-only (normalized) term must carry NO performance-delegation (DelegationPossible) peer",
+            narrowed.getPerformanceDelegationBackends().isEmpty()
+        );
+    }
+
+    /**
+     * Regression guard for the term-equivalence gate: a plain {@code keyword} field with NO
+     * normalizer stores a single full-value untransformed term, so exact-match equality stays
+     * dual-viable (both DataFusion and Lucene) — the gate must NOT over-restrict it.
+     */
+    public void testKeywordNoNormalizerEqualsStaysDualViable() {
+        OpenSearchFilter result = runFilter(
+            "parquet",
+            Map.of("tag", Map.of("type", "keyword", "index", true)),
+            new String[] { "tag" },
+            new SqlTypeName[] { SqlTypeName.VARCHAR },
+            makeEquals(0, SqlTypeName.VARCHAR, "US")
+        );
+
+        AnnotatedPredicate annotated = (AnnotatedPredicate) result.getCondition();
+        assertTrue(annotated.getViableBackends().contains(MockDataFusionBackend.NAME));
+        assertTrue(annotated.getViableBackends().contains(MockLuceneBackend.NAME));
+
+        // Contrast to the normalized case: a dual-viable term DOES advertise a performance-delegation
+        // (DelegationPossible) peer when narrowed onto the driving backend — the exact marker the
+        // term-equivalence gate suppresses for tokenized/normalized terms.
+        AnnotatedPredicate narrowed = (AnnotatedPredicate) annotated.narrowTo(MockDataFusionBackend.NAME);
+        assertEquals(
+            "Dual-viable term narrowed to DataFusion advertises Lucene as a performance-delegation peer",
+            List.of(MockLuceneBackend.NAME),
+            narrowed.getPerformanceDelegationBackends()
+        );
+    }
+
+    /**
      * Keyword equality is normally viable for both backends per-predicate (see
      * {@link #testKeywordEqualsAnnotatedWithBothBackends}). Blocking EQUALS for the Lucene backend
      * via the delegation block-list must drop Lucene from the predicate's viable set, leaving only

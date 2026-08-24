@@ -766,6 +766,22 @@ impl StatsPruneTree {
                 }
             }
             BoolNode::DelegationPossible { original_expr, .. } => {
+                // INVARIANT: RG-pruning a `DelegationPossible` leaf on its `original_expr`'s
+                // *doc-value* stats is sound ONLY because the planner's term-equivalence gate
+                // (`OpenSearchFilterRule` + `FieldStorageInfo.isExactTermDelegatable`) guarantees a
+                // `DelegationPossible` leaf can only wrap a mapping whose columnar equality is
+                // semantically identical to the Lucene term query — keyword-without-normalizer,
+                // numeric, date, boolean, ip. For those, the parquet stats faithfully bound the
+                // indexed term, so pruning cannot produce a false negative before the evaluator's
+                // per-RG DataFusion-XOR-Lucene choice runs.
+                //
+                // Tokenized (text/match_only_text), normalized/transformed (keyword+normalizer,
+                // wildcard) and unknown/unmapped terms are routed to Lucene-only correctness
+                // delegation by that gate and MUST NEVER reach here as `DelegationPossible` — their
+                // raw-string doc-value stats do NOT represent the analyzed/normalized tokens Lucene
+                // matches, so stats pruning on them would false-negative (the PR #22806 bug class).
+                // If a future dual-viable operator with unsound stats is added, or the gate
+                // regresses, this branch must be revisited (else all-true it defensively).
                 let key = Arc::as_ptr(original_expr) as *const () as usize;
                 let rg_can_match = match leaf_predicates.get(&key) {
                     Some(pp) => eval_leaf(pp, metadata, schema, rg_indices, seg_arrow_schema),
