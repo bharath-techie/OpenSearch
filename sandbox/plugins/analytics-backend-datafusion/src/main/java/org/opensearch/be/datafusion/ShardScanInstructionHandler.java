@@ -60,16 +60,17 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
         // Substrait plan's NamedTable binds. Fall back to the concrete shard index name when absent.
         String tableName = node.getLogicalTableName() != null ? node.getLogicalTableName() : context.getTableName();
 
-        WireConfigSnapshot snapshot = plugin.getDatafusionSettings().getSnapshot();
+        DatafusionSettings settings = plugin.getDatafusionSettings();
+        WireConfigSnapshot snapshot = settings.getSnapshot();
+        boolean deletedDocFilteringRequired = context.hasDeletedDocs() && settings.shouldIgnoreDeletedDocs() == false;
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
             snapshot.writeTo(segment);
             SessionContextHandle sessionCtxHandle;
-            if (node.requestsRowIds()) {
-                // QTF query phase — narrowed scan emits __row_id__. Use the indexed session
-                // context so the IndexedTableProvider injects shard-global row ids during scan.
-                // No delegated predicates here (delegation goes through ShardScanWithDelegationHandler),
-                // so treeShape=NO_DELEGATION and delegatedPredicateCount=0.
+            if (node.requestsRowIds() || deletedDocFilteringRequired) {
+                // QTF row-id scans and native DataFusion scans over deletion-bearing shards use
+                // IndexedTableProvider. It applies liveDocs to row-group candidates before Parquet
+                // decode while retaining segment parallelism and predicate/page pruning.
                 sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
                     readerPtr,
                     runtimePtr,
@@ -77,8 +78,9 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     contextId,
                     FilterTreeShape.NO_DELEGATION.ordinal(),
                     0,
-                    true,
+                    node.requestsRowIds(),
                     context.hasPartialAggregate(),
+                    deletedDocFilteringRequired,
                     segment.address(),
                     context.getFragmentBytes()
                 );
@@ -90,6 +92,7 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     tableName,
                     contextId,
                     context.hasPartialAggregate(),
+                    false,
                     segment.address(),
                     context.getFragmentBytes()
                 );

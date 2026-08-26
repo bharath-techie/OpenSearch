@@ -63,6 +63,13 @@ public class SortConverter extends AbstractDslConverter {
         for (SortBuilder<?> sortBuilder : ctx.getSearchSource().sorts()) {
             if (sortBuilder instanceof FieldSortBuilder fieldSort) {
                 String fieldName = fieldSort.getFieldName();
+                // Reindex APIs (update/delete-by-query) add `_doc` sorting to stream hits
+                // efficiently. `_doc` is not a mapped column and has no user-visible stable
+                // ordering contract; an empty Calcite collation preserves the physical scan
+                // order while pagination still supplies the scroll batch size.
+                if (FieldSortBuilder.DOC_FIELD_NAME.equals(fieldName)) {
+                    continue;
+                }
                 RelDataTypeField field = rowType.getField(fieldName, false, false);
                 if (field == null) {
                     throw new ConversionException("Sort field '" + fieldName + "' not found in schema");

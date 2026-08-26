@@ -51,6 +51,7 @@ use crate::helper::{
 };
 use crate::indexed_table::bool_tree::BoolNode;
 use crate::indexed_table::eval::bitmap_tree::{BitmapTreeEvaluator, CollectorLeafBitmaps};
+use crate::indexed_table::eval::live_docs::LiveDocsEvaluator;
 use crate::indexed_table::eval::single_collector::SingleCollectorEvaluator;
 use crate::indexed_table::eval::{CollectorCallStrategy, RowGroupBitsetSource, TreeBitsetSource};
 use crate::indexed_table::ffm_callbacks::{create_provider, FfmSegmentCollector, ProviderHandle};
@@ -892,6 +893,10 @@ async unsafe fn execute_indexed_with_context_inner(
         .indexed_config
         .as_ref()
         .is_some_and(|c| c.requests_row_ids);
+    let deleted_doc_filtering_required = handle
+        .indexed_config
+        .as_ref()
+        .is_some_and(|c| c.deleted_doc_filtering_required);
     let classification_override = handle.indexed_config.map(|config| {
         // FilterTreeShape: 1 = CONJUNCTIVE → SingleCollector, 2 = INTERLEAVED → Tree.
         match (config.tree_shape, config.delegated_predicate_count) {
@@ -1075,7 +1080,7 @@ async unsafe fn execute_indexed_with_context_inner(
         }
     }
 
-    let (factory, prune_tree_config): (EvaluatorFactory, _) = match classification {
+    let (mut factory, prune_tree_config): (EvaluatorFactory, _) = match classification {
         FilterClass::None => {
             // Predicate-only scan: page-pruned universe, residual applied in
             // on_batch_mask. Also covers an unfoldable constant (e.g. mktime('...') >
@@ -1110,16 +1115,15 @@ async unsafe fn execute_indexed_with_context_inner(
                             .enumerate()
                             .map(|(pos, &idx)| (idx, pos))
                             .collect();
-                        let eval: Arc<dyn RowGroupBitsetSource> =
-                        Arc::new(crate::indexed_table::eval::predicate_evaluator::PredicateOnlyEvaluator::new(
+                        let eval = crate::indexed_table::eval::predicate_evaluator::PredicateOnlyEvaluator::new(
                             pruner,
                             residual_pruning_predicate.clone(),
                             residual_expr.clone(),
                             Some(PagePruneMetrics::from_stream_metrics(stream_metrics)),
                             stats_prune_tree.cloned(),
                             rg_index_to_pos,
-                        ));
-                        Ok(eval)
+                        );
+                        Ok(Arc::new(eval) as Arc<dyn RowGroupBitsetSource>)
                     },
                 ),
                 prune_tree_config,
@@ -1387,6 +1391,23 @@ async unsafe fn execute_indexed_with_context_inner(
             )
         }
     };
+
+    if deleted_doc_filtering_required {
+        let inner_factory = Arc::clone(&factory);
+        factory = Arc::new(
+            move |segment: &SegmentFileInfo,
+                  chunk,
+                  stream_metrics: &StreamMetrics,
+                  stats_prune_tree: Option<&Arc<StatsPruneTree>>| {
+                let inner = inner_factory(segment, chunk, stream_metrics, stats_prune_tree)?;
+                Ok(Arc::new(LiveDocsEvaluator::new(
+                    inner,
+                    context_id,
+                    segment.writer_generation,
+                )) as Arc<dyn RowGroupBitsetSource>)
+            },
+        );
+    }
 
     ctx.deregister_table(&register_name)?;
     // Extract the scheme+authority portion of the table URL for

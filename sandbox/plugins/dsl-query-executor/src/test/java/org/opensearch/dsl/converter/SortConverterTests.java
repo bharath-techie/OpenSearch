@@ -16,6 +16,7 @@ import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rex.RexLiteral;
 import org.opensearch.dsl.TestUtils;
 import org.opensearch.search.builder.SearchSourceBuilder;
+import org.opensearch.search.sort.FieldSortBuilder;
 import org.opensearch.search.sort.SortOrder;
 import org.opensearch.test.OpenSearchTestCase;
 
@@ -92,6 +93,18 @@ public class SortConverterTests extends OpenSearchTestCase {
         assertNotNull(sort.fetch);
         assertEquals(10, RexLiteral.intValue(sort.offset));
         assertEquals(5, RexLiteral.intValue(sort.fetch));
+    }
+
+    public void testDocSortUsesPhysicalScanOrder() throws ConversionException {
+        SearchSourceBuilder source = new SearchSourceBuilder().sort(FieldSortBuilder.DOC_FIELD_NAME, SortOrder.ASC).size(100);
+        ConversionContext ctx = TestUtils.createContext(source);
+
+        RelNode result = converter.convert(scan, ctx);
+
+        assertTrue(result instanceof LogicalSort);
+        LogicalSort sort = (LogicalSort) result;
+        assertTrue("_doc must not require a mapped-column collation", sort.getCollation().getFieldCollations().isEmpty());
+        assertEquals(100, RexLiteral.intValue(sort.fetch));
     }
 
     public void testThrowsForUnknownSortField() {

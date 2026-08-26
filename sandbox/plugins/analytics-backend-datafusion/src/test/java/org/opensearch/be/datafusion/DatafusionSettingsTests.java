@@ -30,6 +30,17 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertTrue(DatafusionSettings.LISTING_TABLE_PUSHDOWN_FILTERS.hasNodeScope());
     }
 
+    public void testIgnoreDeletedDocsSettingDefinition() {
+        assertEquals("datafusion.ignore_deleted_docs", DatafusionSettings.IGNORE_DELETED_DOCS.getKey());
+        assertEquals(Boolean.FALSE, DatafusionSettings.IGNORE_DELETED_DOCS.get(Settings.EMPTY));
+        assertTrue(DatafusionSettings.IGNORE_DELETED_DOCS.isDynamic());
+        assertTrue(DatafusionSettings.IGNORE_DELETED_DOCS.hasNodeScope());
+        assertFalse(new DatafusionSettings(Settings.EMPTY).shouldIgnoreDeletedDocs());
+        assertTrue(
+            new DatafusionSettings(Settings.builder().put("datafusion.ignore_deleted_docs", true).build()).shouldIgnoreDeletedDocs()
+        );
+    }
+
     public void testIndexedPushdownFiltersSettingDefinition() {
         assertEquals("datafusion.indexed.pushdown_filters", DatafusionSettings.INDEXED_PUSHDOWN_FILTERS.getKey());
         assertEquals(Boolean.TRUE, DatafusionSettings.INDEXED_PUSHDOWN_FILTERS.get(Settings.EMPTY));
@@ -55,12 +66,13 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
     }
 
     public void testAllSettingsContainsAllExpectedSettings() {
-        assertEquals(31, DatafusionSettings.ALL_SETTINGS.size());
+        assertEquals(32, DatafusionSettings.ALL_SETTINGS.size());
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_REDUCE_TARGET_PARTITIONS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_MEMORY_GUARD_SPILL_EXEMPT_CAP));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_SPILL_DIRECTORY));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.BATCH_SIZE));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.LISTING_TABLE_PUSHDOWN_FILTERS));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.IGNORE_DELETED_DOCS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_PUSHDOWN_FILTERS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD));

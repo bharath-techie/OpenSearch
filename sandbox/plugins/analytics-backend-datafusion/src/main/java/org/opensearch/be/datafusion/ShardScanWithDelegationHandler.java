@@ -64,7 +64,11 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
         FilterTreeShape treeShape = node.getTreeShape();
         int delegatedPredicateCount = node.getDelegatedPredicateCount();
 
-        WireConfigSnapshot snapshot = plugin.getDatafusionSettings().getSnapshot();
+        DatafusionSettings settings = plugin.getDatafusionSettings();
+        WireConfigSnapshot snapshot = settings.getSnapshot();
+        boolean deletedDocFilteringRequired = node.requiresDeletedDocFiltering()
+            && context.hasDeletedDocs()
+            && settings.shouldIgnoreDeletedDocs() == false;
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
             snapshot.writeTo(segment);
@@ -77,6 +81,7 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
                 delegatedPredicateCount,
                 node.requestsRowIds(),
                 context.hasPartialAggregate(),
+                deletedDocFilteringRequired,
                 segment.address(),
                 context.getFragmentBytes()
             );

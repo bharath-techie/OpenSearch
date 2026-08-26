@@ -39,6 +39,12 @@ dependencies {
   // Shared native bridge lib (provides the unified .so and FFM SymbolLookup)
   implementation project(':sandbox:libs:dataformat-native')
 
+  // Substrait SimpleExtension loads the function catalogs from YAML at plugin startup.
+  // arrow-base provides Jackson 2 core/databind through the extended-plugin classloader,
+  // but not the YAML dataformat module, so this backend must bundle it explicitly.
+  implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:${versions.jackson}"
+  implementation "org.yaml:snakeyaml:${versions.snakeyaml}"
+
   // Provided at runtime by the parent analytics-engine plugin; compile-only to avoid jar hell.
   compileOnly project(':sandbox:libs:analytics-framework')
   // analytics-api provides the IpType / BinaryType UDT markers that

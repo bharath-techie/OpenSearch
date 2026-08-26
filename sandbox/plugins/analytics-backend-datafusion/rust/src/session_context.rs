@@ -21,6 +21,7 @@ use datafusion::{
     execution::cache::{CacheAccessor, DefaultListFilesCache},
     execution::context::SessionContext,
     execution::memory_pool::MemoryPool,
+    execution::object_store::ObjectStoreUrl,
     execution::runtime_env::RuntimeEnvBuilder,
     execution::SessionStateBuilder,
     physical_plan::ExecutionPlan,
@@ -80,6 +81,10 @@ pub struct IndexedExecutionConfig {
     pub delegated_predicate_count: i32,
     /// QTF query phase: scan must emit shard-global `__row_id__`.
     pub requests_row_ids: bool,
+    /// When true, the shard has deleted documents. The live-docs MatchAll Collector
+    /// (annotation_id == i32::MAX) should call through to Java. When false, defuse
+    /// that Collector (return all-ones without FFM call).
+    pub deleted_doc_filtering_required: bool,
 }
 
 /// Widens `inferred` to the plan's `base_schema` (for index-pattern / alias scans) so the
@@ -177,6 +182,7 @@ pub async unsafe fn create_session_context(
     table_name: &str,
     context_id: i64,
     has_partial_aggregate: bool,
+    deleted_doc_filtering_required: bool,
     query_config: DatafusionQueryConfig,
     plan_bytes: &[u8],
 ) -> Result<i64, DataFusionError> {
@@ -253,9 +259,16 @@ pub async unsafe fn create_session_context(
     }
     config.options_mut().execution.target_partitions = effective_partitions;
     config.options_mut().execution.batch_size = effective_batch_size;
+    // LiveDocs masks use segment-local Lucene doc IDs and therefore require the Parquet files
+    // to remain in their original single ordered file group. Higher operators may still run in
+    // parallel, but EnforceDistribution must not split this scan into byte-range partitions.
+    if deleted_doc_filtering_required {
+        config.options_mut().optimizer.repartition_file_scans = false;
+    }
     // When the index has `index.sort.field`, ask DataFusion to use the sort-aware
-    // file-group partitioner so `output_ordering` can propagate from the scan.
-    if !shard_view.sort_fields.is_empty() {
+    // file-group partitioner so `output_ordering` can propagate from the scan. Deleted-doc
+    // scans stay single-partitioned because their bitmap offsets depend on file order.
+    if !deleted_doc_filtering_required && !shard_view.sort_fields.is_empty() {
         config
             .options_mut()
             .execution
@@ -373,32 +386,67 @@ pub async unsafe fn create_session_context(
         listing_options
     };
 
-    let table_config = ListingTableConfig::new(shard_view.table_path.clone())
-        .with_listing_options(listing_options)
-        .with_schema(resolved_schema);
-
-    // Wire the global statistics cache into the ListingTable.
-    let stats_cache = runtime.runtime_env.cache_manager.get_file_statistic_cache();
-    let provider = Arc::new(
-        ListingTable::try_new(table_config)
+    if deleted_doc_filtering_required {
+        // Register LiveDocsTableProvider. Parquet keeps its contiguous vectorized scan;
+        // a physical wrapper applies each segment's liveDocs bitmap after decode.
+        let files: Vec<crate::live_docs_table_provider::LiveDocsFileInfo> = shard_view
+            .object_metas
+            .iter()
+            .enumerate()
+            .map(
+                |(i, meta)| crate::live_docs_table_provider::LiveDocsFileInfo {
+                    object_meta: meta.clone(),
+                    writer_generation: shard_view.writer_generations.get(i).copied().unwrap_or(0),
+                },
+            )
+            .collect();
+        let store_url = ObjectStoreUrl::parse("file://")
+            .map_err(|e| DataFusionError::Internal(format!("failed to parse store URL: {}", e)))?;
+        let metadata_cache = runtime.runtime_env.cache_manager.get_file_metadata_cache();
+        let provider = Arc::new(crate::live_docs_table_provider::LiveDocsTableProvider::new(
+            resolved_schema,
+            files,
+            store_url,
+            Arc::clone(&shard_view.store),
+            metadata_cache,
+            context_id,
+        ));
+        ctx.register_table(register_name.as_str(), provider)
             .map_err(|e| {
                 error!(
-                    "create_session_context: failed to create listing table: {}",
-                    e
+                    "create_session_context: failed to register LiveDocsTableProvider '{}': {}",
+                    register_name, e
                 );
                 e
-            })?
-            .with_cache(stats_cache),
-    );
+            })?;
+    } else {
+        let table_config = ListingTableConfig::new(shard_view.table_path.clone())
+            .with_listing_options(listing_options)
+            .with_schema(resolved_schema);
 
-    ctx.register_table(register_name.as_str(), provider)
-        .map_err(|e| {
-            error!(
-                "create_session_context: failed to register table '{}': {}",
-                register_name, e
-            );
-            e
-        })?;
+        // Wire the global statistics cache into the ListingTable.
+        let stats_cache = runtime.runtime_env.cache_manager.get_file_statistic_cache();
+        let provider = Arc::new(
+            ListingTable::try_new(table_config)
+                .map_err(|e| {
+                    error!(
+                        "create_session_context: failed to create listing table: {}",
+                        e
+                    );
+                    e
+                })?
+                .with_cache(stats_cache),
+        );
+
+        ctx.register_table(register_name.as_str(), provider)
+            .map_err(|e| {
+                error!(
+                    "create_session_context: failed to register table '{}': {}",
+                    register_name, e
+                );
+                e
+            })?;
+    }
     log_debug!(
         "create_session_context: registered table '{}' with file_sort_order_keys={}",
         register_name,
@@ -542,6 +590,7 @@ pub async unsafe fn create_session_context_indexed(
     delegated_predicate_count: i32,
     requests_row_ids: bool,
     has_partial_aggregate: bool,
+    deleted_doc_filtering_required: bool,
     query_config: DatafusionQueryConfig,
     plan_bytes: &[u8],
 ) -> Result<i64, DataFusionError> {
@@ -551,6 +600,7 @@ pub async unsafe fn create_session_context_indexed(
         table_name,
         context_id,
         has_partial_aggregate,
+        false, // indexed path handles liveDocs in prefetch_rg, not via table provider
         query_config,
         plan_bytes,
     )
@@ -564,6 +614,7 @@ pub async unsafe fn create_session_context_indexed(
         tree_shape,
         delegated_predicate_count,
         requests_row_ids,
+        deleted_doc_filtering_required,
     });
 
     Ok(ptr)

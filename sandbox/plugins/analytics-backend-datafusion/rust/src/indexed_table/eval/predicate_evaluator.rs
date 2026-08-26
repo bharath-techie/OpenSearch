@@ -26,6 +26,7 @@ use super::eval_helpers::{
     compute_page_ranges, evaluate_residual, universe_bitmap_from_page_ranges,
 };
 use super::{PrefetchedRg, RowGroupBitsetSource};
+use crate::indexed_table::ffm_callbacks::get_live_docs;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
 use crate::indexed_table::row_selection::{bitmap_to_packed_bits, PositionMap};
 use crate::indexed_table::stream::RowGroupInfo;
@@ -41,6 +42,8 @@ pub struct PredicateOnlyEvaluator {
     stats_prune_tree: Option<Arc<StatsPruneTree>>,
     /// Reverse map: absolute RG index → position in `rg_can_match` vectors.
     rg_index_to_pos: HashMap<usize, usize>,
+    /// Query context and segment generation used to fetch liveDocs before decode.
+    live_docs: Option<(i64, i64)>,
 }
 
 impl PredicateOnlyEvaluator {
@@ -59,6 +62,33 @@ impl PredicateOnlyEvaluator {
             page_prune_metrics,
             stats_prune_tree,
             rg_index_to_pos,
+            live_docs: None,
+        }
+    }
+
+    pub fn with_live_docs(mut self, context_id: i64, writer_generation: i64) -> Self {
+        self.live_docs = Some((context_id, writer_generation));
+        self
+    }
+}
+
+fn intersect_live_docs(candidates: &mut RoaringBitmap, words: &[u64], len: u32) {
+    for (word_index, &word) in words.iter().enumerate() {
+        let base = (word_index as u32) * 64;
+        if base >= len {
+            break;
+        }
+        let valid_bits = (len - base).min(64);
+        let valid_mask = if valid_bits == 64 {
+            u64::MAX
+        } else {
+            (1u64 << valid_bits) - 1
+        };
+        let mut deleted = (!word) & valid_mask;
+        while deleted != 0 {
+            let bit = deleted.trailing_zeros();
+            candidates.remove(base + bit);
+            deleted &= deleted - 1;
         }
     }
 }
@@ -93,11 +123,25 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             self.page_prune_metrics.as_ref(),
         );
 
-        let candidates = match universe_bitmap_from_page_ranges(&page_ranges, rg) {
+        let mut candidates = match universe_bitmap_from_page_ranges(&page_ranges, rg) {
             Some(bm) if bm.is_empty() => return Ok(None),
             Some(bm) => bm,
             None => return Ok(None),
         };
+
+        if let Some((context_id, writer_generation)) = self.live_docs {
+            if let Some(words) = get_live_docs(
+                context_id,
+                writer_generation,
+                min_doc,
+                min_doc + rg.num_rows as i32,
+            )? {
+                intersect_live_docs(&mut candidates, &words, rg.num_rows as u32);
+                if candidates.is_empty() {
+                    return Ok(None);
+                }
+            }
+        }
 
         let mask_len = rg.num_rows as usize;
         let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
@@ -156,6 +200,16 @@ mod tests {
             meta.metadata().clone(),
             meta.schema().clone(),
         ))
+    }
+
+    #[test]
+    fn live_docs_intersection_removes_only_deleted_candidates() {
+        let mut candidates = RoaringBitmap::from_iter([0u32, 1, 2, 3, 64, 65, 66, 69]);
+        intersect_live_docs(&mut candidates, &[0b1101, 0b100101], 70);
+        assert_eq!(
+            candidates.iter().collect::<Vec<_>>(),
+            vec![0, 2, 3, 64, 66, 69]
+        );
     }
 
     #[test]

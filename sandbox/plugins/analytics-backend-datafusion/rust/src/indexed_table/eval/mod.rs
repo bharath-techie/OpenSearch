@@ -40,6 +40,7 @@
 
 pub mod bitmap_tree;
 pub mod eval_helpers;
+pub mod live_docs;
 pub mod predicate_evaluator;
 pub mod single_collector;
 

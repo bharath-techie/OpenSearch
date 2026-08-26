@@ -60,6 +60,18 @@ public final class DatafusionSettings {
     );
 
     /**
+     * Benchmark-only escape hatch that makes DataFusion ignore Lucene liveDocs masks.
+     * Defaults to {@code false}; enabling it exposes immutable Parquet rows whose Lucene
+     * documents were deleted and therefore produces intentionally incorrect query results.
+     */
+    public static final Setting<Boolean> IGNORE_DELETED_DOCS = Setting.boolSetting(
+        "datafusion.ignore_deleted_docs",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    /**
      * Whether the indexed stream asks parquet to apply the residual predicate during
      * decode (via {@code RowFilter} pushdown). When true (default), narrow row-granular
      * selections benefit from decode-time filtering; when false, the indexed stream
@@ -226,6 +238,7 @@ public final class DatafusionSettings {
         // Indexed query settings — per-query tuning knobs for the indexed execution path
         BATCH_SIZE,
         LISTING_TABLE_PUSHDOWN_FILTERS,
+        IGNORE_DELETED_DOCS,
         INDEXED_PUSHDOWN_FILTERS,
         INDEXED_MIN_SKIP_RUN_DEFAULT,
         INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD,
@@ -235,6 +248,9 @@ public final class DatafusionSettings {
     // ── Snapshot management ──
 
     private volatile WireConfigSnapshot snapshot;
+
+    /** Benchmark-only flag; true intentionally exposes rows deleted from Lucene. */
+    private volatile boolean ignoreDeletedDocs;
 
     /**
      * Tracks the current value of {@code search.concurrent.max_slice_count} for
@@ -260,6 +276,7 @@ public final class DatafusionSettings {
 
         this.concurrentSearchMode = SearchService.CLUSTER_CONCURRENT_SEGMENT_SEARCH_MODE.get(settings);
         this.maxSliceCount = SearchService.CONCURRENT_SEGMENT_SEARCH_TARGET_MAX_SLICE_COUNT_SETTING.get(settings);
+        this.ignoreDeletedDocs = IGNORE_DELETED_DOCS.get(settings);
 
         this.snapshot = WireConfigSnapshot.builder()
             .batchSize(BATCH_SIZE.get(settings))
@@ -281,6 +298,7 @@ public final class DatafusionSettings {
     DatafusionSettings(Settings settings) {
         this.concurrentSearchMode = SearchService.CLUSTER_CONCURRENT_SEGMENT_SEARCH_MODE.get(settings);
         this.maxSliceCount = SearchService.CONCURRENT_SEGMENT_SEARCH_TARGET_MAX_SLICE_COUNT_SETTING.get(settings);
+        this.ignoreDeletedDocs = IGNORE_DELETED_DOCS.get(settings);
 
         this.snapshot = WireConfigSnapshot.builder()
             .batchSize(BATCH_SIZE.get(settings))
@@ -301,6 +319,8 @@ public final class DatafusionSettings {
         clusterSettings.addSettingsUpdateConsumer(LISTING_TABLE_PUSHDOWN_FILTERS, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).listingTablePushdownFilters(newValue).build();
         });
+
+        clusterSettings.addSettingsUpdateConsumer(IGNORE_DELETED_DOCS, newValue -> ignoreDeletedDocs = newValue);
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_PUSHDOWN_FILTERS, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).indexedPushdownFilters(newValue).build();
@@ -339,6 +359,11 @@ public final class DatafusionSettings {
      */
     public WireConfigSnapshot getSnapshot() {
         return snapshot;
+    }
+
+    /** Returns whether DataFusion should intentionally ignore Lucene liveDocs masks. */
+    public boolean shouldIgnoreDeletedDocs() {
+        return ignoreDeletedDocs;
     }
 
     /**

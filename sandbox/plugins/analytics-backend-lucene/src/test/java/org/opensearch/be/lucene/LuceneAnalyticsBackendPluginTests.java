@@ -335,10 +335,17 @@ public class LuceneAnalyticsBackendPluginTests extends OpenSearchTestCase {
                     FilterTreeShape treeShape,
                     int delegatedPredicateCount,
                     boolean requestsRowIds,
-                    String logicalTableName
+                    String logicalTableName,
+                    boolean requiresDeletedDocFiltering
                 ) {
                     return Optional.of(
-                        new ShardScanWithDelegationInstructionNode(treeShape, delegatedPredicateCount, requestsRowIds, logicalTableName)
+                        new ShardScanWithDelegationInstructionNode(
+                            treeShape,
+                            delegatedPredicateCount,
+                            requestsRowIds,
+                            logicalTableName,
+                            requiresDeletedDocFiltering
+                        )
                     );
                 }
 
