@@ -64,6 +64,12 @@ impl PredicateOnlyEvaluator {
 }
 
 impl RowGroupBitsetSource for PredicateOnlyEvaluator {
+    fn count_docs_range(&self, min_doc: i32, max_doc: i32) -> Result<Option<u64>, String> {
+        // Only invoked under the count-shape WITHIN gate: the entire residual
+        // is a tautology on this doc range, so every row matches.
+        Ok(Some((max_doc - min_doc).max(0) as u64))
+    }
+
     fn prefetch_rg(
         &self,
         rg: &RowGroupInfo,

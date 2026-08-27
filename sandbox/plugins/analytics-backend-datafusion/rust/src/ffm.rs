@@ -1519,7 +1519,21 @@ pub unsafe extern "C" fn df_execute_with_context(
     let has_row_id = plan_bytes
         .windows(crate::ROW_ID_COLUMN_NAME.len())
         .any(|w| w == crate::ROW_ID_COLUMN_NAME.as_bytes());
-    let use_indexed = session_handle.indexed_config.is_some() || has_row_id;
+    // Aggregate-only-on-sort-field fragments (pure range counts, span()
+    // histograms) also route indexed: the count shortcut and the
+    // HistogramCountsExec rewrite answer them from footer statistics, while
+    // the vanilla path would decode every row. Fail-closed shape sniff.
+    let sort_field_aggregate = match session_handle.sort_fields.first() {
+        Some(sort_field) => mgr
+            .io_runtime
+            .block_on(crate::api::plan_is_sort_field_only_aggregate(
+                &session_handle.ctx,
+                plan_bytes,
+                sort_field,
+            )),
+        None => false,
+    };
+    let use_indexed = session_handle.indexed_config.is_some() || has_row_id || sort_field_aggregate;
     if use_indexed {
         // Extract target_partitions BEFORE boxing into raw pointer (session_handle is consumed).
         let partition_weight = session_handle.query_config.target_partitions.max(1) as u32;

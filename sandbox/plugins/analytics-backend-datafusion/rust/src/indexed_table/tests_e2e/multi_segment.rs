@@ -200,6 +200,8 @@ async fn run_two_segment_query(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 
@@ -418,6 +420,8 @@ async fn run_two_segment_query_witness(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 
@@ -632,6 +636,8 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 
@@ -1147,6 +1153,8 @@ async fn run_wide_segments(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 
@@ -1519,6 +1527,8 @@ async fn run_wide_segments_with_stats_pruning(
         )),
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 

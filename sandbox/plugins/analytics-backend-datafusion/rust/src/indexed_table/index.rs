@@ -70,6 +70,17 @@ pub trait RowGroupDocsCollector: Send + Sync + Debug {
         min_doc: i32,
         max_doc: i32,
     ) -> Result<CollectDocsResult, String>;
+
+    /// Count matching docs in `[min_doc, max_doc)` WITHOUT materializing a
+    /// bitset. `Ok(None)` = unsupported by this backend — the caller must fall
+    /// back to [`collect_packed_u64_bitset`](Self::collect_packed_u64_bitset).
+    ///
+    /// Shares the forward-only cursor with the bitset variant: interleaved
+    /// calls must use non-decreasing, non-overlapping ranges.
+    fn count_docs(&self, min_doc: i32, max_doc: i32) -> Result<Option<u64>, String> {
+        let _ = (min_doc, max_doc);
+        Ok(None)
+    }
 }
 
 /// A searcher scoped to a single shard (index), created once per query.

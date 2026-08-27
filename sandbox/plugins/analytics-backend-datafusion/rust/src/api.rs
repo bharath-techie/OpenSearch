@@ -1233,6 +1233,131 @@ fn resolve_dynamic_spill_limit(spill_dir: &str) -> u64 {
 /// when `classify_filter` returns `None` (no automatic retry on the ListingTable
 /// path) — unreachable in practice because the needle is not a valid DataFusion
 /// identifier a plan would otherwise contain.
+/// Narrow routing sniff for aggregate fast paths: true when the plan has an
+/// Aggregate and EVERY column referenced anywhere in the plan is
+/// `sort_field`, with only pass-through nodes (Projection / Filter /
+/// SubqueryAlias / Limit) besides the Aggregate and TableScan. Such fragments
+/// (pure timestamp-range counts and `count() by span(_timestamp,…)`
+/// histograms) are exactly what the indexed executor's count shortcut and
+/// HistogramCountsExec rewrite answer from footer statistics — the vanilla
+/// ListingTable path decodes every row instead.
+///
+/// Routing is correctness-safe even when the downstream fast-path gates
+/// decline: the indexed executor is a complete execution path (FilterClass::
+/// None covers predicate-only scans). The sniff is still conservative to
+/// avoid perf surprises on untargeted shapes.
+pub(crate) async fn plan_is_sort_field_only_aggregate(
+    ctx: &datafusion::execution::context::SessionContext,
+    plan_bytes: &[u8],
+    sort_field: &str,
+) -> bool {
+    use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+    use prost::Message as _;
+    let Ok(plan) = substrait::proto::Plan::decode(plan_bytes) else {
+        return false;
+    };
+    let Ok(logical) = from_substrait_plan(&ctx.state(), &plan).await else {
+        return false;
+    };
+    // Optimize first: prunes untouched columns out of projections so alias
+    // chains like PPL `eval ts_s = _timestamp / 1000000` reduce to
+    // sort-field-only expressions.
+    let Ok(optimized) = ctx.state().optimize(&logical) else {
+        return false;
+    };
+    logical_plan_is_sort_field_only_aggregate(&optimized, sort_field)
+}
+
+/// See [`plan_is_sort_field_only_aggregate`]. Pure logical-plan shape check.
+///
+/// Below the aggregate, "pure" column names are tracked bottom-up: the sort
+/// field is pure at the scan, and a projection output is pure when its
+/// expression references only pure inputs (so alias chains like
+/// `eval ts_s = _timestamp / 1000000` stay eligible). Every expression below
+/// the aggregate must be pure; the aggregate's own expressions must
+/// reference only pure names. Above the aggregate, pass-through nodes may
+/// reference derived columns freely.
+pub(crate) fn logical_plan_is_sort_field_only_aggregate(
+    plan: &datafusion::logical_expr::LogicalPlan,
+    sort_field: &str,
+) -> bool {
+    use datafusion::logical_expr::LogicalPlan;
+    use std::collections::HashSet;
+
+    fn refs_pure(expr: &datafusion::logical_expr::Expr, pure: &HashSet<String>) -> bool {
+        expr.column_refs()
+            .iter()
+            .all(|column| pure.contains(column.name.as_str()))
+    }
+
+    /// Below the aggregate. Returns the set of pure output column names, or
+    /// None when the subtree contains an unsupported node or any expression
+    /// referencing a non-pure column.
+    fn below(node: &LogicalPlan, sort_field: &str) -> Option<HashSet<String>> {
+        match node {
+            LogicalPlan::TableScan(scan) => {
+                // Purity starts at the scan: only the sort field is pure, and
+                // it must actually be projected.
+                let mut pure = HashSet::new();
+                if scan
+                    .projected_schema
+                    .fields()
+                    .iter()
+                    .any(|f| f.name() == sort_field)
+                {
+                    pure.insert(sort_field.to_string());
+                }
+                // Scan-level filters must be pure too.
+                scan.filters
+                    .iter()
+                    .all(|f| refs_pure(f, &pure))
+                    .then_some(pure)
+            }
+            LogicalPlan::Filter(filter) => {
+                let pure = below(filter.input.as_ref(), sort_field)?;
+                refs_pure(&filter.predicate, &pure).then_some(pure)
+            }
+            LogicalPlan::SubqueryAlias(alias) => below(alias.input.as_ref(), sort_field),
+            LogicalPlan::Projection(projection) => {
+                let input_pure = below(projection.input.as_ref(), sort_field)?;
+                let mut out = HashSet::new();
+                for (expr, field) in projection
+                    .expr
+                    .iter()
+                    .zip(projection.schema.fields().iter())
+                {
+                    if !refs_pure(expr, &input_pure) {
+                        // Any impure projection expression disqualifies the
+                        // whole shape (it forces reading another column).
+                        return None;
+                    }
+                    out.insert(field.name().to_string());
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    /// Above the aggregate: pass-through nodes with any refs.
+    fn above(node: &LogicalPlan, sort_field: &str) -> bool {
+        match node {
+            LogicalPlan::Aggregate(agg) => {
+                let Some(pure) = below(agg.input.as_ref(), sort_field) else {
+                    return false;
+                };
+                node.expressions().iter().all(|e| refs_pure(e, &pure))
+            }
+            LogicalPlan::Projection(_) | LogicalPlan::SubqueryAlias(_) | LogicalPlan::Limit(_) => {
+                node.inputs().len() == 1 && above(node.inputs()[0], sort_field)
+            }
+            _ => false,
+        }
+    }
+
+    above(plan, sort_field)
+}
+
 fn use_indexed_path(plan_bytes: &[u8]) -> bool {
     const INDEX_FILTER: &[u8] = b"index_filter";
     const ROW_ID: &[u8] = crate::ROW_ID_COLUMN_NAME.as_bytes();
@@ -2297,6 +2422,95 @@ pub unsafe fn sender_fail(sender_ptr: i64, reason: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::logical_plan_is_sort_field_only_aggregate;
+
+    async fn sql_logical_plan(sql: &str) -> datafusion::logical_expr::LogicalPlan {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let ctx = datafusion::execution::context::SessionContext::new();
+        let schema = std::sync::Arc::new(Schema::new(vec![
+            Field::new("_timestamp", DataType::Int64, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        let batch = datafusion::arrow::record_batch::RecordBatch::new_empty(schema);
+        ctx.register_batch("t", batch).unwrap();
+        ctx.sql(sql).await.unwrap().into_optimized_plan().unwrap()
+    }
+
+    #[tokio::test]
+    async fn sort_field_only_aggregate_sniff_accepts_count_and_span_shapes() {
+        let count =
+            sql_logical_plan("SELECT count(*) FROM t WHERE _timestamp >= 5 AND _timestamp < 100")
+                .await;
+        assert!(
+            logical_plan_is_sort_field_only_aggregate(&count, "_timestamp"),
+            "plan:\n{}",
+            count.display_indent()
+        );
+
+        let hist = sql_logical_plan(
+            "SELECT _timestamp / 8 * 8, count(*) FROM t \
+             WHERE _timestamp >= 5 GROUP BY _timestamp / 8 * 8",
+        )
+        .await;
+        assert!(logical_plan_is_sort_field_only_aggregate(
+            &hist,
+            "_timestamp"
+        ));
+
+        // Alias chain (PPL `eval ts_s = _timestamp / 1000000` shape).
+        let aliased = sql_logical_plan(
+            "SELECT s / 8 * 8, count(*) FROM \
+             (SELECT _timestamp / 1000 AS s FROM t WHERE _timestamp >= 5) x \
+             GROUP BY s / 8 * 8",
+        )
+        .await;
+        assert!(logical_plan_is_sort_field_only_aggregate(
+            &aliased,
+            "_timestamp"
+        ));
+    }
+
+    #[tokio::test]
+    async fn sort_field_only_aggregate_sniff_rejects_other_shapes() {
+        // References another column in the filter.
+        let other_filter = sql_logical_plan("SELECT count(*) FROM t WHERE v = 3").await;
+        assert!(!logical_plan_is_sort_field_only_aggregate(
+            &other_filter,
+            "_timestamp"
+        ));
+
+        // Groups by another column.
+        let other_group = sql_logical_plan("SELECT v, count(*) FROM t GROUP BY v").await;
+        assert!(!logical_plan_is_sort_field_only_aggregate(
+            &other_group,
+            "_timestamp"
+        ));
+
+        // No aggregate at all.
+        let scan = sql_logical_plan("SELECT _timestamp FROM t WHERE _timestamp > 5").await;
+        assert!(!logical_plan_is_sort_field_only_aggregate(
+            &scan,
+            "_timestamp"
+        ));
+
+        // Aggregate over another column's values.
+        let sum_v = sql_logical_plan("SELECT sum(v) FROM t WHERE _timestamp > 5").await;
+        assert!(!logical_plan_is_sort_field_only_aggregate(
+            &sum_v,
+            "_timestamp"
+        ));
+
+        // Sort above the aggregate (top-K shapes are not this fast path).
+        let sorted = sql_logical_plan(
+            "SELECT _timestamp, count(*) AS c FROM t GROUP BY _timestamp ORDER BY c DESC",
+        )
+        .await;
+        assert!(!logical_plan_is_sort_field_only_aggregate(
+            &sorted,
+            "_timestamp"
+        ));
+    }
+
     use super::*;
     use arrow_array::{BinaryViewArray, Int64Array, StringViewArray};
     use arrow_schema::{Field, Schema};

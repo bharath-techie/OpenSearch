@@ -215,6 +215,18 @@ pub struct IndexedTableConfig {
     /// matches the wire format from `DataFusionPlugin`). Same length as
     /// `sort_fields` (validated at index creation).
     pub sort_orders: Vec<String>,
+    /// Per-segment sets of row-group indices whose sort-column FOOTER
+    /// statistics lie fully inside the query's timestamp range with zero
+    /// nulls, valid ONLY when the non-collector residual consists solely of
+    /// that range (so the residual is a tautology on these row groups).
+    /// Keyed by segment index (post any iteration-order reversal, matching
+    /// `segments`). `None` disables the WITHIN count shortcut.
+    pub sort_range_within_rgs:
+        Option<Arc<std::collections::HashMap<usize, std::collections::HashSet<usize>>>>,
+    /// Top-K candidate truncation for single-key sorts on the leading sort
+    /// field: `(keep_last_in_storage_order, row_budget)`. Applied by
+    /// `IndexedStream` to WITHIN row groups only. `None` disables.
+    pub sort_topk_truncate: Option<(bool, usize)>,
     /// Per-query cancellation token (from the global `QUERY_REGISTRY`). Threaded
     /// down to `IndexReader` so the scan cooperatively stops when the query task
     /// is cancelled. `None` for untracked queries (`context_id == 0`) and tests.
@@ -715,6 +727,14 @@ impl ExecutionPlan for QueryShardExec {
                 Boundedness::Bounded,
             ));
 
+            let within_rgs: HashSet<usize> = self
+                .config
+                .sort_range_within_rgs
+                .as_ref()
+                .and_then(|map| map.get(&chunk.segment_idx))
+                .cloned()
+                .unwrap_or_default();
+
             let exec = IndexedExec {
                 schema: self.projected_schema.clone(),
                 full_schema: self.full_schema.clone(),
@@ -738,6 +758,12 @@ impl ExecutionPlan for QueryShardExec {
                 dynamic_filter: dynamic_filter.clone(),
                 cancellation_token: self.config.cancellation_token.clone(),
                 seg_arrow_schema: segment.arrow_schema.clone(),
+                within_rgs,
+                sort_topk_truncate: if self.config.emit_row_ids {
+                    None
+                } else {
+                    self.config.sort_topk_truncate
+                },
             };
             streams.push(exec.execute(0, Arc::clone(&context))?);
         }
@@ -795,6 +821,70 @@ impl QueryShardExec {
         // Require at least one resolved column — a column-free predicate (e.g.
         // the bare `true` placeholder) carries no pruning signal.
         saw_column && all_cols_known
+    }
+
+    /// The indexed configuration this exec scans (segments, evaluator
+    /// factory, fast-path metadata). Used by the histogram plan rewrite.
+    pub(crate) fn indexed_config(&self) -> &Arc<IndexedTableConfig> {
+        &self.config
+    }
+
+    /// Row-group-aligned partition assignments. Used by the histogram plan
+    /// rewrite to mirror partitioning in its counts operator.
+    pub(crate) fn assignments(&self) -> &[PartitionAssignment] {
+        &self.assignments
+    }
+
+    /// Clone of this exec with the given per-segment row groups REMOVED from
+    /// every assignment (empty chunks dropped, partition count preserved).
+    /// Used by the histogram rewrite: interior row groups move to
+    /// `HistogramCountsExec`; the remainder keeps the decode path.
+    pub(crate) fn with_row_groups_removed(
+        &self,
+        remove: &std::collections::HashMap<usize, HashSet<usize>>,
+    ) -> Self {
+        let assignments: Vec<PartitionAssignment> = self
+            .assignments
+            .iter()
+            .map(|assignment| PartitionAssignment {
+                chunks: assignment
+                    .chunks
+                    .iter()
+                    .filter_map(|chunk| {
+                        let kept: Vec<usize> = match remove.get(&chunk.segment_idx) {
+                            Some(gone) => chunk
+                                .row_group_indices
+                                .iter()
+                                .copied()
+                                .filter(|rg| !gone.contains(rg))
+                                .collect(),
+                            None => chunk.row_group_indices.clone(),
+                        };
+                        (!kept.is_empty()).then(|| SegmentChunk {
+                            segment_idx: chunk.segment_idx,
+                            doc_min: chunk.doc_min,
+                            doc_max: chunk.doc_max,
+                            row_group_indices: kept,
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+        QueryShardExec {
+            config: Arc::clone(&self.config),
+            full_schema: self.full_schema.clone(),
+            projected_schema: self.projected_schema.clone(),
+            projection: self.projection.clone(),
+            assignments,
+            properties: Arc::clone(&self.properties),
+            predicate: self.predicate.clone(),
+            metrics: ExecutionPlanMetricsSet::new(),
+            inner_parquet_metrics: Arc::clone(&self.inner_parquet_metrics),
+            io_stats: Arc::clone(&self.io_stats),
+            row_id_output_index: self.row_id_output_index,
+            dynamic_filters: self.dynamic_filters.clone(),
+            advertised_ordering: self.advertised_ordering.clone(),
+        }
     }
 
     /// Rebuild this exec with accepted dynamic filters attached. `QueryShardExec`
@@ -862,6 +952,8 @@ mod tests {
             prune_tree_config: None,
             sort_fields: vec![],
             sort_orders: vec![],
+            sort_range_within_rgs: None,
+            sort_topk_truncate: None,
             cancellation_token: None,
         }
     }

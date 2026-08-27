@@ -119,6 +119,13 @@ pub struct StreamMetrics {
     /// RGs that became prunable only after the filter tightened further between
     /// prefetch (which runs ~1 RG ahead) and processing.
     pub dynamic_filter_rg_pruned_at_poll: Option<Count>,
+    /// Row groups answered purely from the index for count-only shapes: the
+    /// timestamp range residual was a footer-stats tautology (WITHIN) and the
+    /// candidate cardinality was emitted with no parquet read or decode.
+    pub rg_count_from_index: Option<Count>,
+    /// Row groups whose candidate bitmap was truncated to the top-K budget
+    /// before decode (single-key sort on the leading sort field, WITHIN RG).
+    pub rg_topk_truncated: Option<Count>,
     /// Object-store read wall-time accumulator, shared across all RG readers
     /// within this partition.
     pub io_stats: Option<Arc<ReadIoStats>>,
@@ -167,6 +174,8 @@ impl StreamMetrics {
             init_prefetch_time: None,
             dynamic_filter_rg_pruned_at_prefetch: None,
             dynamic_filter_rg_pruned_at_poll: None,
+            rg_count_from_index: None,
+            rg_topk_truncated: None,
             io_stats: None,
             inner_parquet_metrics: None,
         }
@@ -211,6 +220,8 @@ pub struct PartitionMetrics {
     pub init_prefetch_time: Time,
     pub dynamic_filter_rg_pruned_at_prefetch: Count,
     pub dynamic_filter_rg_pruned_at_poll: Count,
+    pub rg_count_from_index: Count,
+    pub rg_topk_truncated: Count,
 }
 
 impl PartitionMetrics {
@@ -260,6 +271,8 @@ impl PartitionMetrics {
                 .subset_time("init_prefetch_time", partition),
             dynamic_filter_rg_pruned_at_prefetch: counter("dynamic_filter_rg_pruned_at_prefetch"),
             dynamic_filter_rg_pruned_at_poll: counter("dynamic_filter_rg_pruned_at_poll"),
+            rg_count_from_index: counter("rg_count_from_index"),
+            rg_topk_truncated: counter("rg_topk_truncated"),
         }
     }
 
@@ -305,6 +318,8 @@ impl PartitionMetrics {
             init_prefetch_time: Some(self.init_prefetch_time),
             dynamic_filter_rg_pruned_at_prefetch: Some(self.dynamic_filter_rg_pruned_at_prefetch),
             dynamic_filter_rg_pruned_at_poll: Some(self.dynamic_filter_rg_pruned_at_poll),
+            rg_count_from_index: Some(self.rg_count_from_index),
+            rg_topk_truncated: Some(self.rg_topk_truncated),
             io_stats: Some(Arc::new(ReadIoStats::default())),
             inner_parquet_metrics,
         }

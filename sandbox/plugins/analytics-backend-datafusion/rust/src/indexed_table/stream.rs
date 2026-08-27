@@ -87,6 +87,34 @@ struct PrefetchedRowGroup {
     prefetched: PrefetchedRg,
 }
 
+/// Truncate a sort-ordered RG's candidate bitmap to the `budget` candidates
+/// that can still reach a global top-K: the LAST `budget` set bits when
+/// `keep_last`, else the FIRST `budget`. Returns true when bits were removed.
+pub(crate) fn truncate_candidates_for_topk(
+    candidates: &mut roaring::RoaringBitmap,
+    keep_last: bool,
+    budget: u64,
+) -> bool {
+    let len = candidates.len();
+    if budget == 0 || len <= budget {
+        return false;
+    }
+    if keep_last {
+        // Drop the first `len - budget` candidates: boundary is the
+        // (len - budget - 1)-th (0-based) smallest set bit.
+        if let Some(boundary) = candidates.select((len - budget - 1) as u32) {
+            candidates.remove_range(0..=boundary);
+            return true;
+        }
+    } else if let Some(boundary) = candidates.select((budget - 1) as u32) {
+        if boundary < u32::MAX {
+            candidates.remove_range(boundary + 1..);
+            return true;
+        }
+    }
+    false
+}
+
 /// Outcome of one prefetch task.
 enum PrefetchOutcome {
     /// RG fetched with a non-empty candidate set.
@@ -97,6 +125,19 @@ enum PrefetchOutcome {
     /// RG excluded by the dynamic filter at prefetch time, before the Lucene
     /// eval ran. Attributed to `dynamic_filter_rg_pruned_at_prefetch`.
     Pruned,
+    /// Count-only WITHIN fast path: the exact number of matching docs for
+    /// `rgs` row group(s), produced with no bitset materialization and no
+    /// parquet read. `IndexedStream` emits it as a zero-column row-count
+    /// batch.
+    Counted { docs: u64, rgs: usize },
+}
+
+/// What `poll_next_row_group` yields to the stream.
+enum RgYield {
+    /// Normal path: decode this prefetched row group via parquet.
+    Decode(PrefetchedRowGroup),
+    /// Count-only fast path: emit `docs` rows for `rgs` row group(s).
+    Counted { docs: u64, rgs: usize },
 }
 
 type PrefetchResult = std::result::Result<PrefetchOutcome, String>;
@@ -138,6 +179,15 @@ struct IndexReader {
     /// Per-query cancellation token. Checked before each row group is dispatched
     /// and before the evaluator runs in a queued blocking job. `None` disables cancellation.
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
+    /// Row-group indices eligible for the count-only WITHIN fast path
+    /// (count shape + tautological sort-range residual). For these the
+    /// reader asks the evaluator for a cardinality instead of a bitset.
+    count_only_rgs: Arc<std::collections::HashSet<usize>>,
+    /// True when EVERY row group of this chunk is count-only: the reader
+    /// issues ONE `count_docs_range` over the whole chunk doc range. When
+    /// the chunk covers a whole segment this lets the Java side answer via
+    /// `Weight#count` (e.g. TermQuery docFreq) in O(1).
+    whole_chunk_count: bool,
 }
 
 impl IndexReader {
@@ -152,7 +202,14 @@ impl IndexReader {
         metadata: Option<Arc<ParquetMetaData>>,
         dynamic_filter_rg_pruned_at_prefetch: Option<datafusion::physical_plan::metrics::Count>,
         cancellation_token: Option<tokio_util::sync::CancellationToken>,
+        count_only_rgs: std::collections::HashSet<usize>,
     ) -> Self {
+        let whole_chunk_count = !row_groups.is_empty()
+            && !count_only_rgs.is_empty()
+            && row_groups
+                .iter()
+                .all(|rg| count_only_rgs.contains(&rg.index));
+        let count_only_rgs = Arc::new(count_only_rgs);
         Self {
             evaluator,
             row_groups,
@@ -168,6 +225,8 @@ impl IndexReader {
             dynamic_prune_ctx: None,
             dynamic_filter_rg_pruned_at_prefetch,
             cancellation_token,
+            count_only_rgs,
+            whole_chunk_count,
         }
     }
 
@@ -184,6 +243,7 @@ impl IndexReader {
     /// (empty candidate set): it means the dynamic filter excluded the RG
     /// before the Lucene eval ran, so it must be attributed to the
     /// prefetch-phase prune counter rather than `rg_skipped`.
+    #[allow(clippy::too_many_arguments)]
     fn fetch_row_group(
         evaluator: &Arc<dyn RowGroupBitsetSource>,
         row_groups: &[RowGroupInfo],
@@ -194,9 +254,36 @@ impl IndexReader {
             Arc<ParquetMetaData>,
         )>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        count_only_rgs: &std::collections::HashSet<usize>,
+        whole_chunk_count: bool,
     ) -> std::result::Result<PrefetchOutcome, String> {
         if rg_idx >= row_groups.len() {
             return Ok(PrefetchOutcome::Empty);
+        }
+
+        // Whole-chunk count: every RG in this chunk is count-only, so issue a
+        // single `count_docs_range` over the entire chunk doc range. When the
+        // chunk covers a whole segment, the accepting backend can answer via
+        // `Weight#count` (e.g. TermQuery docFreq) without touching postings.
+        // Unsupported (None) falls through to the normal per-RG flow.
+        if whole_chunk_count && rg_idx == 0 {
+            let first = &row_groups[0];
+            let last = &row_groups[row_groups.len() - 1];
+            let mut min_doc = first.first_row as i32;
+            let mut max_doc = (last.first_row + last.num_rows) as i32;
+            if let Some((range_min, range_max)) = doc_range {
+                min_doc = min_doc.max(range_min);
+                max_doc = max_doc.min(range_max);
+            }
+            if min_doc >= max_doc {
+                return Ok(PrefetchOutcome::Empty);
+            }
+            if let Some(docs) = evaluator.count_docs_range(min_doc, max_doc)? {
+                return Ok(PrefetchOutcome::Counted {
+                    docs,
+                    rgs: row_groups.len(),
+                });
+            }
         }
         // Bail before the expensive evaluator.prefetch_rg if the query was
         // cancelled after this blocking job was queued but before it started.
@@ -224,6 +311,14 @@ impl IndexReader {
                 return Ok(PrefetchOutcome::Empty);
             }
         }
+        // Per-RG count-only WITHIN fast path: cardinality instead of bitset.
+        // None = backend can't count cheaply → normal bitset prefetch below.
+        if count_only_rgs.contains(&rg.index) {
+            if let Some(docs) = evaluator.count_docs_range(min_doc, max_doc)? {
+                return Ok(PrefetchOutcome::Counted { docs, rgs: 1 });
+            }
+        }
+
         match evaluator.prefetch_rg(&rg, min_doc, max_doc)? {
             None => Ok(PrefetchOutcome::Empty),
             Some(prefetched) => Ok(PrefetchOutcome::Fetched(PrefetchedRowGroup {
@@ -247,6 +342,8 @@ impl IndexReader {
             _ => None,
         };
         let token = self.cancellation_token.clone();
+        let count_only_rgs = Arc::clone(&self.count_only_rgs);
+        let whole_chunk_count = self.whole_chunk_count;
         let handle = tokio::task::spawn_blocking(move || {
             Self::fetch_row_group(
                 &evaluator,
@@ -255,6 +352,8 @@ impl IndexReader {
                 doc_range,
                 prune,
                 token.as_ref(),
+                &count_only_rgs,
+                whole_chunk_count,
             )
         });
         self.pending_prefetch = Some(handle);
@@ -263,7 +362,7 @@ impl IndexReader {
     fn poll_next_row_group(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<Option<PrefetchedRowGroup>, DataFusionError>> {
+    ) -> Poll<std::result::Result<Option<RgYield>, DataFusionError>> {
         loop {
             // Bail before dispatching the next row group if the query is cancelled.
             if self.is_cancelled() {
@@ -275,10 +374,24 @@ impl IndexReader {
                 return Poll::Ready(Ok(None));
             }
             if let Some(result) = self.cached_result.take() {
+                if let Ok(PrefetchOutcome::Counted { docs, rgs }) = &result {
+                    let (docs, rgs) = (*docs, *rgs);
+                    if self.whole_chunk_count {
+                        // One count covered every RG in the chunk.
+                        self.current_rg_idx = self.row_groups.len();
+                    } else {
+                        self.current_rg_idx += 1;
+                        self.start_prefetch(self.current_rg_idx);
+                    }
+                    return Poll::Ready(Ok(Some(RgYield::Counted { docs, rgs })));
+                }
                 self.current_rg_idx += 1;
                 self.start_prefetch(self.current_rg_idx);
                 match result {
-                    Ok(PrefetchOutcome::Fetched(p)) => return Poll::Ready(Ok(Some(p))),
+                    Ok(PrefetchOutcome::Fetched(p)) => {
+                        return Poll::Ready(Ok(Some(RgYield::Decode(p))))
+                    }
+                    Ok(PrefetchOutcome::Counted { .. }) => unreachable!("handled above"),
                     Ok(PrefetchOutcome::Empty) => {
                         // RG had no candidates — skipped without a
                         // parquet read. Count for EXPLAIN ANALYZE.
@@ -403,6 +516,13 @@ pub struct IndexedExec {
     /// Cached per-segment arrow schema derived from parquet footer. Used by
     /// page pruning and dynamic filter to avoid repeated `parquet_to_arrow_schema`.
     pub(crate) seg_arrow_schema: SchemaRef,
+    /// Row-group indices whose sort-range residual is a footer-stats
+    /// tautology (WITHIN + null-free). For count-only shapes these emit the
+    /// candidate cardinality without a parquet read. Empty disables.
+    pub(crate) within_rgs: std::collections::HashSet<usize>,
+    /// Top-K candidate truncation `(keep_last, budget)` for WITHIN RGs on
+    /// single-key sorts over the leading sort field. `None` disables.
+    pub(crate) sort_topk_truncate: Option<(bool, usize)>,
 }
 
 impl fmt::Debug for IndexedExec {
@@ -466,6 +586,17 @@ impl ExecutionPlan for IndexedExec {
                 .take()
                 .ok_or_else(|| DataFusionError::Internal("evaluator already consumed".into()))?
         };
+        // Count-shape gate for the WITHIN fast path: zero projected output
+        // columns and no row-id emission. Only then may WITHIN row groups be
+        // answered by cardinality instead of decode.
+        let count_only_rgs = if self.schema.fields().is_empty()
+            && !self.emit_row_ids
+            && self.row_id_output_index.is_none()
+        {
+            self.within_rgs.clone()
+        } else {
+            std::collections::HashSet::new()
+        };
         let index_reader = IndexReader::new(
             evaluator,
             self.row_groups.clone(),
@@ -478,6 +609,7 @@ impl ExecutionPlan for IndexedExec {
                 .dynamic_filter_rg_pruned_at_prefetch
                 .clone(),
             self.cancellation_token.clone(),
+            count_only_rgs,
         );
         Ok(Box::pin(IndexedStream::new(
             self.schema.clone(),
@@ -501,6 +633,8 @@ impl ExecutionPlan for IndexedExec {
             self.row_id_output_index,
             self.dynamic_filter.clone(),
             self.seg_arrow_schema.clone(),
+            self.within_rgs.clone(),
+            self.sort_topk_truncate,
         )))
     }
 }
@@ -578,6 +712,11 @@ struct IndexedStream {
     /// was pushed. Owns its own snapshot generation tracking, so it must NOT be
     /// shared across sibling segment streams.
     dynamic_rg_pruner: Option<super::dynamic_filter::DynamicRgPruner>,
+    /// Row-group indices with a WITHIN (tautological) sort-range residual —
+    /// see `IndexedExec::within_rgs`.
+    within_rgs: std::collections::HashSet<usize>,
+    /// Top-K candidate truncation — see `IndexedExec::sort_topk_truncate`.
+    sort_topk_truncate: Option<(bool, usize)>,
 }
 
 impl IndexedStream {
@@ -604,6 +743,8 @@ impl IndexedStream {
         row_id_output_index: Option<usize>,
         dynamic_filter: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         seg_arrow_schema: SchemaRef,
+        within_rgs: std::collections::HashSet<usize>,
+        sort_topk_truncate: Option<(bool, usize)>,
     ) -> Self {
         let evaluator = Arc::clone(&index_reader.evaluator);
         let batch_coalescer = LimitedBatchCoalescer::new(schema.clone(), target_batch_size, None);
@@ -648,6 +789,8 @@ impl IndexedStream {
             emit_row_ids,
             row_id_output_index,
             dynamic_rg_pruner,
+            within_rgs,
+            sort_topk_truncate,
         }
     }
 
@@ -873,6 +1016,15 @@ impl Stream for IndexedStream {
 
         if !self.initialized {
             self.stream_start = Some(Instant::now());
+            // Attach the freshest dynamic-filter snapshot BEFORE the first
+            // prefetch. Chunk streams are chained, so every stream after the
+            // first initializes long after the TopK threshold has tightened —
+            // its first row group can then be pruned WITHOUT a Lucene eval.
+            // Previously init_prefetch ran with no snapshot, costing one full
+            // un-pruned Lucene bitmap per chunk (~one per segment per query).
+            if let Some(ref mut pruner) = self.dynamic_rg_pruner {
+                self.index_reader.dynamic_prune_ctx = pruner.current_pruning_predicate();
+            }
             let t0 = Instant::now();
             self.index_reader.init_prefetch();
             if let Some(ref t) = self.metrics.init_prefetch_time {
@@ -1036,8 +1188,84 @@ impl IndexedStream {
 
             // Poll for next row group
             match self.index_reader.poll_next_row_group(cx) {
-                Poll::Ready(Ok(Some(prefetched))) => {
-                    let rg = prefetched.rg;
+                Poll::Ready(Ok(Some(RgYield::Counted { docs, rgs }))) => {
+                    // Count-only WITHIN fast path: the exact answer for `rgs`
+                    // row group(s) with no bitset and no parquet read. Emit a
+                    // zero-column row-count batch straight into the coalescer.
+                    if let Some(ref c) = self.metrics.rg_processed {
+                        c.add(rgs);
+                    }
+                    if let Some(ref c) = self.metrics.rg_count_from_index {
+                        c.add(rgs);
+                    }
+                    if let Some(ref c) = self.metrics.rows_matched {
+                        c.add(docs as usize);
+                    }
+                    if docs > 0 {
+                        let options = datafusion::arrow::record_batch::RecordBatchOptions::new()
+                            .with_row_count(Some(docs as usize));
+                        let batch = match RecordBatch::try_new_with_options(
+                            self.schema.clone(),
+                            vec![],
+                            &options,
+                        ) {
+                            Ok(batch) => batch,
+                            Err(e) => {
+                                return Poll::Ready(Some(Err(DataFusionError::ArrowError(
+                                    Box::new(e),
+                                    None,
+                                ))))
+                            }
+                        };
+                        let t0 = Instant::now();
+                        let status = self.batch_coalescer.push_batch(batch);
+                        if let Some(ref t) = self.metrics.coalesce_time {
+                            t.add_duration(t0.elapsed());
+                        }
+                        if let Some(ref c) = self.metrics.batches_pre_coalesce {
+                            c.add(1);
+                        }
+                        match status {
+                            Ok(PushBatchStatus::Continue) => {}
+                            Ok(PushBatchStatus::LimitReached) => {
+                                if !self.coalescer_finished {
+                                    if let Err(e) = self.batch_coalescer.finish() {
+                                        return Poll::Ready(Some(Err(e)));
+                                    }
+                                    self.coalescer_finished = true;
+                                }
+                                self.upstream_done = true;
+                            }
+                            Err(e) => return Poll::Ready(Some(Err(e))),
+                        }
+                    }
+                    continue;
+                }
+                Poll::Ready(Ok(Some(RgYield::Decode(mut prefetched)))) => {
+                    let rg = prefetched.rg.clone();
+
+                    // Top-K candidate truncation: rows in this RG are stored
+                    // in catalog sort order and the RG is WITHIN (residual
+                    // tautology), so only the first/last `budget` candidates
+                    // can reach the global top-K. Shrinks the RowSelection —
+                    // and therefore the parquet decode — to at most `budget`
+                    // rows per RG. The prefetch-built mask buffer no longer
+                    // matches, so drop it (masks rebuild from candidates).
+                    if let Some((keep_last, budget)) = self.sort_topk_truncate {
+                        if self.within_rgs.contains(&rg.index) {
+                            let truncated = truncate_candidates_for_topk(
+                                &mut prefetched.prefetched.candidates,
+                                keep_last,
+                                budget as u64,
+                            );
+                            if truncated {
+                                prefetched.prefetched.mask_buffer = None;
+                                if let Some(ref c) = self.metrics.rg_topk_truncated {
+                                    c.add(1);
+                                }
+                            }
+                        }
+                    }
 
                     // Poll-phase dynamic-filter prune (backstop): the filter may
                     // have tightened further since this RG was prefetched (~1 RG
@@ -1074,6 +1302,63 @@ impl IndexedStream {
                     }
                     if let Some(ref counter) = self.metrics.rg_processed {
                         counter.add(1);
+                    }
+
+                    // Timestamp-WITHIN count shortcut: this RG's sort-column
+                    // footer stats are fully inside the query range and the
+                    // residual is that range alone, so every candidate row
+                    // matches. For count-only shapes (zero projected output
+                    // columns, no row-id emission) the RG's answer is just the
+                    // candidate cardinality — skip the parquet read entirely.
+                    if self.schema.fields().is_empty()
+                        && !self.emit_row_ids
+                        && self.row_id_output_index.is_none()
+                        && self.within_rgs.contains(&rg.index)
+                    {
+                        if let Some(ref counter) = self.metrics.rg_count_from_index {
+                            counter.add(1);
+                        }
+                        let matched = candidates.len() as usize;
+                        if matched > 0 {
+                            let options =
+                                datafusion::arrow::record_batch::RecordBatchOptions::new()
+                                    .with_row_count(Some(matched));
+                            let batch = match RecordBatch::try_new_with_options(
+                                self.schema.clone(),
+                                vec![],
+                                &options,
+                            ) {
+                                Ok(batch) => batch,
+                                Err(e) => {
+                                    return Poll::Ready(Some(Err(DataFusionError::ArrowError(
+                                        Box::new(e),
+                                        None,
+                                    ))))
+                                }
+                            };
+                            let t0 = Instant::now();
+                            let status = self.batch_coalescer.push_batch(batch);
+                            if let Some(ref t) = self.metrics.coalesce_time {
+                                t.add_duration(t0.elapsed());
+                            }
+                            if let Some(ref c) = self.metrics.batches_pre_coalesce {
+                                c.add(1);
+                            }
+                            match status {
+                                Ok(PushBatchStatus::Continue) => {}
+                                Ok(PushBatchStatus::LimitReached) => {
+                                    if !self.coalescer_finished {
+                                        if let Err(e) = self.batch_coalescer.finish() {
+                                            return Poll::Ready(Some(Err(e)));
+                                        }
+                                        self.coalescer_finished = true;
+                                    }
+                                    self.upstream_done = true;
+                                }
+                                Err(e) => return Poll::Ready(Some(Err(e))),
+                            }
+                        }
+                        continue;
                     }
 
                     self.current_rg_first_row = rg.first_row;
@@ -1237,6 +1522,32 @@ impl RecordBatchStream for IndexedStream {
 
 #[cfg(test)]
 mod tests {
+    use super::truncate_candidates_for_topk;
+
+    #[test]
+    fn topk_truncation_keeps_first_or_last_budget_candidates() {
+        use roaring::RoaringBitmap;
+        let base: RoaringBitmap = [3u32, 7, 8, 20, 21, 40].into_iter().collect();
+
+        let mut last = base.clone();
+        assert!(truncate_candidates_for_topk(&mut last, true, 2));
+        assert_eq!(last.iter().collect::<Vec<_>>(), vec![21, 40]);
+
+        let mut first = base.clone();
+        assert!(truncate_candidates_for_topk(&mut first, false, 2));
+        assert_eq!(first.iter().collect::<Vec<_>>(), vec![3, 7]);
+
+        // Budget >= cardinality: untouched.
+        let mut all = base.clone();
+        assert!(!truncate_candidates_for_topk(&mut all, true, 6));
+        assert_eq!(all, base);
+
+        // Zero budget: fail-closed no-op (never emit an empty selection here).
+        let mut zero = base.clone();
+        assert!(!truncate_candidates_for_topk(&mut zero, false, 0));
+        assert_eq!(zero, base);
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -1303,6 +1614,7 @@ mod tests {
             None,
             None,
             None,
+            std::collections::HashSet::new(),
         );
 
         // Poll the reader — should complete with an error within the timeout.
@@ -1426,6 +1738,7 @@ mod tests {
             None,
             None,
             Some(token.clone()),
+            std::collections::HashSet::new(),
         );
 
         // Drive the reader exactly like IndexedStream does. Records whether the

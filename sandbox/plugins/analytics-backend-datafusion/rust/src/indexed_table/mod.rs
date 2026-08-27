@@ -59,6 +59,7 @@ pub mod bool_tree;
 pub mod dynamic_filter;
 pub mod eval;
 pub mod ffm_callbacks;
+pub mod histogram;
 pub mod index;
 pub mod metrics;
 pub mod page_pruner;

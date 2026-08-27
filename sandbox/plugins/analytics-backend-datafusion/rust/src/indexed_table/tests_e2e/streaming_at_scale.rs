@@ -467,6 +467,8 @@ async fn run_large(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 
@@ -932,6 +934,8 @@ async fn run_large_partitioned(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
     let ctx = SessionContext::new();

@@ -38,12 +38,20 @@ type ReleaseProviderFn = unsafe extern "C" fn(i64, i32);
 /// `context_id` routes the upcall to the correct per-query Java handle.
 type CreateCollectorFn = unsafe extern "C" fn(i64, i32, i64, i32, i32) -> i32;
 type CollectDocsFn = unsafe extern "C" fn(i64, i32, i32, i32, *mut u64, i64) -> i64;
+/// `(context_id, collector_key, min_doc, max_doc) -> count | -1`.
+///
+/// Count-only fast path: Java counts matches (Weight#count when the range
+/// covers the whole leaf, cursor counting otherwise) without materializing
+/// or transferring a bitset. `-1` = unsupported/error → fall back to
+/// `collectDocs`.
+type CountDocsFn = unsafe extern "C" fn(i64, i32, i32, i32) -> i64;
 type ReleaseCollectorFn = unsafe extern "C" fn(i64, i32);
 
 static CREATE_PROVIDER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static RELEASE_PROVIDER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static CREATE_COLLECTOR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static COLLECT_DOCS: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+static COUNT_DOCS: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static RELEASE_COLLECTOR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Registered by Java at startup. Stores function pointers into atomic
@@ -58,6 +66,7 @@ pub unsafe extern "C" fn df_register_filter_tree_callbacks(
     release_provider: ReleaseProviderFn,
     create_collector: CreateCollectorFn,
     collect_docs: CollectDocsFn,
+    count_docs: CountDocsFn,
     release_collector: ReleaseCollectorFn,
 ) {
     // catch_unwind is defense-in-depth: atomic stores shouldn't panic,
@@ -70,6 +79,7 @@ pub unsafe extern "C" fn df_register_filter_tree_callbacks(
         RELEASE_PROVIDER.store(release_provider as *mut (), Ordering::Release);
         CREATE_COLLECTOR.store(create_collector as *mut (), Ordering::Release);
         COLLECT_DOCS.store(collect_docs as *mut (), Ordering::Release);
+        COUNT_DOCS.store(count_docs as *mut (), Ordering::Release);
         RELEASE_COLLECTOR.store(release_collector as *mut (), Ordering::Release);
     }));
 }
@@ -103,6 +113,14 @@ fn load_collect_docs() -> Result<CollectDocsFn, String> {
     }
     Ok(unsafe { std::mem::transmute::<*mut (), CollectDocsFn>(p) })
 }
+fn load_count_docs() -> Option<CountDocsFn> {
+    let p = COUNT_DOCS.load(Ordering::Acquire);
+    if p.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<*mut (), CountDocsFn>(p) })
+    }
+}
 fn load_release_collector() -> Option<ReleaseCollectorFn> {
     let p = RELEASE_COLLECTOR.load(Ordering::Acquire);
     if p.is_null() {
@@ -131,6 +149,16 @@ impl ProviderHandle {
     #[cfg(test)]
     pub fn new_for_test(key: i32) -> Self {
         ProviderHandle { context_id: 0, key }
+    }
+
+    /// Sentinel handle for a failed lazy initialization (`key() < 0`).
+    /// Callers must check `key()` before use; Drop calls `releaseProvider`
+    /// with the negative key, which the Java side ignores.
+    pub(crate) fn new_dead() -> Self {
+        ProviderHandle {
+            context_id: 0,
+            key: -1,
+        }
     }
 }
 
@@ -209,6 +237,22 @@ impl FfmSegmentCollector {
 }
 
 impl RowGroupDocsCollector for FfmSegmentCollector {
+    fn count_docs(&self, min_doc: i32, max_doc: i32) -> Result<Option<u64>, String> {
+        if max_doc <= min_doc {
+            return Ok(Some(0));
+        }
+        // Older Java sides may not register the count slot — fall back.
+        let Some(count_fn) = load_count_docs() else {
+            return Ok(None);
+        };
+        let ret = unsafe { count_fn(self.context_id, self.key, min_doc, max_doc) };
+        if ret < 0 {
+            // Unsupported or error — caller falls back to the bitset path.
+            return Ok(None);
+        }
+        Ok(Some(ret as u64))
+    }
+
     fn collect_packed_u64_bitset(
         &self,
         min_doc: i32,

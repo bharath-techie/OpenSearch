@@ -25,11 +25,12 @@ use datafusion::{
     arrow::datatypes::SchemaRef,
     catalog::Session,
     common::tree_node::{TreeNode, TreeNodeRecursion},
-    common::DataFusionError,
+    common::{DataFusionError, ScalarValue},
     datasource::{TableProvider, TableType},
     execution::memory_pool::MemoryPool,
     execution::object_store::ObjectStoreUrl,
-    logical_expr::Expr,
+    logical_expr::{Expr, LogicalPlan, Operator},
+    parquet::arrow::arrow_reader::statistics::StatisticsConverter,
     physical_expr::expressions::Column,
     physical_expr::PhysicalExpr,
     physical_optimizer::pruning::PruningPredicate,
@@ -160,6 +161,221 @@ pub async fn execute_indexed_query(
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
+/// Inclusive i64 range extracted from top-level conjunctive comparisons on the leading
+/// `index.sort.field`. This is intentionally narrow: OR/NOT, casts, non-i64 literals, and
+/// non-comparison predicates are left untouched (fail closed to the normal decode path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SortRange {
+    column: String,
+    lower: Option<i64>,
+    upper: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeBound {
+    Lower(i64),
+    Upper(i64),
+}
+
+pub(crate) fn scalar_as_i64(value: &ScalarValue) -> Option<i64> {
+    match value {
+        ScalarValue::Int64(Some(v))
+        | ScalarValue::TimestampSecond(Some(v), _)
+        | ScalarValue::TimestampMillisecond(Some(v), _)
+        | ScalarValue::TimestampMicrosecond(Some(v), _)
+        | ScalarValue::TimestampNanosecond(Some(v), _) => Some(*v),
+        ScalarValue::UInt64(Some(v)) => i64::try_from(*v).ok(),
+        _ => None,
+    }
+}
+
+fn comparison_bound(expr: &Expr, column: &str) -> Option<RangeBound> {
+    let Expr::BinaryExpr(binary) = expr else {
+        return None;
+    };
+
+    let normalize = |op: Operator, value: i64, column_on_left: bool| -> Option<RangeBound> {
+        let op = if column_on_left {
+            op
+        } else {
+            match op {
+                Operator::Gt => Operator::Lt,
+                Operator::GtEq => Operator::LtEq,
+                Operator::Lt => Operator::Gt,
+                Operator::LtEq => Operator::GtEq,
+                _ => return None,
+            }
+        };
+        match op {
+            Operator::Gt => value.checked_add(1).map(RangeBound::Lower),
+            Operator::GtEq => Some(RangeBound::Lower(value)),
+            Operator::Lt => value.checked_sub(1).map(RangeBound::Upper),
+            Operator::LtEq => Some(RangeBound::Upper(value)),
+            _ => None,
+        }
+    };
+
+    match (binary.left.as_ref(), binary.right.as_ref()) {
+        (Expr::Column(c), Expr::Literal(v, _)) if c.name == column => {
+            normalize(binary.op, scalar_as_i64(v)?, true)
+        }
+        (Expr::Literal(v, _), Expr::Column(c)) if c.name == column => {
+            normalize(binary.op, scalar_as_i64(v)?, false)
+        }
+        _ => None,
+    }
+}
+
+fn extract_sort_range(plan: &LogicalPlan, column: &str) -> Option<SortRange> {
+    let mut lower: Option<i64> = None;
+    let mut upper: Option<i64> = None;
+    let mut found = false;
+    let result = plan.apply(|node| {
+        if let LogicalPlan::Filter(filter) = node {
+            for conjunct in datafusion_expr::utils::split_conjunction(&filter.predicate) {
+                match comparison_bound(conjunct, column) {
+                    Some(RangeBound::Lower(value)) => {
+                        lower = Some(lower.map_or(value, |current| current.max(value)));
+                        found = true;
+                    }
+                    Some(RangeBound::Upper(value)) => {
+                        upper = Some(upper.map_or(value, |current| current.min(value)));
+                        found = true;
+                    }
+                    None => {}
+                }
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    if result.is_err() || !found || lower.zip(upper).is_some_and(|(lo, hi)| lo > hi) {
+        return None;
+    }
+    Some(SortRange {
+        column: column.to_string(),
+        lower,
+        upper,
+    })
+}
+
+/// Row-group indices in `segment` whose sort-column FOOTER statistics prove the
+/// row group lies fully WITHIN `range` with zero nulls. Uses only footer
+/// `ColumnChunkMetaData` statistics (always fetched with the metadata — no page
+/// index IO). Fail-closed per row group: missing stats, unsupported types, or
+/// any nulls exclude that row group from the set.
+fn segment_within_rgs(range: &SortRange, segment: &SegmentFileInfo) -> HashSet<usize> {
+    let mut within = HashSet::new();
+    let converter = match StatisticsConverter::try_new(
+        &range.column,
+        &segment.arrow_schema,
+        segment.metadata.file_metadata().schema_descr(),
+    ) {
+        Ok(converter) => converter,
+        Err(_) => return within,
+    };
+    if converter.parquet_column_index().is_none() {
+        return within;
+    }
+    let row_groups = segment.metadata.row_groups();
+    let mins = match converter.row_group_mins(row_groups.iter()) {
+        Ok(values) => values,
+        Err(_) => return within,
+    };
+    let maxes = match converter.row_group_maxes(row_groups.iter()) {
+        Ok(values) => values,
+        Err(_) => return within,
+    };
+    let null_counts = match converter.row_group_null_counts(row_groups.iter()) {
+        Ok(values) => values,
+        Err(_) => return within,
+    };
+    if mins.len() != row_groups.len()
+        || maxes.len() != row_groups.len()
+        || null_counts.len() != row_groups.len()
+    {
+        return within;
+    }
+    for rg in 0..row_groups.len() {
+        let minimum = ScalarValue::try_from_array(&*mins, rg)
+            .ok()
+            .as_ref()
+            .and_then(scalar_as_i64);
+        let maximum = ScalarValue::try_from_array(&*maxes, rg)
+            .ok()
+            .as_ref()
+            .and_then(scalar_as_i64);
+        let null_free = !datafusion::arrow::array::Array::is_null(&null_counts, rg)
+            && null_counts.value(rg) == 0;
+        if let (Some(minimum), Some(maximum), true) = (minimum, maximum, null_free) {
+            if range.lower.is_none_or(|lower| lower <= minimum)
+                && range.upper.is_none_or(|upper| maximum <= upper)
+            {
+                within.insert(rg);
+            }
+        }
+    }
+    within
+}
+
+/// Count-fast-path tree shape check for `FilterClass::SingleCollector`.
+///
+/// The top-level conjunction may contain only Lucene-evaluated leaves
+/// (`Collector`, `DelegationPossible`) and range comparisons on the sort
+/// column. Combined with a WITHIN row group, the sort-range conjuncts are
+/// tautologies and the count is exactly the Lucene leaf's cardinality (or
+/// the row count when there is no Lucene leaf).
+///
+/// The evaluator can count through at most ONE Lucene leaf (no bitset
+/// intersection on the count path), so the shape is restricted to:
+/// - one `Collector` and zero `DelegationPossible`, or
+/// - zero `Collector` and at most one `DelegationPossible`.
+/// OR/NOT anywhere fails closed.
+fn count_tree_shape_supported(tree: &BoolNode, column: &str) -> bool {
+    fn conjuncts_ok(node: &BoolNode, column: &str) -> bool {
+        match node {
+            BoolNode::And(children) => children.iter().all(|c| conjuncts_ok(c, column)),
+            BoolNode::Collector { .. } | BoolNode::DelegationPossible { .. } => true,
+            BoolNode::Predicate(expr) => physical_expr_is_sort_range_only(expr, column),
+            BoolNode::Or(_) | BoolNode::Not(_) => false,
+        }
+    }
+    if !conjuncts_ok(tree, column) {
+        return false;
+    }
+    let collectors = tree.collector_leaf_count();
+    let delegations = tree.delegation_possible_leaf_count();
+    (collectors == 1 && delegations == 0) || (collectors == 0 && delegations <= 1)
+}
+
+/// True when `expr` consists SOLELY of conjunctive range comparisons
+/// (`>`, `>=`, `<`, `<=`) between `column` and integer/timestamp literals.
+/// Only then is the residual a tautology on a WITHIN row group, making the
+/// count shortcut safe. OR/NOT, casts, other columns, and non-comparison
+/// operators all return false (fail closed).
+fn physical_expr_is_sort_range_only(expr: &Arc<dyn PhysicalExpr>, column: &str) -> bool {
+    use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
+    let Some(binary) = expr.as_ref().downcast_ref::<BinaryExpr>() else {
+        return false;
+    };
+    match binary.op() {
+        Operator::And => {
+            physical_expr_is_sort_range_only(binary.left(), column)
+                && physical_expr_is_sort_range_only(binary.right(), column)
+        }
+        Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq => {
+            let column_vs_literal = |a: &Arc<dyn PhysicalExpr>, b: &Arc<dyn PhysicalExpr>| {
+                a.downcast_ref::<Column>()
+                    .is_some_and(|c| c.name() == column)
+                    && b.downcast_ref::<Literal>()
+                        .is_some_and(|l| scalar_as_i64(l.value()).is_some())
+            };
+            column_vs_literal(binary.left(), binary.right())
+                || column_vs_literal(binary.right(), binary.left())
+        }
+        _ => false,
+    }
+}
+
 /// Result of walking a logical plan looking for the leading top-of-plan ORDER BY.
 ///
 /// `column` is the bare column name (no qualifier — we compare against `index.sort.field`
@@ -168,6 +384,14 @@ pub async fn execute_indexed_query(
 pub(crate) struct TopSort {
     pub column: String,
     pub descending: bool,
+    /// Total row budget of the enclosing top-K: `Sort.fetch` when the
+    /// optimizer pushed the limit into the sort, else fetch+skip of the
+    /// Limit above the Sort. `None` when unbounded.
+    pub fetch: Option<usize>,
+    /// True when the Sort has exactly one sort key. Per-RG candidate
+    /// truncation is only valid for a single-key sort (secondary keys can
+    /// demand more than `fetch` rows from one RG on ties).
+    pub single_key: bool,
 }
 
 /// Walk through the top of a logical plan to find the leading sort expression.
@@ -181,6 +405,13 @@ pub(crate) struct TopSort {
 pub(crate) fn analyze_top_sort(plan: &datafusion::logical_expr::LogicalPlan) -> Option<TopSort> {
     use datafusion::logical_expr::{Expr, LogicalPlan};
     let mut current = plan;
+    let mut limit_budget: Option<usize> = None;
+    fn expr_as_usize(e: Option<&Expr>) -> Option<usize> {
+        match e {
+            Some(Expr::Literal(v, _)) => scalar_as_i64(v).and_then(|n| usize::try_from(n).ok()),
+            _ => None,
+        }
+    }
     loop {
         match current {
             LogicalPlan::Sort(s) => {
@@ -192,10 +423,19 @@ pub(crate) fn analyze_top_sort(plan: &datafusion::logical_expr::LogicalPlan) -> 
                 return Some(TopSort {
                     column: col,
                     descending: !leading.asc,
+                    fetch: s.fetch.or(limit_budget),
+                    single_key: s.expr.len() == 1,
                 });
             }
             LogicalPlan::Projection(p) => current = p.input.as_ref(),
-            LogicalPlan::Limit(l) => current = l.input.as_ref(),
+            LogicalPlan::Limit(l) => {
+                // Budget = fetch + skip (rows the top-K must fully produce).
+                // A Limit with no literal fetch leaves the budget unbounded.
+                limit_budget = expr_as_usize(l.fetch.as_deref()).map(|fetch| {
+                    fetch.saturating_add(expr_as_usize(l.skip.as_deref()).unwrap_or(0))
+                });
+                current = l.input.as_ref();
+            }
             LogicalPlan::SubqueryAlias(a) => current = a.input.as_ref(),
             LogicalPlan::Distinct(d) => match d {
                 datafusion::logical_expr::Distinct::All(input) => current = input.as_ref(),
@@ -463,11 +703,17 @@ impl TableProvider for PlaceholderProvider {
 mod tests {
     use super::*;
     use crate::indexed_table::bool_tree::BoolNode;
+    use datafusion::arrow::array::{ArrayRef, Int64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::ScalarValue;
     use datafusion::logical_expr::Operator;
+    use datafusion::parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+    use datafusion::parquet::arrow::ArrowWriter;
+    use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties};
     use datafusion::physical_expr::expressions::{BinaryExpr, Column as PhysColumn, Literal};
     use datafusion::physical_expr::PhysicalExpr;
+    use object_store::path::Path as ObjectPath;
     use std::sync::Arc;
 
     fn collector(id: i32) -> BoolNode {
@@ -612,9 +858,219 @@ mod tests {
     }
 
     #[test]
+    fn analyze_top_sort_extracts_fetch_and_single_key() {
+        let plan = build_logical_plan("SELECT id FROM t ORDER BY id DESC LIMIT 100");
+        let top = analyze_top_sort(&plan).expect("sort");
+        assert_eq!(top.column, "id");
+        assert!(top.descending);
+        assert_eq!(top.fetch, Some(100));
+        assert!(top.single_key);
+
+        let two = build_logical_plan("SELECT id, v FROM t ORDER BY id DESC, v ASC LIMIT 10");
+        let top2 = analyze_top_sort(&two).expect("sort");
+        assert!(!top2.single_key);
+
+        let unbounded = build_logical_plan("SELECT id FROM t ORDER BY id DESC");
+        let top3 = analyze_top_sort(&unbounded).expect("sort");
+        assert_eq!(top3.fetch, None);
+    }
+
+    #[test]
     fn analyze_top_sort_returns_none_when_no_sort() {
         let plan = build_logical_plan("SELECT id FROM t");
         assert!(analyze_top_sort(&plan).is_none());
+    }
+
+    // ── fully-covered sort-range simplification ───────────────────────
+
+    #[test]
+    fn extracts_inclusive_and_exclusive_sort_range() {
+        let plan = build_logical_plan("SELECT count(*) FROM t WHERE ts > 9 AND ts < 101");
+        let range = extract_sort_range(&plan, "ts").expect("range");
+        assert_eq!(range.lower, Some(10));
+        assert_eq!(range.upper, Some(100));
+    }
+
+    fn segment_with_timestamps(values: Vec<Option<i64>>) -> SegmentFileInfo {
+        let schema = Arc::new(Schema::new(vec![Field::new("ts", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(values.clone())) as ArrayRef],
+        )
+        .unwrap();
+        let properties = WriterProperties::builder()
+            .set_max_row_group_size(4)
+            .set_data_page_row_count_limit(2)
+            .set_write_batch_size(2)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .build();
+        let mut bytes = Vec::new();
+        let mut writer =
+            ArrowWriter::try_new(&mut bytes, Arc::clone(&schema), Some(properties)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let bytes = bytes::Bytes::from(bytes);
+        let metadata =
+            ArrowReaderMetadata::load(&bytes, ArrowReaderOptions::new().with_page_index(true))
+                .unwrap()
+                .metadata()
+                .clone();
+        let non_null: Vec<i64> = values.into_iter().flatten().collect();
+        SegmentFileInfo {
+            writer_generation: 1,
+            max_doc: batch.num_rows() as i64,
+            object_path: ObjectPath::from("test.parquet"),
+            parquet_size: 0,
+            row_groups: Vec::new(),
+            metadata,
+            arrow_schema: schema,
+            global_base: 0,
+            sort_min: non_null
+                .iter()
+                .min()
+                .copied()
+                .map(|v| ScalarValue::Int64(Some(v))),
+            sort_max: non_null
+                .iter()
+                .max()
+                .copied()
+                .map(|v| ScalarValue::Int64(Some(v))),
+        }
+    }
+
+    #[test]
+    fn count_tree_shape_accepts_single_lucene_leaf_plus_range() {
+        let ts_ge: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(PhysColumn::new("ts", 0)),
+            Operator::GtEq,
+            Arc::new(Literal::new(ScalarValue::Int64(Some(5)))),
+        ));
+        let pod_eq: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(PhysColumn::new("pod", 1)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int64(Some(3)))),
+        ));
+        // q3 shape: correctness collector + ts range.
+        let q3 = BoolNode::And(vec![
+            BoolNode::Collector { annotation_id: 1 },
+            BoolNode::Predicate(Arc::clone(&ts_ge)),
+        ]);
+        assert!(count_tree_shape_supported(&q3, "ts"));
+        // q7 shape: one delegation-possible equality + ts range.
+        let q7 = BoolNode::And(vec![
+            BoolNode::DelegationPossible {
+                annotation_id: 2,
+                original_expr: Arc::clone(&pod_eq),
+            },
+            BoolNode::Predicate(Arc::clone(&ts_ge)),
+        ]);
+        assert!(count_tree_shape_supported(&q7, "ts"));
+        // Non-range plain predicate → reject.
+        let bad = BoolNode::And(vec![
+            BoolNode::Collector { annotation_id: 1 },
+            BoolNode::Predicate(Arc::clone(&pod_eq)),
+        ]);
+        assert!(!count_tree_shape_supported(&bad, "ts"));
+        // Two Lucene leaves → intersection needed → reject.
+        let two = BoolNode::And(vec![
+            BoolNode::Collector { annotation_id: 1 },
+            BoolNode::DelegationPossible {
+                annotation_id: 2,
+                original_expr: Arc::clone(&pod_eq),
+            },
+            BoolNode::Predicate(Arc::clone(&ts_ge)),
+        ]);
+        assert!(!count_tree_shape_supported(&two, "ts"));
+        // OR anywhere → reject.
+        let or = BoolNode::And(vec![
+            BoolNode::Or(vec![BoolNode::Collector { annotation_id: 1 }]),
+            BoolNode::Predicate(Arc::clone(&ts_ge)),
+        ]);
+        assert!(!count_tree_shape_supported(&or, "ts"));
+    }
+
+    #[test]
+    fn within_rgs_classified_from_footer_row_group_stats() {
+        // 12 rows, RG size 4: RG0 = [0..3], RG1 = [4..7], RG2 = [8..11].
+        let segment = segment_with_timestamps((0..12).map(Some).collect());
+        let range = |lower: Option<i64>, upper: Option<i64>| SortRange {
+            column: "ts".to_string(),
+            lower,
+            upper,
+        };
+        assert_eq!(
+            segment_within_rgs(&range(Some(2), Some(9)), &segment),
+            HashSet::from([1])
+        );
+        assert_eq!(
+            segment_within_rgs(&range(Some(0), Some(11)), &segment),
+            HashSet::from([0, 1, 2])
+        );
+        assert_eq!(
+            segment_within_rgs(&range(None, Some(6)), &segment),
+            HashSet::from([0])
+        );
+        assert_eq!(
+            segment_within_rgs(&range(Some(20), Some(30)), &segment),
+            HashSet::new()
+        );
+        // Column absent from the file → empty (fail closed).
+        let missing = SortRange {
+            column: "no_such_column".to_string(),
+            lower: Some(0),
+            upper: Some(11),
+        };
+        assert_eq!(segment_within_rgs(&missing, &segment), HashSet::new());
+    }
+
+    #[test]
+    fn within_rgs_reject_null_bearing_row_groups() {
+        let mut values: Vec<Option<i64>> = (0..12).map(Some).collect();
+        values[5] = None; // RG1 carries a null
+        let segment = segment_with_timestamps(values);
+        let range = SortRange {
+            column: "ts".to_string(),
+            lower: Some(0),
+            upper: Some(11),
+        };
+        assert_eq!(segment_within_rgs(&range, &segment), HashSet::from([0, 2]));
+    }
+
+    #[test]
+    fn residual_sort_range_only_accepts_bounds_rejects_other_shapes() {
+        let ts = || -> Arc<dyn PhysicalExpr> { Arc::new(PhysColumn::new("ts", 0)) };
+        let lit = |v: i64| -> Arc<dyn PhysicalExpr> {
+            Arc::new(Literal::new(ScalarValue::Int64(Some(v))))
+        };
+        let ge: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(ts(), Operator::GtEq, lit(5)));
+        let lt: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(ts(), Operator::Lt, lit(10)));
+        let both: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::clone(&ge),
+            Operator::And,
+            Arc::clone(&lt),
+        ));
+        assert!(physical_expr_is_sort_range_only(&ge, "ts"));
+        assert!(physical_expr_is_sort_range_only(&both, "ts"));
+        // Reversed operand order is also a plain bound.
+        let rev: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(lit(5), Operator::Lt, ts()));
+        assert!(physical_expr_is_sort_range_only(&rev, "ts"));
+        // Wrong column name.
+        assert!(!physical_expr_is_sort_range_only(&ge, "other"));
+        // OR of bounds is not a conjunctive range.
+        let or: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::clone(&ge),
+            Operator::Or,
+            Arc::clone(&lt),
+        ));
+        assert!(!physical_expr_is_sort_range_only(&or, "ts"));
+        // Extra equality on another column poisons the conjunction.
+        let other: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(PhysColumn::new("price", 1)),
+            Operator::Eq,
+            lit(3),
+        ));
+        let mixed: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(both, Operator::And, other));
+        assert!(!physical_expr_is_sort_range_only(&mixed, "ts"));
     }
 
     // ── collect_plan_column_names ─────────────────────────────────────
@@ -667,6 +1123,8 @@ mod tests {
         let top = TopSort {
             column: "id".to_string(),
             descending: true,
+            fetch: None,
+            single_key: true,
         };
         let fields = vec!["id".to_string()];
         let orders = vec!["asc".to_string()];
@@ -678,6 +1136,8 @@ mod tests {
         let top = TopSort {
             column: "id".to_string(),
             descending: false,
+            fetch: None,
+            single_key: true,
         };
         let fields = vec!["id".to_string()];
         let orders = vec!["asc".to_string()];
@@ -689,6 +1149,8 @@ mod tests {
         let top = TopSort {
             column: "id".to_string(),
             descending: false,
+            fetch: None,
+            single_key: true,
         };
         let fields = vec!["id".to_string()];
         let orders = vec!["desc".to_string()];
@@ -707,6 +1169,8 @@ mod tests {
         let top = TopSort {
             column: "id".to_string(),
             descending: true,
+            fetch: None,
+            single_key: true,
         };
         assert!(!should_reverse_segments(Some(&top), &[], &[]));
     }
@@ -718,6 +1182,8 @@ mod tests {
         let top = TopSort {
             column: "b".to_string(),
             descending: true,
+            fetch: None,
+            single_key: true,
         };
         let fields = vec!["a".to_string(), "b".to_string()];
         let orders = vec!["asc".to_string(), "asc".to_string()];
@@ -731,6 +1197,8 @@ mod tests {
         let top = TopSort {
             column: "ID".to_string(),
             descending: true,
+            fetch: None,
+            single_key: true,
         };
         let fields = vec!["id".to_string()];
         let orders = vec!["asc".to_string()];
@@ -937,7 +1405,7 @@ async unsafe fn execute_indexed_with_context_inner(
     let state = ctx.state();
     let metadata_cache = state.runtime_env().cache_manager.get_file_metadata_cache();
 
-    let (segments, schema) = build_segments(
+    let (mut segments, schema) = build_segments(
         &state,
         Arc::clone(&store),
         object_metas.as_ref(),
@@ -964,6 +1432,14 @@ async unsafe fn execute_indexed_with_context_inner(
     let plan = Plan::decode(substrait_bytes.as_slice())
         .map_err(|e| DataFusionError::Execution(format!("decode substrait: {}", e)))?;
     let logical_plan = from_substrait_plan(&ctx.state(), &plan).await?;
+    // Candidate timestamp fast-path range: top-level conjunctive bounds on the
+    // leading `index.sort.field`. Whether it activates anything is decided
+    // later per ROW GROUP from footer statistics (`segment_within_rgs`) — the
+    // logical plan is never rewritten; boundary/unknown row groups keep the
+    // full residual + page-pruning path.
+    let candidate_sort_range = sort_fields
+        .first()
+        .and_then(|sort_field| extract_sort_range(&logical_plan, sort_field));
 
     // Sort-aware segment iteration. Mirror of `ContextIndexSearcher.shouldUseTimeSeriesDescSortOptimization`
     // for the indexed-parquet path. When the index has `index.sort.field` and the query's leading
@@ -974,7 +1450,6 @@ async unsafe fn execute_indexed_with_context_inner(
     // — each segment retains its catalog-order base, so the row IDs query phase emits are still
     // interpretable by `api::fetch_by_row_ids` (which builds its own segments from
     // `ShardView.object_metas` in catalog order).
-    let mut segments = segments;
     if should_reverse_segments(
         analyze_top_sort(&logical_plan).as_ref(),
         &sort_fields,
@@ -1040,6 +1515,77 @@ async unsafe fn execute_indexed_with_context_inner(
     let leaf_exprs = collect_leaf_exprs(extraction.as_ref());
 
     let predicate_columns = collect_predicate_column_indices_from_exprs(&leaf_exprs);
+
+    // Timestamp WITHIN fast path (row-group granularity, footer statistics
+    // only). When the non-collector residual consists solely of range
+    // comparisons on the leading sort field, a row group whose footer min/max
+    // lie fully inside the query bounds with zero nulls satisfies that
+    // residual for every row. For count-only shapes the scan then emits the
+    // candidate cardinality for such row groups without any parquet decode.
+    // Tree-class filters and any unsupported residual shape fail closed.
+    let sort_range_within_rgs: Option<Arc<HashMap<usize, HashSet<usize>>>> =
+        candidate_sort_range.as_ref().and_then(|range| {
+            let shape_ok = match &classification {
+                FilterClass::SingleCollector => extraction
+                    .as_ref()
+                    .is_some_and(|e| count_tree_shape_supported(&e.tree, &range.column)),
+                FilterClass::None => extraction
+                    .as_ref()
+                    .and_then(|e| residual_bool_to_physical_expr(&e.tree))
+                    .is_some_and(|residual| {
+                        physical_expr_is_sort_range_only(&residual, &range.column)
+                    }),
+                FilterClass::Tree => false,
+            };
+            if !shape_ok {
+                return None;
+            }
+            let map: HashMap<usize, HashSet<usize>> = segments
+                .iter()
+                .enumerate()
+                .map(|(idx, segment)| (idx, segment_within_rgs(range, segment)))
+                .collect();
+            map.values()
+                .any(|set| !set.is_empty())
+                .then(|| Arc::new(map))
+        });
+    if let Some(map) = sort_range_within_rgs.as_ref() {
+        let total: usize = map.values().map(|set| set.len()).sum();
+        log_debug!(
+            "indexed_executor: sort-range residual is a tautology for {} row group(s); count-only shapes skip their parquet decode",
+            total
+        );
+    }
+
+    // Top-K candidate truncation for rows shapes (`sort <key> | head N`).
+    // Rows within each row group are stored in catalog sort order, so for a
+    // single-key top-K on the leading sort field only the first/last N
+    // candidates of a WITHIN row group can reach the global top-N. Boundary
+    // (non-WITHIN) row groups keep full candidates. `keep_last` is relative
+    // to storage order.
+    let sort_topk_truncate: Option<(bool, usize)> = (|| {
+        sort_range_within_rgs.as_ref()?;
+        let top = analyze_top_sort(&logical_plan)?;
+        if !top.single_key {
+            return None;
+        }
+        let budget = top.fetch?;
+        let catalog_field = sort_fields.first()?;
+        if top.column != *catalog_field {
+            return None;
+        }
+        let catalog_descending = sort_orders
+            .first()
+            .is_some_and(|o| o.eq_ignore_ascii_case("desc"));
+        Some((top.descending != catalog_descending, budget))
+    })();
+    if let Some((keep_last, budget)) = sort_topk_truncate {
+        log_debug!(
+            "indexed_executor: top-K truncation active (keep_last={}, budget={}) for WITHIN row groups",
+            keep_last,
+            budget
+        );
+    }
 
     // Augment each segment's footer-only metadata with a scoped page index so
     // the indexed PagePruner can page-prune. Both predicate (→ ColumnIndex) and
@@ -1250,7 +1796,7 @@ async unsafe fn execute_indexed_with_context_inner(
                             bloom_config,
                             stats_prune_tree.cloned(),
                             chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
-                        ));
+                        ).with_chunk_doc_bounds(chunk.doc_min, chunk.doc_max));
                         Ok(eval)
                     },
                 ),
@@ -1411,6 +1957,8 @@ async unsafe fn execute_indexed_with_context_inner(
         prune_tree_config,
         sort_fields: sort_fields.clone(),
         sort_orders: sort_orders.clone(),
+        sort_range_within_rgs,
+        sort_topk_truncate,
         cancellation_token: crate::query_tracker::get_cancellation_token(context_id),
     }));
     ctx.register_table(&register_name, provider)?;
@@ -1422,6 +1970,16 @@ async unsafe fn execute_indexed_with_context_inner(
     );
     let dataframe = ctx.execute_logical_plan(logical_plan).await?;
     let physical_plan = dataframe.create_physical_plan().await?;
+    // Histogram fast path: replace the Partial-aggregate subtree over the
+    // indexed scan with UnionExec[boundary decode, footer-stats counts] when
+    // the shape gates hold (see indexed_table::histogram). Fail-closed: any
+    // unmatched shape returns the plan unchanged.
+    let physical_plan = match sort_fields.first() {
+        Some(sort_field) => {
+            crate::indexed_table::histogram::try_rewrite_histogram(physical_plan, sort_field)
+        }
+        None => physical_plan,
+    };
     // Retag bit-compatible Int↔UInt output mismatches to match the substrait-declared
     // types. The target is schema_coerce::coerce_inferred_schema(physical_schema) — same
     // narrowing the partition-stream registration uses, so consumer-side StreamingTable

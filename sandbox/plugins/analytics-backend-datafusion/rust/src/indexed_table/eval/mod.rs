@@ -165,6 +165,19 @@ pub trait RowGroupBitsetSource: Send + Sync {
     fn forbid_parquet_pushdown(&self) -> bool {
         false
     }
+
+    /// Count matching docs in `[min_doc, max_doc)` without materializing a
+    /// bitset or reading parquet. Only invoked by `IndexReader` for row
+    /// groups under the count-shape WITHIN gate (the non-collector residual
+    /// is a tautology on the range). `Ok(None)` = unsupported — the caller
+    /// falls back to `prefetch_rg`.
+    ///
+    /// Shares the forward-only cursor with `prefetch_rg`: interleaved calls
+    /// must use non-decreasing, non-overlapping ranges.
+    fn count_docs_range(&self, min_doc: i32, max_doc: i32) -> Result<Option<u64>, String> {
+        let _ = (min_doc, max_doc);
+        Ok(None)
+    }
 }
 
 /// Output of `prefetch_rg`.

@@ -189,6 +189,17 @@ pub struct SingleCollectorEvaluator {
     /// Next matching docId from the last collectDocs call. When next_doc >= rg.max_doc,
     /// the RG can be skipped without an FFM call. Initialized to i32::MIN (no skip info).
     last_next_doc: std::sync::atomic::AtomicI32,
+    /// Chunk-scoped delegated collector reused across `count_docs_range`
+    /// calls, so successive per-RG counts ride ONE forward Lucene cursor
+    /// (one postings pass per chunk) instead of a fresh scorer per RG.
+    /// Only valid for non-decreasing, non-overlapping ranges — exactly the
+    /// order `IndexReader` iterates row groups. Requires `chunk_doc_bounds`.
+    count_collector: OnceLock<Arc<dyn RowGroupDocsCollector>>,
+    /// Doc-id bounds `[doc_min, doc_max)` of the chunk this evaluator was
+    /// built for. Set by the production factory via
+    /// [`with_chunk_doc_bounds`](Self::with_chunk_doc_bounds); `None` (tests,
+    /// older callers) falls back to a per-call collector for counts.
+    chunk_doc_bounds: Option<(i32, i32)>,
 }
 
 /// Resources needed for per-RG bloom filter pruning.
@@ -235,7 +246,17 @@ impl SingleCollectorEvaluator {
             stats_prune_tree,
             rg_index_to_pos,
             last_next_doc: std::sync::atomic::AtomicI32::new(i32::MIN),
+            count_collector: OnceLock::new(),
+            chunk_doc_bounds: None,
         }
+    }
+
+    /// Provide the chunk's doc-id bounds so `count_docs_range` can cache one
+    /// forward-cursor collector for the whole chunk (created with exactly
+    /// these bounds — Java asserts the partition fits the leaf).
+    pub fn with_chunk_doc_bounds(mut self, doc_min: i32, doc_max: i32) -> Self {
+        self.chunk_doc_bounds = Some((doc_min, doc_max));
+        self
     }
 }
 
@@ -267,6 +288,89 @@ fn should_consult_lucene(
 }
 
 impl RowGroupBitsetSource for SingleCollectorEvaluator {
+    fn count_docs_range(&self, min_doc: i32, max_doc: i32) -> Result<Option<u64>, String> {
+        if max_doc <= min_doc {
+            return Ok(Some(0));
+        }
+        match &self.collector {
+            // Correctness collector owns the filter: ask for the cardinality
+            // directly (Weight#count / cursor count on the Java side). The
+            // executor's count-shape gate guarantees no other Lucene leaf
+            // exists, so no intersection is needed.
+            Some(collector) if self.performance_provider_locks.is_empty() => {
+                collector.count_docs(min_doc, max_doc)
+            }
+            // Collector + performance leaves would need bitset intersection —
+            // unsupported on the count path (and excluded by the gate).
+            Some(_) => Ok(None),
+            None => match self.performance_provider_locks.len() {
+                // No Lucene leaf at all: the gate guarantees the residual is a
+                // sort-range tautology on this range → every doc matches.
+                0 => Ok(Some((max_doc - min_doc).max(0) as u64)),
+                // Exactly one performance-delegated leaf: force-delegate it to
+                // Lucene and count. This is the q7 shape (indexed equality +
+                // timestamp range count) — whole-chunk calls let Java answer
+                // via Weight#count (TermQuery docFreq) in O(1) per segment.
+                1 => {
+                    let (&annotation_id, lock) = self
+                        .performance_provider_locks
+                        .iter()
+                        .next()
+                        .expect("len() == 1");
+                    let context_id = self.context_id;
+                    let mut init_failed = false;
+                    let provider = lock.get_or_init(|| {
+                        create_provider(context_id, annotation_id).unwrap_or_else(|e| {
+                            init_failed = true;
+                            log_debug!(
+                                "count_docs_range: create_provider failed (annotation_id={}): {}",
+                                annotation_id,
+                                e
+                            );
+                            // Poison-free fallback: the dead handle is never
+                            // used because we return None below.
+                            ProviderHandle::new_dead()
+                        })
+                    });
+                    if init_failed || provider.key() < 0 {
+                        return Ok(None);
+                    }
+                    // With chunk bounds: ONE collector per (chunk × query),
+                    // created on first use with the chunk partition so its
+                    // forward cursor serves every subsequent per-RG count in
+                    // this chunk (and whole-leaf coverage keeps Java's
+                    // Weight#count fast path eligible). Without bounds
+                    // (tests/legacy): per-call collector.
+                    let collector = match (self.chunk_doc_bounds, self.count_collector.get()) {
+                        (_, Some(collector)) => Arc::clone(collector),
+                        (Some((chunk_min, chunk_max)), None) => {
+                            let created = self.delegated_backend_collector_factory.create(
+                                context_id,
+                                provider.key(),
+                                self.writer_generation,
+                                chunk_min,
+                                chunk_max,
+                            )?;
+                            Arc::clone(self.count_collector.get_or_init(|| created))
+                        }
+                        (None, None) => self.delegated_backend_collector_factory.create(
+                            context_id,
+                            provider.key(),
+                            self.writer_generation,
+                            min_doc,
+                            max_doc,
+                        )?,
+                    };
+                    if let Some(ref c) = self.ffm_collector_calls {
+                        c.add(1);
+                    }
+                    collector.count_docs(min_doc, max_doc)
+                }
+                _ => Ok(None),
+            },
+        }
+    }
+
     fn prefetch_rg(
         &self,
         rg: &RowGroupInfo,

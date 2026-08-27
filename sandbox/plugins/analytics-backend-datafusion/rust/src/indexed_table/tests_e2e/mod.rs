@@ -51,6 +51,7 @@ mod qtf_fetch_phase;
 mod row_id_emission;
 mod row_id_strategies;
 mod schema_drift;
+mod sort_range_count_shortcut;
 mod sort_reverse_row_id;
 mod streaming_at_scale;
 
@@ -317,6 +318,8 @@ async fn run_tree_and_plan(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 

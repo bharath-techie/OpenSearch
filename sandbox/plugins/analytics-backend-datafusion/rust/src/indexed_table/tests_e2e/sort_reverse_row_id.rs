@@ -251,6 +251,8 @@ async fn collect_row_ids(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 

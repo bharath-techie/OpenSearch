@@ -223,6 +223,45 @@ public final class FilterTreeCallbacks {
     }
 
     /**
+     * {@code countDocs(contextId, collectorKey, minDoc, maxDoc) -> count|-1}.
+     *
+     * <p>Count-only fast path: returns the number of matching docs in
+     * {@code [minDoc, maxDoc)} without materializing or transferring a bitset.
+     * {@code -1} tells the native side to fall back to {@code collectDocs}.
+     */
+    public static long countDocs(long contextId, int collectorKey, int minDoc, int maxDoc) {
+        long tid = trackStart(contextId);
+        try {
+            QueryBinding binding = BINDINGS.get(contextId);
+            assertBindingExists(binding, "countDocs", contextId);
+            if (binding == null || binding.handle() == null) {
+                return -1L;
+            }
+            FilterDelegationHandle handle = binding.handle();
+            if (handle.isCancelled()) {
+                return -1L;
+            }
+            return handle.countDocs(collectorKey, minDoc, maxDoc);
+        } catch (AssertionError e) {
+            throw e;
+        } catch (Throwable throwable) {
+            LOGGER.error(
+                new ParameterizedMessage(
+                    "countDocs(contextId={}, collectorKey={}, [{}, {})) failed",
+                    contextId,
+                    collectorKey,
+                    minDoc,
+                    maxDoc
+                ),
+                throwable
+            );
+            return -1L;
+        } finally {
+            trackEnd(contextId, tid);
+        }
+    }
+
+    /**
      * {@code collectDocs(contextId, collectorKey, minDoc, maxDoc, outPtr, outWordCap) -> packed(nextDoc|wordsWritten)|-1}.
      */
     public static long collectDocs(long contextId, int collectorKey, int minDoc, int maxDoc, MemorySegment outPtr, long outWordCap) {

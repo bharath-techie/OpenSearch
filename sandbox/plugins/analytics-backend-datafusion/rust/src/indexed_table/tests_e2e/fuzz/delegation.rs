@@ -487,6 +487,8 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_delegation_tree(
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
 

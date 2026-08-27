@@ -398,6 +398,8 @@ async fn assert_engine_matches_reference_null(name: &str, tree: NT) {
         prune_tree_config: None,
         sort_fields: vec![],
         sort_orders: vec![],
+        sort_range_within_rgs: None,
+        sort_topk_truncate: None,
         cancellation_token: None,
     }));
     let ctx = SessionContext::new();
