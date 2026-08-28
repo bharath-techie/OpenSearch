@@ -520,6 +520,16 @@ pub struct IndexedExec {
     /// tautology (WITHIN + null-free). For count-only shapes these emit the
     /// candidate cardinality without a parquet read. Empty disables.
     pub(crate) within_rgs: std::collections::HashSet<usize>,
+    /// Relaxed WITHIN row groups (superset of `within_rgs`): the sort column is
+    /// dropped from these RGs' parquet projection and their pushdown predicate
+    /// is replaced with `predicate_sans_sort_range`. See
+    /// `IndexedTableConfig::timestamp_within_rgs`.
+    pub(crate) timestamp_within_rgs: std::collections::HashSet<usize>,
+    /// Pushdown predicate with sort-range conjuncts stripped, used for row
+    /// groups in `timestamp_within_rgs`. `None` = residual was solely the sort
+    /// range (fully stripped → no predicate for those RGs).
+    pub(crate) predicate_sans_sort_range:
+        Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     /// Top-K candidate truncation `(keep_last, budget)` for WITHIN RGs on
     /// single-key sorts over the leading sort field. `None` disables.
     pub(crate) sort_topk_truncate: Option<(bool, usize)>,
@@ -634,6 +644,8 @@ impl ExecutionPlan for IndexedExec {
             self.dynamic_filter.clone(),
             self.seg_arrow_schema.clone(),
             self.within_rgs.clone(),
+            self.timestamp_within_rgs.clone(),
+            self.predicate_sans_sort_range.clone(),
             self.sort_topk_truncate,
         )))
     }
@@ -650,6 +662,10 @@ struct IndexedStream {
     store_url: datafusion::execution::object_store::ObjectStoreUrl,
     index_reader: IndexReader,
     projection: Option<Vec<usize>>,
+    /// Full-schema indices requested by the query output, excluding columns
+    /// read only for predicate evaluation. Per-RG delegation adds the columns
+    /// it still owns to this base immediately before creating the RG stream.
+    output_projection: Vec<usize>,
     current_stream: Option<SendableRecordBatchStream>,
     current_inner_plan: Option<Arc<dyn ExecutionPlan>>,
     current_mask: Option<BooleanArray>,
@@ -715,6 +731,12 @@ struct IndexedStream {
     /// Row-group indices with a WITHIN (tautological) sort-range residual —
     /// see `IndexedExec::within_rgs`.
     within_rgs: std::collections::HashSet<usize>,
+    /// Relaxed WITHIN row groups — see `IndexedExec::timestamp_within_rgs`.
+    timestamp_within_rgs: std::collections::HashSet<usize>,
+    /// Pushdown predicate with sort-range conjuncts stripped, handed to parquet
+    /// for row groups in `timestamp_within_rgs`. See
+    /// `IndexedExec::predicate_sans_sort_range`.
+    predicate_sans_sort_range: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     /// Top-K candidate truncation — see `IndexedExec::sort_topk_truncate`.
     sort_topk_truncate: Option<(bool, usize)>,
 }
@@ -744,9 +766,16 @@ impl IndexedStream {
         dynamic_filter: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         seg_arrow_schema: SchemaRef,
         within_rgs: std::collections::HashSet<usize>,
+        timestamp_within_rgs: std::collections::HashSet<usize>,
+        predicate_sans_sort_range: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         sort_topk_truncate: Option<(bool, usize)>,
     ) -> Self {
         let evaluator = Arc::clone(&index_reader.evaluator);
+        let output_projection: Vec<usize> = schema
+            .fields()
+            .iter()
+            .filter_map(|field| full_schema.index_of(field.name()).ok())
+            .collect();
         let batch_coalescer = LimitedBatchCoalescer::new(schema.clone(), target_batch_size, None);
         let dynamic_rg_pruner = super::dynamic_filter::DynamicRgPruner::new(
             dynamic_filter,
@@ -762,6 +791,7 @@ impl IndexedStream {
             store_url,
             index_reader,
             projection,
+            output_projection,
             current_stream: None,
             current_inner_plan: None,
             current_mask: None,
@@ -790,6 +820,8 @@ impl IndexedStream {
             row_id_output_index,
             dynamic_rg_pruner,
             within_rgs,
+            timestamp_within_rgs,
+            predicate_sans_sort_range,
             sort_topk_truncate,
         }
     }
@@ -818,7 +850,30 @@ impl IndexedStream {
         }
     }
 
-    fn bridge_config(&self) -> RowGroupStreamConfig {
+    fn projection_for_rg(&self, required_predicate_columns: Option<&[usize]>) -> Option<Vec<usize>> {
+        // Evaluators that do not expose RG ownership retain the existing
+        // conservative query-wide projection. Row-id emission also stays on
+        // the existing path because its synthetic output column has separate
+        // projection/injection semantics.
+        let Some(required) = required_predicate_columns else {
+            return self.projection.clone();
+        };
+        if self.emit_row_ids {
+            return self.projection.clone();
+        }
+
+        let mut projection = self.output_projection.clone();
+        projection.extend_from_slice(required);
+        projection.sort_unstable();
+        projection.dedup();
+        Some(projection)
+    }
+
+    fn bridge_config(
+        &self,
+        projection: Option<Vec<usize>>,
+        predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    ) -> RowGroupStreamConfig {
         RowGroupStreamConfig {
             file_path: self.object_path.to_string(),
             file_size: self.file_size,
@@ -826,8 +881,8 @@ impl IndexedStream {
             store_url: self.store_url.clone(),
             full_schema: self.full_schema.clone(),
             metadata: Arc::clone(&self.metadata),
-            projection: self.projection.clone(),
-            predicate: self.predicate.clone(),
+            projection,
+            predicate,
             io_stats: self
                 .metrics
                 .io_stats
@@ -841,9 +896,11 @@ impl IndexedStream {
         rg: &RowGroupInfo,
         selection: RowSelection,
         push_predicate: bool,
+        projection: Option<Vec<usize>>,
+        predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     ) -> Result<(SendableRecordBatchStream, Arc<dyn ExecutionPlan>)> {
         parquet_bridge::create_row_selection_stream(
-            &self.bridge_config(),
+            &self.bridge_config(projection, predicate),
             rg.index,
             selection,
             push_predicate,
@@ -1283,6 +1340,10 @@ impl IndexedStream {
                         }
                     }
 
+                    let required_predicate_columns = prefetched
+                        .prefetched
+                        .required_predicate_columns
+                        .take();
                     let candidates = prefetched.prefetched.candidates;
                     let prefetch_mask_buffer = prefetched.prefetched.mask_buffer;
 
@@ -1451,7 +1512,22 @@ impl IndexedStream {
                         && !alignment_risk
                         && !self.evaluator.forbid_parquet_pushdown();
 
-                    match self.create_row_selection_stream(&rg, selection, push) {
+                    let rg_projection = self.projection_for_rg(
+                        required_predicate_columns.as_deref(),
+                    );
+                    // Relaxed timestamp-WITHIN: this RG's sort-range residual is
+                    // a footer-proven tautology, so hand parquet the predicate
+                    // with the sort-range conjuncts stripped (may be `None`).
+                    // The evaluator already dropped the sort column from
+                    // `required_predicate_columns`, so it is absent from
+                    // `rg_projection` unless the query outputs it. Boundary /
+                    // non-WITHIN RGs keep the full predicate + projection.
+                    let rg_predicate = if self.timestamp_within_rgs.contains(&rg.index) {
+                        self.predicate_sans_sort_range.clone()
+                    } else {
+                        self.predicate.clone()
+                    };
+                    match self.create_row_selection_stream(&rg, selection, push, rg_projection, rg_predicate) {
                         Ok((stream, plan)) => {
                             if let Some(ref timer) = self.metrics.parquet_time {
                                 timer.add_duration(t_plan.elapsed());

@@ -149,6 +149,36 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     }
 
     @Override
+    public int createAndProvider(int providerKeyA, int providerKeyB) {
+        Weight weightA = weightsByProviderKey.get(providerKeyA);
+        Weight weightB = weightsByProviderKey.get(providerKeyB);
+        if (weightA == null || weightB == null) {
+            return -1;
+        }
+        try {
+            // FILTER (not MUST): no scoring, cache-friendly, and the BooleanWeight's
+            // conjunction scorer drives iteration from the sparser clause — the whole
+            // point of pushing the AND down instead of intersecting bitsets upstream.
+            org.apache.lucene.search.BooleanQuery.Builder builder = new org.apache.lucene.search.BooleanQuery.Builder();
+            builder.add(weightA.getQuery(), org.apache.lucene.search.BooleanClause.Occur.FILTER);
+            builder.add(weightB.getQuery(), org.apache.lucene.search.BooleanClause.Occur.FILTER);
+            Weight weight = searcher.createWeight(searcher.rewrite(builder.build()), ScoreMode.COMPLETE_NO_SCORES, 1.0f);
+            int providerKey = nextProviderKey.getAndIncrement();
+            weightsByProviderKey.put(providerKey, weight);
+            LOGGER.debug(
+                "[scf] createAndProvider providerKeyA={} providerKeyB={} → providerKey={}",
+                providerKeyA,
+                providerKeyB,
+                providerKey
+            );
+            return providerKey;
+        } catch (IOException exception) {
+            LOGGER.error("createAndProvider failed for providers " + providerKeyA + "," + providerKeyB, exception);
+            return -1;
+        }
+    }
+
+    @Override
     public int createCollector(int providerKey, long writerGeneration, int minDoc, int maxDoc) {
         Weight weight = weightsByProviderKey.get(providerKey);
         if (weight == null) {

@@ -223,6 +223,21 @@ pub struct IndexedTableConfig {
     /// `segments`). `None` disables the WITHIN count shortcut.
     pub sort_range_within_rgs:
         Option<Arc<std::collections::HashMap<usize, std::collections::HashSet<usize>>>>,
+    /// Relaxed per-segment WITHIN sets for projection/predicate pruning. A
+    /// superset of `sort_range_within_rgs`: populated whenever the residual has
+    /// at least one strippable sort-range conjunct on the leading sort field
+    /// (even alongside other conjuncts). For these row groups the sort column
+    /// is dropped from the per-RG parquet projection and the pushdown predicate
+    /// is replaced with `pushdown_predicate_sans_sort_range`. Keyed by segment
+    /// index (matching `segments`). `None` disables the relaxation.
+    pub timestamp_within_rgs:
+        Option<Arc<std::collections::HashMap<usize, std::collections::HashSet<usize>>>>,
+    /// The `pushdown_predicate` with the sort-range conjuncts removed. Handed to
+    /// parquet's `with_predicate` (row-granular) and applied post-decode by the
+    /// evaluator (block-granular) for row groups in `timestamp_within_rgs`.
+    /// `None` means the residual was solely the sort range (fully stripped).
+    pub pushdown_predicate_sans_sort_range:
+        Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     /// Top-K candidate truncation for single-key sorts on the leading sort
     /// field: `(keep_last_in_storage_order, row_budget)`. Applied by
     /// `IndexedStream` to WITHIN row groups only. `None` disables.
@@ -735,6 +750,14 @@ impl ExecutionPlan for QueryShardExec {
                 .cloned()
                 .unwrap_or_default();
 
+            let timestamp_within_rgs: HashSet<usize> = self
+                .config
+                .timestamp_within_rgs
+                .as_ref()
+                .and_then(|map| map.get(&chunk.segment_idx))
+                .cloned()
+                .unwrap_or_default();
+
             let exec = IndexedExec {
                 schema: self.projected_schema.clone(),
                 full_schema: self.full_schema.clone(),
@@ -759,6 +782,11 @@ impl ExecutionPlan for QueryShardExec {
                 cancellation_token: self.config.cancellation_token.clone(),
                 seg_arrow_schema: segment.arrow_schema.clone(),
                 within_rgs,
+                timestamp_within_rgs,
+                predicate_sans_sort_range: self
+                    .config
+                    .pushdown_predicate_sans_sort_range
+                    .clone(),
                 sort_topk_truncate: if self.config.emit_row_ids {
                     None
                 } else {
@@ -953,6 +981,8 @@ mod tests {
             sort_fields: vec![],
             sort_orders: vec![],
             sort_range_within_rgs: None,
+            timestamp_within_rgs: None,
+            pushdown_predicate_sans_sort_range: None,
             sort_topk_truncate: None,
             cancellation_token: None,
         }

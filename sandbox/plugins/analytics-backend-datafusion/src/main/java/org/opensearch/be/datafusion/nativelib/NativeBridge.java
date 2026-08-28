@@ -472,11 +472,12 @@ public final class NativeBridge {
             )
         );
 
-        // void df_register_filter_tree_callbacks(createProvider, releaseProvider,
-        // createCollector, collectDocs, countDocs, releaseCollector)
+        // void df_register_filter_tree_callbacks(createProvider, createAndProvider,
+        // releaseProvider, createCollector, collectDocs, countDocs, releaseCollector)
         REGISTER_FILTER_TREE_CALLBACKS = linker.downcallHandle(
             lib.find("df_register_filter_tree_callbacks").orElseThrow(),
             FunctionDescriptor.ofVoid(
+                ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
@@ -774,6 +775,11 @@ public final class NativeBridge {
                 "createProvider",
                 java.lang.invoke.MethodType.methodType(int.class, long.class, int.class)
             );
+            MethodHandle createAndProvider = lookup.findStatic(
+                cb,
+                "createAndProvider",
+                java.lang.invoke.MethodType.methodType(int.class, long.class, int.class, int.class)
+            );
             MethodHandle releaseProvider = lookup.findStatic(
                 cb,
                 "releaseProvider",
@@ -811,6 +817,11 @@ public final class NativeBridge {
             java.lang.foreign.MemorySegment createProviderStub = linker.upcallStub(
                 createProvider,
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT),
+                arena
+            );
+            java.lang.foreign.MemorySegment createAndProviderStub = linker.upcallStub(
+                createAndProvider,
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT),
                 arena
             );
             java.lang.foreign.MemorySegment releaseProviderStub = linker.upcallStub(
@@ -862,6 +873,7 @@ public final class NativeBridge {
             NativeCall.invokeVoid(
                 REGISTER_FILTER_TREE_CALLBACKS,
                 createProviderStub,
+                createAndProviderStub,
                 releaseProviderStub,
                 createCollectorStub,
                 collectDocsStub,

@@ -178,6 +178,8 @@ async fn run_count(within: Option<HashSet<usize>>) -> (i64, usize, usize) {
         sort_orders: vec![],
         sort_range_within_rgs: within.map(|set| Arc::new(HashMap::from([(0usize, set)]))),
         sort_topk_truncate: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         cancellation_token: None,
     }));
 
@@ -330,6 +332,8 @@ async fn whole_chunk_within_issues_single_count_call() {
             HashSet::from([0usize, 1usize]),
         )]))),
         sort_topk_truncate: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         cancellation_token: None,
     }));
 
@@ -435,6 +439,8 @@ async fn run_topk(truncate: Option<(bool, usize)>) -> (Vec<i64>, usize) {
             HashSet::from([0usize, 1usize]),
         )]))),
         sort_topk_truncate: truncate,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         cancellation_token: None,
     }));
     let ctx = SessionContext::new();
@@ -547,6 +553,8 @@ async fn run_histogram(rewrite: bool) -> (Vec<(i64, i64)>, usize, usize) {
             HashSet::from([0usize, 1usize]),
         )]))),
         sort_topk_truncate: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         cancellation_token: None,
     }));
     let ctx = SessionContext::new();

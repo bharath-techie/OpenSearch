@@ -125,6 +125,8 @@ async fn run_tree_row_ids(tree: BoolNode) -> Vec<i64> {
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
         cancellation_token: None,
     }));
@@ -304,6 +306,8 @@ async fn run_tree_row_ids_with_global_base(tree: BoolNode, global_base: u64) -> 
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
         cancellation_token: None,
     }));
@@ -593,6 +597,8 @@ async fn test_row_id_with_data_columns() {
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
         cancellation_token: None,
     }));
@@ -867,6 +873,8 @@ async fn run_two_segments_row_ids(tree: BoolNode) -> Vec<i64> {
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
         cancellation_token: None,
     }));

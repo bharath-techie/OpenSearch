@@ -167,6 +167,32 @@ public final class FilterTreeCallbacks {
     }
 
     /**
+     * {@code createAndProvider(contextId, providerKeyA, providerKeyB) -> providerKey|-1}.
+     * Conjunction of two existing providers' queries (Lucene BooleanQuery FILTER∧FILTER).
+     */
+    public static int createAndProvider(long contextId, int providerKeyA, int providerKeyB) {
+        long tid = trackStart(contextId);
+        try {
+            QueryBinding binding = BINDINGS.get(contextId);
+            assertBindingExists(binding, "createAndProvider", contextId);
+            if (binding == null || binding.handle() == null) {
+                return -1;
+            }
+            return binding.handle().createAndProvider(providerKeyA, providerKeyB);
+        } catch (AssertionError e) {
+            throw e;
+        } catch (Throwable throwable) {
+            LOGGER.error(
+                "createAndProvider failed for contextId=" + contextId + " providers=" + providerKeyA + "," + providerKeyB,
+                throwable
+            );
+            return -1;
+        } finally {
+            trackEnd(contextId, tid);
+        }
+    }
+
+    /**
      * {@code releaseProvider(contextId, providerKey)}. Never throws.
      */
     public static void releaseProvider(long contextId, int providerKey) {

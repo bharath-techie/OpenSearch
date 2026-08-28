@@ -12,6 +12,7 @@
 //! `df_register_filter_tree_callbacks` (see `ffm.rs`):
 //!
 //! - `createProvider(contextId, annotationId) -> providerKey|-1`
+//! - `createAndProvider(contextId, providerKeyA, providerKeyB) -> providerKey|-1`
 //! - `createCollector(contextId, providerKey, writerGeneration, minDoc, maxDoc) -> collectorKey|-1`
 //! - `collectDocs(contextId, collectorKey, minDoc, maxDoc, outBuf, outWordCap) -> wordsWritten|-1`
 //! - `releaseCollector(contextId, collectorKey)`
@@ -31,6 +32,13 @@ use super::index::{CollectDocsResult, RowGroupDocsCollector};
 // ── Callback signatures ───────────────────────────────────────────────
 
 type CreateProviderFn = unsafe extern "C" fn(i64, i32) -> i32;
+/// `(context_id, provider_key_a, provider_key_b) -> provider_key | -1`.
+///
+/// Conjunction provider: Java builds a Lucene `BooleanQuery` with both
+/// providers' queries as FILTER clauses, so the conjunction scorer
+/// leapfrogs the sparser iterator instead of Rust intersecting two full
+/// bitsets. `-1` = unsupported/error → fall back to separate collectors.
+type CreateAndProviderFn = unsafe extern "C" fn(i64, i32, i32) -> i32;
 type ReleaseProviderFn = unsafe extern "C" fn(i64, i32);
 /// `(context_id, provider_key, writer_generation, doc_min, doc_max) -> collector_key | -1`.
 ///
@@ -48,6 +56,7 @@ type CountDocsFn = unsafe extern "C" fn(i64, i32, i32, i32) -> i64;
 type ReleaseCollectorFn = unsafe extern "C" fn(i64, i32);
 
 static CREATE_PROVIDER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+static CREATE_AND_PROVIDER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static RELEASE_PROVIDER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static CREATE_COLLECTOR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static COLLECT_DOCS: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
@@ -63,6 +72,7 @@ static RELEASE_COLLECTOR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 #[no_mangle]
 pub unsafe extern "C" fn df_register_filter_tree_callbacks(
     create_provider: CreateProviderFn,
+    create_and_provider: CreateAndProviderFn,
     release_provider: ReleaseProviderFn,
     create_collector: CreateCollectorFn,
     collect_docs: CollectDocsFn,
@@ -76,6 +86,7 @@ pub unsafe extern "C" fn df_register_filter_tree_callbacks(
     // `-> ()` function.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         CREATE_PROVIDER.store(create_provider as *mut (), Ordering::Release);
+        CREATE_AND_PROVIDER.store(create_and_provider as *mut (), Ordering::Release);
         RELEASE_PROVIDER.store(release_provider as *mut (), Ordering::Release);
         CREATE_COLLECTOR.store(create_collector as *mut (), Ordering::Release);
         COLLECT_DOCS.store(collect_docs as *mut (), Ordering::Release);
@@ -195,6 +206,38 @@ pub fn create_provider(context_id: i64, annotation_id: i32) -> Result<ProviderHa
     Ok(ProviderHandle { context_id, key })
 }
 
+fn load_create_and_provider() -> Option<CreateAndProviderFn> {
+    let p = CREATE_AND_PROVIDER.load(Ordering::Acquire);
+    if p.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<*mut (), CreateAndProviderFn>(p) })
+    }
+}
+
+/// Create a CONJUNCTION provider from two existing providers by upcalling Java.
+///
+/// Java builds a Lucene `BooleanQuery` with both providers' queries as FILTER
+/// clauses; the returned provider's collectors leapfrog via Lucene's
+/// conjunction scorer. Returns `None` when the callback isn't registered or
+/// Java reports unsupported (`-1`) — callers MUST fall back to separate
+/// per-provider collectors (fail-closed).
+///
+/// The input providers stay alive and independently owned; the returned
+/// handle owns only the conjunction weight.
+pub fn create_and_provider(
+    context_id: i64,
+    provider_a: &ProviderHandle,
+    provider_b: &ProviderHandle,
+) -> Option<ProviderHandle> {
+    let create = load_create_and_provider()?;
+    let key = unsafe { create(context_id, provider_a.key(), provider_b.key()) };
+    if key < 0 {
+        return None;
+    }
+    Some(ProviderHandle { context_id, key })
+}
+
 // ── FfmSegmentCollector — owns `releaseCollector` on drop ─────────────
 
 #[derive(Debug)]
@@ -307,5 +350,21 @@ impl Drop for FfmSegmentCollector {
         if let Some(release) = load_release_collector() {
             unsafe { release(self.context_id, self.key) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fail-closed: with no FFM callbacks registered (the unit-test
+    /// environment), `create_and_provider` must return `None` so callers
+    /// fall back to separate per-provider collectors — never panic or
+    /// fabricate a key.
+    #[test]
+    fn create_and_provider_unregistered_returns_none() {
+        let a = ProviderHandle::new_for_test(1);
+        let b = ProviderHandle::new_for_test(2);
+        assert!(create_and_provider(0, &a, &b).is_none());
     }
 }

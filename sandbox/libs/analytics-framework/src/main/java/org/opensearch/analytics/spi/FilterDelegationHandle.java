@@ -95,6 +95,27 @@ public interface FilterDelegationHandle extends Closeable {
     }
 
     /**
+     * Create a provider whose query is the CONJUNCTION (logical AND) of two
+     * existing providers' queries. Backends should build the conjunction so
+     * the engine's native intersection machinery drives matching (e.g. a
+     * Lucene {@code BooleanQuery} with two {@code FILTER} clauses, whose
+     * conjunction scorer leapfrogs the sparser iterator) instead of the
+     * caller materializing and intersecting two full bitsets.
+     *
+     * <p>The input providers remain valid and independently usable; callers
+     * chain calls to conjoin more than two queries. Collectors created from
+     * the returned provider follow the same contracts as any other provider's.
+     *
+     * @param providerKeyA key returned by {@link #createProvider(int)} or this method
+     * @param providerKeyB key returned by {@link #createProvider(int)} or this method
+     * @return the new provider key, or {@code -1} when unsupported or on error
+     *         (callers must fall back to separate per-provider collectors)
+     */
+    default int createAndProvider(int providerKeyA, int providerKeyB) {
+        return -1;
+    }
+
+    /**
      * Release resources for a collector.
      */
     void releaseCollector(int collectorKey);

@@ -136,6 +136,8 @@ async fn query_phase(tree: BoolNode) -> Vec<i64> {
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        timestamp_within_rgs: None,
+        pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
         cancellation_token: None,
     }));

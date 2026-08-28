@@ -21,7 +21,7 @@
 //!    residual predicates during decode, so indices stay aligned and no
 //!    post-filtering is needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -51,6 +51,27 @@ use crate::indexed_table::stream::RowGroupInfo;
 /// everything else. Until then, performance-delegated leaves consult the peer when DF
 /// page-pruning kept more than 5% of an RG.
 const HARDCODED_SELECTIVITY_THRESHOLD: f64 = 0.05;
+
+/// Full-schema column indices referenced by an expression. These indices are
+/// carried into the per-RG prefetch result so the stream can construct the
+/// Parquet projection AFTER the DelegationPossible XOR decision.
+fn expr_column_indices(
+    expr: &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+) -> Vec<usize> {
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion::physical_expr::expressions::Column;
+
+    let mut indices = HashSet::new();
+    let _ = expr.apply(|node| {
+        if let Some(column) = node.downcast_ref::<Column>() {
+            indices.insert(column.index());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    let mut indices: Vec<usize> = indices.into_iter().collect();
+    indices.sort_unstable();
+    indices
+}
 
 /// Builds delegated-backend collectors for performance-delegated leaves. Production impl
 /// wraps `FfmSegmentCollector::create` (Java/Lucene round-trip); fuzz tests inject a
@@ -140,6 +161,11 @@ struct SingleCollectorState {
     /// that chose Lucene for this RG are already reflected in `candidates` (peer bitmap
     /// intersection) and are deliberately absent here — enforcing the per-leaf XOR.
     perf_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    /// Always-native residual to apply post-decode for THIS RG. Equals the
+    /// evaluator's `residual_expr` for normal RGs, or the sort-range-stripped
+    /// variant for relaxed timestamp-WITHIN RGs (so the sort column, dropped
+    /// from this RG's projection, is never referenced by `remap_expr_to_batch`).
+    always_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
 }
 
 /// Evaluator holding one collector and applying per-RG page pruning.
@@ -234,6 +260,23 @@ pub struct SingleCollectorEvaluator {
     /// correctness-only queries and for the fuzz harness (which models perf leaves inside its own
     /// residual with no peer available).
     performance_leaves: Vec<PerformanceLeaf>,
+    /// Columns needed by the always-native residual on every RG.
+    always_residual_columns: Vec<usize>,
+    /// Columns needed only when a performance leaf selects DataFusion for an RG.
+    performance_leaf_columns: HashMap<i32, Vec<usize>>,
+    /// Relaxed timestamp-WITHIN residual: `residual_expr` with the sort-range
+    /// conjuncts removed (`None` = residual was solely the sort range). Applied
+    /// post-decode (block-granular) ONLY for row groups in `timestamp_within_rgs`
+    /// — where the sort-range conjuncts are footer-proven tautologies — so the
+    /// sort column is never referenced and can be dropped from the projection.
+    residual_expr_sans_sort_range: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    /// Columns of `residual_expr_sans_sort_range` (seed for
+    /// `required_predicate_columns` on WITHIN RGs; excludes the sort column).
+    always_residual_columns_stripped: Vec<usize>,
+    /// Row-group indices (segment-local) whose sort-range residual is a
+    /// footer-proven tautology. For these RGs the evaluator uses the stripped
+    /// residual + stripped column set. Empty disables the relaxation.
+    timestamp_within_rgs: HashSet<usize>,
 }
 
 /// Resources needed for per-RG bloom filter pruning.
@@ -265,6 +308,14 @@ impl SingleCollectorEvaluator {
         rg_index_to_pos: HashMap<usize, usize>,
         performance_leaves: Vec<PerformanceLeaf>,
     ) -> Self {
+        let always_residual_columns = residual_expr
+            .as_ref()
+            .map(expr_column_indices)
+            .unwrap_or_default();
+        let performance_leaf_columns = performance_leaves
+            .iter()
+            .map(|leaf| (leaf.annotation_id, expr_column_indices(&leaf.expr)))
+            .collect();
         Self {
             collector,
             page_pruner,
@@ -284,7 +335,32 @@ impl SingleCollectorEvaluator {
             count_collector: OnceLock::new(),
             chunk_doc_bounds: None,
             performance_leaves,
+            always_residual_columns,
+            performance_leaf_columns,
+            residual_expr_sans_sort_range: None,
+            always_residual_columns_stripped: Vec::new(),
+            timestamp_within_rgs: HashSet::new(),
         }
+    }
+
+    /// Enable the relaxed timestamp-WITHIN optimization. For every row group in
+    /// `timestamp_within_rgs` the sort-range conjuncts are footer-proven
+    /// tautologies, so this evaluator seeds `required_predicate_columns` from
+    /// the stripped residual's columns (excluding the sort column) and applies
+    /// `residual_expr_sans_sort_range` post-decode instead of the full residual.
+    /// No-op when `timestamp_within_rgs` is empty.
+    pub fn with_relaxed_within(
+        mut self,
+        residual_expr_sans_sort_range: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+        timestamp_within_rgs: HashSet<usize>,
+    ) -> Self {
+        self.always_residual_columns_stripped = residual_expr_sans_sort_range
+            .as_ref()
+            .map(expr_column_indices)
+            .unwrap_or_default();
+        self.residual_expr_sans_sort_range = residual_expr_sans_sort_range;
+        self.timestamp_within_rgs = timestamp_within_rgs;
+        self
     }
 
     /// Provide the chunk's doc-id bounds so `count_docs_range` can cache one
@@ -610,6 +686,26 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         // Unrelated native predicates live in `residual_expr`/`pruning_predicate` and always
         // apply, regardless of any leaf's choice.
         let mut perf_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>> = None;
+        // Relaxed timestamp-WITHIN: for a WITHIN row group the sort-range
+        // conjuncts are footer-proven tautologies. Seed the required columns
+        // from the STRIPPED residual (which omits the sort column) and carry
+        // the stripped residual as this RG's always-native residual, so the
+        // sort column is dropped from the projection and never referenced
+        // post-decode. Normal RGs use the full residual + column set.
+        let within_relaxed = self.timestamp_within_rgs.contains(&rg.index);
+        let (seed_columns, rg_always_residual): (
+            &Vec<usize>,
+            Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+        ) = if within_relaxed {
+            (
+                &self.always_residual_columns_stripped,
+                self.residual_expr_sans_sort_range.clone(),
+            )
+        } else {
+            (&self.always_residual_columns, self.residual_expr.clone())
+        };
+        let mut required_predicate_columns: HashSet<usize> =
+            seed_columns.iter().copied().collect();
         for leaf in &self.performance_leaves {
             // Sound-stats selectivity of THIS leaf on THIS RG (independent of other predicates).
             // `None` == no usable parquet stats for the leaf's column → cannot prove DataFusion is
@@ -635,6 +731,9 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
 
             if !should_consult_lucene(&leaf_ranges, rg, HARDCODED_SELECTIVITY_THRESHOLD) {
                 // DataFusion authoritative: apply the leaf's expr post-decode; no peer call.
+                if let Some(columns) = self.performance_leaf_columns.get(&leaf.annotation_id) {
+                    required_predicate_columns.extend(columns.iter().copied());
+                }
                 perf_residual = Some(match perf_residual {
                     None => Arc::clone(&leaf.expr),
                     Some(acc) => Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
@@ -715,6 +814,10 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             return Ok(None);
         }
 
+        let mut required_predicate_columns: Vec<usize> =
+            required_predicate_columns.into_iter().collect();
+        required_predicate_columns.sort_unstable();
+
         // Materialise the final RG-relative bitmap as an Arrow `Buffer`
         // in Arrow's native LSB-first layout. This is the ONLY
         // representation the hot paths (`on_batch_mask`, `build_mask`)
@@ -731,8 +834,10 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 mask_buffer: mask_buffer.clone(),
                 mask_len,
                 perf_residual,
+                always_residual: rg_always_residual,
             }),
             mask_buffer: Some(mask_buffer),
+            required_predicate_columns: Some(required_predicate_columns),
         }))
     }
 
@@ -766,7 +871,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         // post-decode work; the stream's `current_mask` (built from candidates) handles Collector /
         // peer narrowing.
         let effective_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>> =
-            match (self.residual_expr.as_ref(), state.perf_residual.as_ref()) {
+            match (state.always_residual.as_ref(), state.perf_residual.as_ref()) {
                 (None, None) => return Ok(None),
                 (Some(r), None) => Some(Arc::clone(r)),
                 (None, Some(p)) => Some(Arc::clone(p)),
@@ -982,6 +1087,105 @@ mod tests {
         let prefetched = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
         let got: Vec<u32> = prefetched.candidates.iter().collect();
         assert_eq!(got, vec![0u32, 3, 7]);
+    }
+
+    // ── Relaxed timestamp-WITHIN (projection + residual selection) ──────────
+    //
+    // Full residual = `(ts >= 2 AND ts <= 5) AND other >= 0`, columns {0, 3}.
+    // Stripped residual = `other >= 0`, column {3} (sort col 0 removed).
+    // Enabling `with_relaxed_within(stripped, {0})`:
+    //   - RG 0 (WITHIN): `required_predicate_columns` must be seeded from the
+    //     STRIPPED set → {3}; the sort column 0 is dropped from the projection.
+    //     The per-RG `SingleCollectorState.always_residual` must be the stripped
+    //     residual (so `remap_expr_to_batch` never references the dropped sort
+    //     column post-decode — the block-granular trap).
+    //   - RG 1 (boundary / not WITHIN): full residual + full column set {0, 3}.
+    //
+    // NOT executed on desktop (see task). Full row-/block-granular result
+    // equivalence + boundary filtering is covered by the live EC2 validation
+    // (sparse-AND exact count + variant sweep), not this unit test.
+    #[test]
+    fn relaxed_within_drops_sort_column_and_uses_stripped_residual() {
+        use datafusion::common::ScalarValue;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::physical_expr::PhysicalExpr;
+        use std::collections::HashSet;
+
+        let col = |name: &str, idx: usize| -> Arc<dyn PhysicalExpr> {
+            Arc::new(Column::new(name, idx))
+        };
+        let lit = |v: i64| -> Arc<dyn PhysicalExpr> {
+            Arc::new(Literal::new(ScalarValue::Int64(Some(v))))
+        };
+        let ts_ge: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(col("ts", 0), Operator::GtEq, lit(2)));
+        let ts_le: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(col("ts", 0), Operator::LtEq, lit(5)));
+        let other_ge: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(col("other", 3), Operator::GtEq, lit(0)));
+        let ts_range: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(ts_ge, Operator::And, ts_le));
+        let full_residual: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(ts_range, Operator::And, Arc::clone(&other_ge)));
+        let stripped_residual: Arc<dyn PhysicalExpr> = Arc::clone(&other_ge);
+
+        // Candidates over both RGs so neither prefetch returns None.
+        let collector =
+            Arc::new(StubCollector { docs: (0..16).collect() }) as Arc<dyn RowGroupDocsCollector>;
+        let pruner = minimal_page_pruner();
+        let eval = SingleCollectorEvaluator::new(
+            Some(collector),
+            pruner,
+            None,
+            Some(Arc::clone(&full_residual)),
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            Arc::new(HashMap::new()),
+            0,
+            Arc::new(FfmDelegatedBackendCollectorFactory),
+            0,
+            None,
+            None,
+            HashMap::new(),
+            Vec::new(),
+        )
+        .with_relaxed_within(Some(Arc::clone(&stripped_residual)), HashSet::from([0usize]));
+
+        // RG 0 is WITHIN: sort column (0) dropped, only stripped column {3}.
+        let rg0 = RowGroupInfo { index: 0, first_row: 0, num_rows: 8 };
+        let pf0 = eval.prefetch_rg(&rg0, 0, 8).unwrap().expect("rg0 candidates");
+        assert_eq!(
+            pf0.required_predicate_columns.as_ref().unwrap(),
+            &vec![3usize],
+            "WITHIN RG must drop the sort column and keep only stripped-residual columns"
+        );
+        let st0 = pf0
+            .context
+            .downcast_ref::<SingleCollectorState>()
+            .expect("SingleCollectorState");
+        assert!(
+            Arc::ptr_eq(st0.always_residual.as_ref().unwrap(), &stripped_residual),
+            "WITHIN RG must carry the stripped residual for post-decode eval"
+        );
+
+        // RG 1 is NOT WITHIN: full residual + full column set {0, 3}.
+        let rg1 = RowGroupInfo { index: 1, first_row: 8, num_rows: 8 };
+        let pf1 = eval.prefetch_rg(&rg1, 8, 16).unwrap().expect("rg1 candidates");
+        assert_eq!(
+            pf1.required_predicate_columns.as_ref().unwrap(),
+            &vec![0usize, 3usize],
+            "boundary RG must keep the full predicate column set"
+        );
+        let st1 = pf1
+            .context
+            .downcast_ref::<SingleCollectorState>()
+            .expect("SingleCollectorState");
+        assert!(
+            Arc::ptr_eq(st1.always_residual.as_ref().unwrap(), &full_residual),
+            "boundary RG must carry the full residual"
+        );
     }
 
     #[test]
@@ -1578,6 +1782,11 @@ mod tests {
         assert_eq!(got, vec![1u32, 3], "candidates = collector ∩ peer bitmap");
         // XOR: the leaf's native expr must NOT be applied as a residual.
         assert!(perf_state(&pf).perf_residual.is_none(), "Lucene-selected leaf leaves no DF residual");
+        assert_eq!(
+            pf.required_predicate_columns.as_ref().unwrap(),
+            &Vec::<usize>::new(),
+            "Lucene-selected leaf column must not be read from Parquet"
+        );
     }
 
     /// A performance leaf whose own page stats prune the RG below the selectivity threshold is
@@ -1628,6 +1837,11 @@ mod tests {
         assert!(
             perf_state(&pf).perf_residual.is_some(),
             "DataFusion-selected leaf must carry its native residual"
+        );
+        assert_eq!(
+            pf.required_predicate_columns.as_ref().unwrap(),
+            &vec![0],
+            "DataFusion-selected leaf column must be present in this RG's projection"
         );
     }
 

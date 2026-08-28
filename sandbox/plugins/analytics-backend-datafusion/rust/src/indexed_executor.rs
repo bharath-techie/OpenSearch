@@ -376,6 +376,60 @@ fn physical_expr_is_sort_range_only(expr: &Arc<dyn PhysicalExpr>, column: &str) 
     }
 }
 
+/// Split a residual `PhysicalExpr` into its top-level AND conjuncts and drop
+/// every conjunct that is `physical_expr_is_sort_range_only` on `column`.
+///
+/// Returns `(remaining, stripped_any)`:
+/// - `remaining`: the AND of the surviving conjuncts, or `None` when every
+///   conjunct was a sort-range conjunct (fully stripped → empty residual).
+/// - `stripped_any`: `true` iff at least one sort-range conjunct was removed.
+///
+/// Fail-closed: only top-level `AND` nodes are split. Any other node
+/// (a bare comparison, `OR`, `NOT`, a cast, a non-literal bound, …) is treated
+/// as one opaque conjunct — a sort-range one is dropped, anything else is
+/// kept verbatim. A residual that is not a clean AND of
+/// strippable-plus-other conjuncts therefore yields `stripped_any = false`
+/// (relaxed path disabled) or keeps the unstrippable part intact.
+fn strip_sort_range_conjuncts(
+    expr: &Arc<dyn PhysicalExpr>,
+    column: &str,
+) -> (Option<Arc<dyn PhysicalExpr>>, bool) {
+    use datafusion::physical_expr::expressions::BinaryExpr;
+    fn collect_conjuncts(e: &Arc<dyn PhysicalExpr>, out: &mut Vec<Arc<dyn PhysicalExpr>>) {
+        if let Some(b) = e.as_ref().downcast_ref::<BinaryExpr>() {
+            if matches!(b.op(), Operator::And) {
+                collect_conjuncts(b.left(), out);
+                collect_conjuncts(b.right(), out);
+                return;
+            }
+        }
+        out.push(Arc::clone(e));
+    }
+    let mut conjuncts = Vec::new();
+    collect_conjuncts(expr, &mut conjuncts);
+
+    let mut kept: Vec<Arc<dyn PhysicalExpr>> = Vec::new();
+    let mut stripped_any = false;
+    for c in conjuncts {
+        if physical_expr_is_sort_range_only(&c, column) {
+            stripped_any = true;
+        } else {
+            kept.push(c);
+        }
+    }
+    let remaining = match kept.len() {
+        0 => None,
+        _ => {
+            let mut it = kept.into_iter();
+            let first = it.next().unwrap();
+            Some(it.fold(first, |acc, e| {
+                Arc::new(BinaryExpr::new(acc, Operator::And, e)) as Arc<dyn PhysicalExpr>
+            }))
+        }
+    };
+    (remaining, stripped_any)
+}
+
 /// Result of walking a logical plan looking for the leading top-of-plan ORDER BY.
 ///
 /// `column` is the bare column name (no qualifier — we compare against `index.sort.field`
@@ -1563,6 +1617,64 @@ async unsafe fn execute_indexed_with_context_inner(
         );
     }
 
+    // ── Relaxed timestamp WITHIN row groups (projection/predicate pruning) ──
+    //
+    // A superset of the strict `sort_range_within_rgs` set above. The strict
+    // set only activates when the ENTIRE residual is a sort-range tautology
+    // (so a WITHIN RG can skip decode for count shapes). This relaxed set
+    // activates whenever the residual carries AT LEAST ONE strippable
+    // sort-range conjunct on the leading sort field, even alongside other
+    // (non-sort-range) conjuncts. For a WITHIN RG the sort-range conjuncts are
+    // footer-proven tautologies, so we drop the sort column from that RG's
+    // parquet projection AND from the pushdown predicate — the remaining
+    // residual (`pushdown_predicate_sans_sort_range`) still filters. The sort
+    // column is only dropped when it is NOT part of the query's output
+    // projection (handled downstream by `output_projection ∪ required cols`).
+    //
+    // Scope: `FilterClass::SingleCollector` only. `None` (predicate-only) and
+    // `Tree` fail closed — the strict count shortcut already covers pure
+    // timestamp-range count shapes, and PredicateOnly/Tree do not carry the
+    // per-RG `required_predicate_columns` machinery this relaxation rides on.
+    let (timestamp_within_rgs, pushdown_predicate_sans_sort_range): (
+        Option<Arc<HashMap<usize, HashSet<usize>>>>,
+        Option<Arc<dyn PhysicalExpr>>,
+    ) = candidate_sort_range
+        .as_ref()
+        .and_then(|range| {
+            let residual = match &classification {
+                FilterClass::SingleCollector => extraction
+                    .as_ref()
+                    .and_then(|e| extract_single_collector_residual(&e.tree))
+                    .as_ref()
+                    .and_then(residual_bool_to_physical_expr),
+                FilterClass::None | FilterClass::Tree => None,
+            }?;
+            let (remaining, stripped_any) = strip_sort_range_conjuncts(&residual, &range.column);
+            if !stripped_any {
+                // Nothing sort-range to strip (or an unstrippable shape) →
+                // disable the relaxed path; the full predicate/projection apply.
+                return None;
+            }
+            let map: HashMap<usize, HashSet<usize>> = segments
+                .iter()
+                .enumerate()
+                .map(|(idx, segment)| (idx, segment_within_rgs(range, segment)))
+                .collect();
+            if !map.values().any(|set| !set.is_empty()) {
+                return None;
+            }
+            Some((Arc::new(map), remaining))
+        })
+        .map_or((None, None), |(map, remaining)| (Some(map), remaining));
+    if let Some(map) = timestamp_within_rgs.as_ref() {
+        let total: usize = map.values().map(|set| set.len()).sum();
+        log_debug!(
+            "indexed_executor: relaxed timestamp-WITHIN active for {} row group(s); sort column dropped from their projection + pushdown (residual_sans_sort_range present: {})",
+            total,
+            pushdown_predicate_sans_sort_range.is_some()
+        );
+    }
+
     // Top-K candidate truncation for rows shapes (`sort <key> | head N`).
     // Rows within each row group are stored in catalog sort order, so for a
     // single-key top-K on the leading sort field only the first/last N
@@ -1698,6 +1810,58 @@ async unsafe fn execute_indexed_with_context_inner(
                     None => None,
                 };
 
+            // ── Lucene conjunction folding ───────────────────────────────────
+            //
+            // When a correctness collector exists (e.g. `match(message,..)`),
+            // its per-RG Lucene call is MANDATORY — so evaluating each
+            // dual-viable (DelegationPossible) leaf as a separate provider
+            // costs a second FFM bitmap per RG AND forgoes Lucene's
+            // conjunction scorer. Fold every dual-viable leaf into the
+            // correctness provider as a Lucene `BooleanQuery` FILTER clause
+            // (`createAndProvider` upcall): ONE FFM call per RG, and Lucene
+            // leapfrogs the sparser iterator (e.g. a pod term) through the
+            // denser one (e.g. a high-frequency token) instead of Rust
+            // materializing both bitmaps and intersecting.
+            //
+            // XOR invariant preserved: a folded leaf is Lucene-authoritative
+            // on every RG — its DataFusion expr is never applied (it is
+            // removed from `performance_leaves`), and its RG-level stats
+            // pruning stays active via `StatsPruneTree`. Fail-closed per
+            // leaf: any upcall failure leaves that leaf on the per-RG
+            // XOR path unchanged. Without a correctness collector (q7-style
+            // pure equality counts) nothing is folded — the per-RG
+            // DataFusion-XOR-Lucene choice machinery still decides.
+            let mut folded_leaf_ids: std::collections::HashSet<i32> =
+                std::collections::HashSet::new();
+            let correctness_provider: Option<Arc<ProviderHandle>> = match correctness_provider {
+                Some(base) => {
+                    let mut chain = base;
+                    for (annotation_id, _expr) in extraction.tree.delegation_possible_leaves() {
+                        let Ok(leaf_provider) = create_provider(context_id, annotation_id) else {
+                            continue; // fail-closed: leaf stays on the XOR path
+                        };
+                        match crate::indexed_table::ffm_callbacks::create_and_provider(
+                            context_id,
+                            &chain,
+                            &leaf_provider,
+                        ) {
+                            Some(conj) => {
+                                native_bridge_common::log_debug!(
+                                    "[scf-rust] folded DelegationPossible leaf {} into Lucene conjunction provider {}",
+                                    annotation_id,
+                                    conj.key()
+                                );
+                                folded_leaf_ids.insert(annotation_id);
+                                chain = Arc::new(conj);
+                            }
+                            None => continue, // fail-closed
+                        }
+                    }
+                    Some(chain)
+                }
+                None => None,
+            };
+
             // Performance-delegated provider locks (lazy). Built ONCE per query,
             // shared across all per-(segment×chunk) closures via Arc::clone — so
             // multiple DataFusion threads racing to populate the same Lucene
@@ -1745,6 +1909,9 @@ async unsafe fn execute_indexed_with_context_inner(
                 .tree
                 .delegation_possible_leaves()
                 .into_iter()
+                // Folded leaves ride the Lucene conjunction collector — the
+                // evaluator must not consult or apply them again (XOR).
+                .filter(|(annotation_id, _)| !folded_leaf_ids.contains(annotation_id))
                 .map(|(annotation_id, expr)| {
                     let pruning_predicate =
                         build_pruning_predicate(&expr, Arc::clone(&schema_for_pruner));
@@ -1759,6 +1926,12 @@ async unsafe fn execute_indexed_with_context_inner(
             let call_strategy = CollectorCallStrategy::PageRangeSplit;
             let bloom_store = Arc::clone(&store);
             let bloom_schema = schema.clone();
+            // Relaxed timestamp-WITHIN plumbing (captured per query, applied per
+            // segment×chunk inside the closure). `residual_sans_sort_range` is
+            // the always-native residual with the sort-range conjuncts removed;
+            // used by the evaluator ONLY for WITHIN row groups.
+            let relaxed_within_map = timestamp_within_rgs.clone();
+            let residual_sans_sort_range = pushdown_predicate_sans_sort_range.clone();
             (
                 Arc::new(
                     move |segment: &SegmentFileInfo,
@@ -1825,7 +1998,16 @@ async unsafe fn execute_indexed_with_context_inner(
                             stats_prune_tree.cloned(),
                             chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
                             performance_leaves.clone(),
-                        ).with_chunk_doc_bounds(chunk.doc_min, chunk.doc_max));
+                        )
+                        .with_relaxed_within(
+                            residual_sans_sort_range.clone(),
+                            relaxed_within_map
+                                .as_ref()
+                                .and_then(|m| m.get(&chunk.segment_idx))
+                                .cloned()
+                                .unwrap_or_default(),
+                        )
+                        .with_chunk_doc_bounds(chunk.doc_min, chunk.doc_max));
                         Ok(eval)
                     },
                 ),
@@ -1987,6 +2169,8 @@ async unsafe fn execute_indexed_with_context_inner(
         sort_fields: sort_fields.clone(),
         sort_orders: sort_orders.clone(),
         sort_range_within_rgs,
+        timestamp_within_rgs,
+        pushdown_predicate_sans_sort_range,
         sort_topk_truncate,
         cancellation_token: crate::query_tracker::get_cancellation_token(context_id),
     }));
