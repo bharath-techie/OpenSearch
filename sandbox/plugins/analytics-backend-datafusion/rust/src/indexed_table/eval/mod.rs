@@ -81,6 +81,7 @@ pub(super) fn remap_expr_to_batch(
 }
 
 use super::bool_tree::ResolvedNode;
+use super::ffm_callbacks::apply_live_docs;
 use super::page_pruner::PagePruneMetrics;
 use super::page_pruner::PagePruner;
 use super::page_pruner::StatsPruneTree;
@@ -307,6 +308,9 @@ pub trait TreeEvaluator: Send + Sync {
 ///     evaluator: Arc::new(BitmapTreeEvaluator),        // or JavaTreeEvaluator
 ///     leaves: Arc::new(CollectorLeafBitmaps::without_metrics()),           // or ParquetStatsLeaves
 ///     page_pruner: Arc::new(pruner),
+///     context_id: 0,
+///     writer_generation: 0,
+///     deleted_doc_filtering_required: false,
 /// };
 /// ```
 ///
@@ -355,6 +359,13 @@ pub struct TreeBitsetSource {
     pub stats_prune_tree: Option<Arc<StatsPruneTree>>,
     /// Reverse map: absolute RG index → position in `rg_can_match` vectors.
     pub rg_index_to_pos: HashMap<usize, usize>,
+    /// Per-query context identifier for the getLiveDocs FFM upcall.
+    pub context_id: i64,
+    /// Segment writer generation identifying which segment's liveDocs to fetch.
+    pub writer_generation: i64,
+    /// When true, AND the segment's liveDocs into the per-RG candidate bitmap to exclude deleted
+    /// rows. Segments with no deletions short-circuit (getLiveDocs → -2, all-alive) at ~zero cost.
+    pub deleted_doc_filtering_required: bool,
 }
 
 impl RowGroupBitsetSource for TreeBitsetSource {
@@ -454,7 +465,7 @@ impl RowGroupBitsetSource for TreeBitsetSource {
         // coalesce consecutive bits into `insert_range` calls so we
         // get one O(log n) call per run instead of O(1) per bit.
         let anchor = (min_doc as i64) - rg.first_row;
-        let rg_candidates = if anchor == 0 {
+        let mut rg_candidates = if anchor == 0 {
             prefetch.candidates.clone()
         } else {
             let mut rg_candidates = RoaringBitmap::new();
@@ -493,6 +504,21 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             }
             rg_candidates
         };
+
+        // LiveDocs filtering: AND the segment's live-docs bitset into the resolved candidates to
+        // exclude deleted rows (shared helper — see `apply_live_docs`).
+        apply_live_docs(
+            &mut rg_candidates,
+            self.deleted_doc_filtering_required,
+            self.context_id,
+            self.writer_generation,
+            rg.first_row,
+            min_doc,
+            max_doc,
+        )?;
+        if self.deleted_doc_filtering_required && rg_candidates.is_empty() {
+            return Ok(None);
+        }
 
         // Compute final page-level pruning metrics from the resolved
         // bitmap. A page is "pruned" if zero candidate bits fall within
@@ -839,6 +865,9 @@ mod tests {
             collector_strategy: CollectorCallStrategy::TightenOuterBounds,
             stats_prune_tree: None,
             rg_index_to_pos: HashMap::new(),
+            context_id: 0,
+            writer_generation: 0,
+            deleted_doc_filtering_required: false,
         };
         assert!(!source.needs_row_mask());
     }

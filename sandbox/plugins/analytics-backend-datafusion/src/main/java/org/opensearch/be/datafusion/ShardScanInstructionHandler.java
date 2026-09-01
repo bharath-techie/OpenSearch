@@ -64,19 +64,50 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
             snapshot.writeTo(segment);
+            // Per-shard hasDeletions signal, stamped by AnalyticsSearchService from the Lucene backend's
+            // hasDeletedDocs probe. When true and the query has no delegation, route the pure-DF scan
+            // through the indexed SingleCollector path (CONJUNCTIVE, 0 delegated) so prefetch_rg ANDs
+            // the segment's liveDocs into candidates. When false, the vanilla ListingTable path runs
+            // with no liveDocs work.
+            boolean deletedDocFilteringRequired = context.hasDeletedDocs();
             SessionContextHandle sessionCtxHandle;
             if (node.requestsRowIds()) {
                 // QTF query phase — narrowed scan emits __row_id__. Use the indexed session
                 // context so the IndexedTableProvider injects shard-global row ids during scan.
                 // No delegated predicates here (delegation goes through ShardScanWithDelegationHandler),
-                // so treeShape=NO_DELEGATION and delegatedPredicateCount=0.
+                // so delegatedPredicateCount=0. When the shard has deletions, route through
+                // SingleCollector (CONJUNCTIVE) so prefetch_rg ANDs liveDocs into candidates before the
+                // row-ids are emitted — the emitted row-ids then already exclude deleted docs.
+                // Otherwise NO_DELEGATION → PredicateOnlyEvaluator (no liveDocs work). liveDocs
+                // filtering lives in SingleCollector only in this build, hence the CONJUNCTIVE switch.
+                int rowIdTreeShape = deletedDocFilteringRequired
+                    ? FilterTreeShape.CONJUNCTIVE.ordinal()
+                    : FilterTreeShape.NO_DELEGATION.ordinal();
                 sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
                     readerPtr,
                     runtimePtr,
                     tableName,
                     contextId,
-                    FilterTreeShape.NO_DELEGATION.ordinal(),
+                    rowIdTreeShape,
                     0,
+                    true,
+                    deletedDocFilteringRequired,
+                    context.hasPartialAggregate(),
+                    segment.address(),
+                    context.getFragmentBytes()
+                );
+            } else if (deletedDocFilteringRequired) {
+                // Pure-DF query on a shard with deletions: force the indexed SingleCollector path
+                // (CONJUNCTIVE, 0 delegated, no row-ids) so the collector-less SingleCollector arm
+                // seeds candidates from the page-pruned universe and prefetch_rg ANDs liveDocs.
+                sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
+                    readerPtr,
+                    runtimePtr,
+                    tableName,
+                    contextId,
+                    FilterTreeShape.CONJUNCTIVE.ordinal(),
+                    0,
+                    false,
                     true,
                     context.hasPartialAggregate(),
                     segment.address(),
@@ -89,6 +120,7 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     runtimePtr,
                     tableName,
                     contextId,
+                    false,
                     context.hasPartialAggregate(),
                     segment.address(),
                     context.getFragmentBytes()

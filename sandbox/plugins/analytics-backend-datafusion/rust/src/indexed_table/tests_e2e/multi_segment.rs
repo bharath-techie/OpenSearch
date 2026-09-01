@@ -173,6 +173,7 @@ async fn run_two_segment_query(
                     None,
                     None,
                     std::collections::HashMap::new(),
+                    false,
                 ),
             );
             Ok(eval)
@@ -391,6 +392,7 @@ async fn run_two_segment_query_witness(
                     None,
                     None,
                     std::collections::HashMap::new(),
+                    false,
                 ),
             );
             Ok(eval)
@@ -605,6 +607,7 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
                     None,
                     None,
                     std::collections::HashMap::new(),
+                    false,
                 ),
             );
             Ok(eval)
@@ -1120,6 +1123,9 @@ async fn run_wide_segments(
                 page_prune_metrics: None,
                     collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
                 stats_prune_tree: None, rg_index_to_pos: HashMap::new(),
+                                    context_id: 0,
+                    writer_generation: 0,
+                    deleted_doc_filtering_required: false,
                 },
             );
             Ok(eval)
@@ -1488,6 +1494,9 @@ async fn run_wide_segments_with_stats_pruning(
                     collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
                     stats_prune_tree: stats_prune_tree.cloned(),
                     rg_index_to_pos,
+                                    context_id: 0,
+                    writer_generation: 0,
+                    deleted_doc_filtering_required: false,
                 },
             );
             Ok(eval)
@@ -1807,6 +1816,9 @@ async fn stats_prune_direct_prefetch_asserts_pruning_and_empty_bitsets() {
             .enumerate()
             .map(|(pos, &idx)| (idx, pos))
             .collect(),
+        context_id: 0,
+        writer_generation: 0,
+        deleted_doc_filtering_required: false,
     };
 
     // Assert: prefetch_rg for RG0 (offset index 0, pruned) returns None.
@@ -1855,6 +1867,9 @@ async fn stats_prune_direct_prefetch_asserts_pruning_and_empty_bitsets() {
         collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
         stats_prune_tree: Some(Arc::new(spt)),
         rg_index_to_pos: rg_index_to_pos,
+        context_id: 0,
+        writer_generation: 0,
+        deleted_doc_filtering_required: false,
     };
 
     // RG2 at absolute index 2: should NOT be pruned (prices 80-110, all > 60).
@@ -2010,6 +2025,9 @@ async fn stats_prune_asserts_empty_collector_bitset_in_pruned_subtree() {
         collector_strategy: crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
         stats_prune_tree: Some(Arc::new(spt)),
         rg_index_to_pos,
+        context_id: 0,
+        writer_generation: 0,
+        deleted_doc_filtering_required: false,
     };
 
     // RG1 at absolute index 1: NOT pruned at root (OR is true).

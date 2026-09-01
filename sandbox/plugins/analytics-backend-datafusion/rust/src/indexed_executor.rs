@@ -138,6 +138,7 @@ pub async fn execute_indexed_query(
             crate::query_tracker::QueryType::Shard,
         ),
         table_name: table_name.clone(),
+        deleted_doc_filtering_required: false,
         indexed_config: None, // derive classification from tree
         query_config: Arc::unwrap_or_clone(query_config),
         io_handle: tokio::runtime::Handle::current(),
@@ -892,6 +893,10 @@ async unsafe fn execute_indexed_with_context_inner(
         .indexed_config
         .as_ref()
         .is_some_and(|c| c.requests_row_ids);
+    // Deleted-doc filtering flag (Java coordinator / ShardScan handler): when set, the
+    // SingleCollector evaluator ANDs the segment's liveDocs into candidates per RG so deleted
+    // rows are excluded. Segments with no deletions short-circuit (getLiveDocs → -2) at ~zero cost.
+    let deleted_doc_filtering_required = handle.deleted_doc_filtering_required;
     let classification_override = handle.indexed_config.map(|config| {
         // FilterTreeShape: 1 = CONJUNCTIVE → SingleCollector, 2 = INTERLEAVED → Tree.
         match (config.tree_shape, config.delegated_predicate_count) {
@@ -1126,19 +1131,20 @@ async unsafe fn execute_indexed_with_context_inner(
             )
         }
         FilterClass::SingleCollector => {
-            let extraction = extraction.as_ref().ok_or_else(|| {
-                DataFusionError::Internal(
-                    "classify_filter returned SingleCollector but extraction is None".into(),
-                )
-            })?;
+            // `extraction` is `None` for a no-filter query (e.g. `count(*)`) that the coordinator
+            // routed to SingleCollector so deleted docs get filtered (collector-less: candidates =
+            // page-pruned universe, then the liveDocs AND in prefetch_rg). A pure-DF *predicate*
+            // query has `Some` extraction with no Collector leaf. Both are handled by treating every
+            // extraction-derived value as empty when `None` — mirroring the `FilterClass::None` arm.
+            let extraction = extraction.as_ref();
             let schema_for_pruner = schema.clone();
-            let prune_tree_config =
-                build_prune_tree_config(&extraction.tree, &schema_for_pruner, &leaf_exprs);
+            let prune_tree_config = extraction
+                .and_then(|e| build_prune_tree_config(&e.tree, &schema_for_pruner, &leaf_exprs));
 
             // Correctness-delegated provider (eager). `None` when the query has only
-            // performance-delegated leaves and no Collector at all.
+            // performance-delegated leaves and no Collector at all (or no filter at all).
             let correctness_provider: Option<Arc<ProviderHandle>> =
-                match single_collector_id(&extraction.tree) {
+                match extraction.and_then(|e| single_collector_id(&e.tree)) {
                     Some(annotation_id) => Some(Arc::new(
                         create_provider(context_id, annotation_id)
                             .map_err(|e| DataFusionError::External(e.into()))?,
@@ -1154,7 +1160,9 @@ async unsafe fn execute_indexed_with_context_inner(
             let performance_provider_locks: Arc<
                 std::collections::HashMap<i32, Arc<std::sync::OnceLock<ProviderHandle>>>,
             > = {
-                let leaves = extraction.tree.delegation_possible_leaves();
+                let leaves = extraction
+                    .map(|e| e.tree.delegation_possible_leaves())
+                    .unwrap_or_default();
                 let mut map = std::collections::HashMap::with_capacity(leaves.len());
                 for (annotation_id, _expr) in &leaves {
                     map.entry(*annotation_id)
@@ -1174,7 +1182,7 @@ async unsafe fn execute_indexed_with_context_inner(
             // needed (unlike bool_tree_to_pruning_expr which handles arbitrary
             // trees). DelegationPossible leaves contribute their original_expr
             // to the residual so DF gets to evaluate them natively.
-            let residual_bool = extract_single_collector_residual(&extraction.tree);
+            let residual_bool = extraction.and_then(|e| extract_single_collector_residual(&e.tree));
             let residual_expr = residual_bool
                 .as_ref()
                 .and_then(residual_bool_to_physical_expr);
@@ -1250,6 +1258,7 @@ async unsafe fn execute_indexed_with_context_inner(
                             bloom_config,
                             stats_prune_tree.cloned(),
                             chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
+                            deleted_doc_filtering_required,
                         ));
                         Ok(eval)
                     },
@@ -1379,6 +1388,9 @@ async unsafe fn execute_indexed_with_context_inner(
                                 .enumerate()
                                 .map(|(pos, &idx)| (idx, pos))
                                 .collect(),
+                            context_id,
+                            writer_generation: segment.writer_generation,
+                            deleted_doc_filtering_required,
                         });
                         Ok(eval)
                     },

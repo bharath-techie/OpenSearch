@@ -843,6 +843,18 @@ public class AnalyticsSearchService implements AutoCloseable {
             );
             AnalyticsSearchBackendPlugin backend = backends.get(resolved.plan.getBackendId());
 
+            // Lucene backend both (a) sources the shard's hasDeletions signal (probed just below so
+            // instruction handlers can route pure-DF queries with deletes through the SingleCollector
+            // path) and (b) answers the getLiveDocs FFM callback on the non-Lucene driving path
+            // (registered further below when there is no delegation).
+            AnalyticsSearchBackendPlugin luceneBackend = backends.get("lucene");
+
+            // Per-shard hasDeletions probe: stamps ctx.hasDeletedDocs so ShardScanInstructionHandler
+            // can route pure-DF (zero-delegation) queries through createShardScanWithDelegationNode
+            // (CONJUNCTIVE, 0) → SingleCollector, where prefetch_rg ANDs the segment's liveDocs into
+            // candidates. When false, the vanilla ListingTable path is used with no liveDocs work.
+            ctx.setHasDeletedDocs(luceneBackend != null && luceneBackend.hasDeletedDocs(ctx));
+
             backendContext = applyInstructionHandlers(backend, resolved.plan.getInstructions(), ctx);
 
             // Handle exchange — if plan has delegation, ask accepting backend for handle and pass to driving
@@ -886,6 +898,20 @@ public class AnalyticsSearchService implements AutoCloseable {
                 // queries have isolated FFM callback bindings. The returned cleanup removes the
                 // binding after query execution completes.
                 trackerCleanup = backend.configureFilterDelegation(contextId, handle, tracker, backendContext);
+            } else if (luceneBackend != null && task != null && !"lucene".equals(resolved.plan.getBackendId())) {
+                // No delegation, but a non-Lucene driving backend (e.g. DataFusion) needs a Lucene
+                // handle registered so Rust's getLiveDocs FFM callback can resolve liveDocs for the
+                // pure-DF indexed path (the SingleCollector per-RG liveDocs AND). This is NOT a query
+                // collector — it only answers getLiveDocs(writerGeneration) with the segment's liveDocs
+                // bitset. Skip when Lucene is the driving backend: it applies liveDocs natively via its
+                // Collector and does not implement configureFilterDelegation.
+                long contextId = task.getId();
+                FilterDelegationHandle handle = luceneBackend.getFilterDelegationHandle(java.util.List.of(), ctx);
+                // Null tracker is intentional and safe: this registration exists only to serve
+                // getLiveDocs, which does not attribute per-thread resources. FilterTreeCallbacks
+                // stores the tracker and trackStart/trackEnd null-guard it (tracking is simply
+                // disabled for these upcalls); configureFilterDelegation itself only forwards it.
+                trackerCleanup = backend.configureFilterDelegation(contextId, handle, null, backendContext);
             }
 
             // Hash-shuffle producer routing: if the instruction chain produced a

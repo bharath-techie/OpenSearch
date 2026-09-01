@@ -307,4 +307,15 @@ public interface AnalyticsSearchBackendPlugin {
     default Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
         return Map.of();
     }
+
+    /**
+     * Whether the shard has segments with deleted documents that need filtering at query time.
+     * Called at the data node before execution so instruction handlers can route pure-DF queries
+     * through the indexed SingleCollector path (where the per-RG liveDocs AND excludes deleted rows)
+     * only when deletions are actually present. Default {@code false}; backends with a native
+     * hasDeletions signal (e.g. Lucene) override.
+     */
+    default boolean hasDeletedDocs(CommonExecutionContext ctx) {
+        return false;
+    }
 }

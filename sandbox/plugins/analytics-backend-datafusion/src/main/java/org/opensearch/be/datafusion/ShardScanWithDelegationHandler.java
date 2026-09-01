@@ -76,6 +76,11 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
                 treeShape.ordinal(),
                 delegatedPredicateCount,
                 node.requestsRowIds(),
+                // Per-shard hasDeletions signal from AnalyticsSearchService (Lucene backend's
+                // directoryReader().hasDeletions()). When false, SingleCollectorEvaluator skips the
+                // per-RG getLiveDocs FFM call entirely; when true, prefetch_rg ANDs liveDocs into
+                // candidates so deleted rows are excluded before refinement.
+                context.hasDeletedDocs(),
                 context.hasPartialAggregate(),
                 segment.address(),
                 context.getFragmentBytes()

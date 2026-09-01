@@ -225,6 +225,9 @@ async fn collect_row_ids(
                     crate::indexed_table::eval::CollectorCallStrategy::TightenOuterBounds,
                 stats_prune_tree: None,
                 rg_index_to_pos: HashMap::new(),
+                context_id: 0,
+                writer_generation: 0,
+                deleted_doc_filtering_required: false,
             });
             Ok(eval)
         })

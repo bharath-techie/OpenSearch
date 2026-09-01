@@ -39,12 +39,15 @@ type ReleaseProviderFn = unsafe extern "C" fn(i64, i32);
 type CreateCollectorFn = unsafe extern "C" fn(i64, i32, i64, i32, i32) -> i32;
 type CollectDocsFn = unsafe extern "C" fn(i64, i32, i32, i32, *mut u64, i64) -> i64;
 type ReleaseCollectorFn = unsafe extern "C" fn(i64, i32);
+/// `(context_id, writer_generation, min_doc, max_doc, out_buf, out_word_cap) -> words_written | -1 (error) | -2 (all alive)`.
+type GetLiveDocsFn = unsafe extern "C" fn(i64, i64, i32, i32, *mut u64, i64) -> i64;
 
 static CREATE_PROVIDER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static RELEASE_PROVIDER: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static CREATE_COLLECTOR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static COLLECT_DOCS: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static RELEASE_COLLECTOR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+static GET_LIVE_DOCS: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Registered by Java at startup. Stores function pointers into atomic
 /// slots. Each call to this entry replaces the slots wholesale.
@@ -59,6 +62,7 @@ pub unsafe extern "C" fn df_register_filter_tree_callbacks(
     create_collector: CreateCollectorFn,
     collect_docs: CollectDocsFn,
     release_collector: ReleaseCollectorFn,
+    get_live_docs: GetLiveDocsFn,
 ) {
     // catch_unwind is defense-in-depth: atomic stores shouldn't panic,
     // but if they ever did (e.g. allocator OOM if we grew the atomics),
@@ -71,6 +75,7 @@ pub unsafe extern "C" fn df_register_filter_tree_callbacks(
         CREATE_COLLECTOR.store(create_collector as *mut (), Ordering::Release);
         COLLECT_DOCS.store(collect_docs as *mut (), Ordering::Release);
         RELEASE_COLLECTOR.store(release_collector as *mut (), Ordering::Release);
+        GET_LIVE_DOCS.store(get_live_docs as *mut (), Ordering::Release);
     }));
 }
 
@@ -263,5 +268,101 @@ impl Drop for FfmSegmentCollector {
         if let Some(release) = load_release_collector() {
             unsafe { release(self.context_id, self.key) };
         }
+    }
+}
+
+// ── getLiveDocs — per-RG live-docs bitset fetch ─────────────────────────
+
+fn load_get_live_docs() -> Result<GetLiveDocsFn, String> {
+    let p = GET_LIVE_DOCS.load(Ordering::Acquire);
+    if p.is_null() {
+        return Err("FilterTree callbacks not registered (getLiveDocs)".into());
+    }
+    Ok(unsafe { std::mem::transmute::<*mut (), GetLiveDocsFn>(p) })
+}
+
+/// Fetch the liveDocs bitset for a given segment and doc range.
+/// Returns `None` if all docs are alive (no filtering needed).
+/// Returns `Some(bitset)` with the packed u64 words for the range.
+pub fn get_live_docs(
+    context_id: i64,
+    writer_generation: i64,
+    min_doc: i32,
+    max_doc: i32,
+) -> Result<Option<Vec<u64>>, String> {
+    if max_doc <= min_doc {
+        return Ok(None);
+    }
+    let span = (max_doc - min_doc) as usize;
+    let word_count = span.div_ceil(64);
+    let mut buf = vec![0u64; word_count];
+    let get_fn = load_get_live_docs()?;
+    let n = unsafe {
+        get_fn(
+            context_id,
+            writer_generation,
+            min_doc,
+            max_doc,
+            buf.as_mut_ptr(),
+            word_count as i64,
+        )
+    };
+    if n == -2 {
+        return Ok(None);
+    }
+    if n < 0 {
+        return Err(format!(
+            "getLiveDocs(context_id={}, writer_generation={}, [{}, {})) failed: {}",
+            context_id, writer_generation, min_doc, max_doc, n
+        ));
+    }
+    let n = n as usize;
+    if n > word_count {
+        return Err(format!(
+            "getLiveDocs reported wordsWritten={} > capacity={}",
+            n, word_count,
+        ));
+    }
+    buf.truncate(n);
+    Ok(Some(buf))
+}
+
+/// AND the segment's liveDocs into an RG-relative candidate bitmap to exclude deleted rows.
+///
+/// Shared by every indexed evaluator (SingleCollector, Tree, PredicateOnly) so the liveDocs
+/// intersection lives in one place. No-op when `deleted_doc_filtering_required` is false or the
+/// segment has no deletions (`get_live_docs` → `-2`, all alive) — the common case, at ~zero cost.
+///
+/// `candidates` bits are RG-relative (bit 0 = `rg_first_row`); the liveDocs words are fetched for
+/// the absolute `[min_doc, max_doc)` range, so they are seated at the RG-relative `min_doc -
+/// rg_first_row` offset before intersecting. On a getLiveDocs error the candidates are left
+/// unchanged (fail-open: better to over-return than to silently drop live rows).
+pub fn apply_live_docs(
+    candidates: &mut roaring::RoaringBitmap,
+    deleted_doc_filtering_required: bool,
+    context_id: i64,
+    writer_generation: i64,
+    rg_first_row: i64,
+    min_doc: i32,
+    max_doc: i32,
+) -> Result<(), String> {
+    if deleted_doc_filtering_required == false {
+        return Ok(());
+    }
+    // Fail CLOSED on a getLiveDocs error: propagate it so the query fails rather than silently
+    // returning results that still include deleted docs. `Ok(None)` (== -2, all alive) is the only
+    // no-op — there are genuinely no deletions to apply.
+    match get_live_docs(context_id, writer_generation, min_doc, max_doc) {
+        Ok(Some(live_bits)) => {
+            let offset = (min_doc as i64 - rg_first_row) as u32;
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(live_bits.as_ptr() as *const u8, live_bits.len() * 8)
+            };
+            let live_bm = roaring::RoaringBitmap::from_lsb0_bytes(offset, bytes);
+            *candidates &= live_bm;
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(e) => Err(format!("apply_live_docs: getLiveDocs failed: {e}")),
     }
 }
