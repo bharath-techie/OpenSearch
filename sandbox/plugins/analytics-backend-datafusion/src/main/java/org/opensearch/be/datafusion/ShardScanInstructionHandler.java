@@ -66,9 +66,11 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
             snapshot.writeTo(segment);
             // Per-shard hasDeletions signal, stamped by AnalyticsSearchService from the Lucene backend's
             // hasDeletedDocs probe. When true and the query has no delegation, route the pure-DF scan
-            // through the indexed SingleCollector path (CONJUNCTIVE, 0 delegated) so prefetch_rg ANDs
-            // the segment's liveDocs into candidates. When false, the vanilla ListingTable path runs
-            // with no liveDocs work.
+            // through the indexed SingleCollector path (CONJUNCTIVE): the native executor ANDs a
+            // synthetic match-all Collector (reserved annotation id, resolved by the Lucene handle to
+            // the segment's liveDocs) into the decoded filter tree, so deleted rows are excluded via
+            // the ordinary collector machinery. When false, the vanilla ListingTable path runs with
+            // zero extra work.
             boolean deletedDocFilteringRequired = context.hasDeletedDocs();
             SessionContextHandle sessionCtxHandle;
             if (node.requestsRowIds()) {
@@ -76,10 +78,9 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                 // context so the IndexedTableProvider injects shard-global row ids during scan.
                 // No delegated predicates here (delegation goes through ShardScanWithDelegationHandler),
                 // so delegatedPredicateCount=0. When the shard has deletions, route through
-                // SingleCollector (CONJUNCTIVE) so prefetch_rg ANDs liveDocs into candidates before the
-                // row-ids are emitted — the emitted row-ids then already exclude deleted docs.
-                // Otherwise NO_DELEGATION → PredicateOnlyEvaluator (no liveDocs work). liveDocs
-                // filtering lives in SingleCollector only in this build, hence the CONJUNCTIVE switch.
+                // SingleCollector (CONJUNCTIVE) so the injected match-all Collector excludes deleted
+                // docs from candidates before the row-ids are emitted. Otherwise NO_DELEGATION →
+                // PredicateOnlyEvaluator (no liveDocs work).
                 int rowIdTreeShape = deletedDocFilteringRequired
                     ? FilterTreeShape.CONJUNCTIVE.ordinal()
                     : FilterTreeShape.NO_DELEGATION.ordinal();
@@ -98,8 +99,9 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                 );
             } else if (deletedDocFilteringRequired) {
                 // Pure-DF query on a shard with deletions: force the indexed SingleCollector path
-                // (CONJUNCTIVE, 0 delegated, no row-ids) so the collector-less SingleCollector arm
-                // seeds candidates from the page-pruned universe and prefetch_rg ANDs liveDocs.
+                // (CONJUNCTIVE, 0 delegated, no row-ids). The native executor injects the match-all
+                // Collector into the decoded tree, so per-RG candidates are exactly the live docs
+                // (optionally intersected with the query's own predicates as residual).
                 sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
                     readerPtr,
                     runtimePtr,

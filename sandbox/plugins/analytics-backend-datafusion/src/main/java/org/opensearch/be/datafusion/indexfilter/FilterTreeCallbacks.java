@@ -103,15 +103,6 @@ public final class FilterTreeCallbacks {
         }
 
         /**
-         * Fetch the segment's liveDocs bitset via the handle. Stateless read — no provider/collector
-         * reference lifecycle (unlike {@link #createProvider(int)}). Returns wordsWritten, -2 if all
-         * docs are alive, or -1 on error (see {@link FilterDelegationHandle#getLiveDocs}).
-         */
-        int getLiveDocs(long writerGeneration, int minDoc, int maxDoc, java.lang.foreign.MemorySegment out) {
-            return handle.getLiveDocs(writerGeneration, minDoc, maxDoc, out);
-        }
-
-        /**
          * Create a provider via the handle, acquiring one reference for the native
          * handle on success. Returns -1 (without holding a reference) if the binding
          * is already fully closed or the handle refuses.
@@ -401,41 +392,6 @@ public final class FilterTreeCallbacks {
                     "collectDocs(contextId={}, collectorKey={}, [{}, {})) failed",
                     contextId,
                     collectorKey,
-                    minDoc,
-                    maxDoc
-                ),
-                throwable
-            );
-            return -1L;
-        } finally {
-            trackEnd(contextId, tid);
-        }
-    }
-
-    /**
-     * {@code getLiveDocs(contextId, writerGeneration, minDoc, maxDoc, outPtr, outWordCap) -> wordsWritten|-1|-2}.
-     * Returns -2 if the segment has no deletions (all docs alive).
-     */
-    public static long getLiveDocs(long contextId, long writerGeneration, int minDoc, int maxDoc, MemorySegment outPtr, long outWordCap) {
-        long tid = trackStart(contextId);
-        try {
-            QueryBinding binding = BINDINGS.get(contextId);
-            assertBindingExists(binding, "getLiveDocs", contextId);
-            if (binding == null) {
-                return -1L;
-            }
-            int maxWords = (int) Math.min(outWordCap, (long) Integer.MAX_VALUE);
-            MemorySegment view = outPtr.reinterpret((long) maxWords * Long.BYTES);
-            int result = binding.getLiveDocs(writerGeneration, minDoc, maxDoc, view);
-            return result;
-        } catch (AssertionError e) {
-            throw e;
-        } catch (Throwable throwable) {
-            LOGGER.error(
-                new ParameterizedMessage(
-                    "getLiveDocs(contextId={}, writerGeneration={}, [{}, {})) failed",
-                    contextId,
-                    writerGeneration,
                     minDoc,
                     maxDoc
                 ),

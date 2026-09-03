@@ -189,10 +189,6 @@ pub struct SingleCollectorEvaluator {
     /// Next matching docId from the last collectDocs call. When next_doc >= rg.max_doc,
     /// the RG can be skipped without an FFM call. Initialized to i32::MIN (no skip info).
     last_next_doc: std::sync::atomic::AtomicI32,
-    /// When true, the shard has deleted docs: `prefetch_rg` ANDs the segment's liveDocs bitset
-    /// into the candidate bitmap per RG so deleted rows are excluded before refinement. Segments
-    /// with no deletions short-circuit (getLiveDocs → `-2`, treated as all-alive) at ~zero cost.
-    deleted_doc_filtering_required: bool,
 }
 
 /// Resources needed for per-RG bloom filter pruning.
@@ -222,7 +218,6 @@ impl SingleCollectorEvaluator {
         bloom_config: Option<BloomConfig>,
         stats_prune_tree: Option<Arc<StatsPruneTree>>,
         rg_index_to_pos: HashMap<usize, usize>,
-        deleted_doc_filtering_required: bool,
     ) -> Self {
         Self {
             collector,
@@ -240,7 +235,6 @@ impl SingleCollectorEvaluator {
             stats_prune_tree,
             rg_index_to_pos,
             last_next_doc: std::sync::atomic::AtomicI32::new(i32::MIN),
-            deleted_doc_filtering_required,
         }
     }
 }
@@ -552,21 +546,6 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             // );
         }
 
-        // LiveDocs filtering: exclude deleted docs by intersecting the segment's live-docs bitset
-        // into the candidate bitmap (shared helper — see `apply_live_docs`). Both the no-residual
-        // path (stream `current_mask`) and the residual path (`collector_mask` in `on_batch_mask`)
-        // derive from this candidate bitmap / its `mask_buffer`, so ANDing here excludes deleted rows
-        // on every path with no further change.
-        crate::indexed_table::ffm_callbacks::apply_live_docs(
-            &mut candidates,
-            self.deleted_doc_filtering_required,
-            self.context_id,
-            self.writer_generation,
-            rg.first_row,
-            min_doc,
-            max_doc,
-        )?;
-
         if candidates.is_empty() {
             return Ok(None);
         }
@@ -796,7 +775,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
 
         let rg = RowGroupInfo {
@@ -828,7 +806,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let batch = datafusion::arrow::record_batch::RecordBatch::try_new(
@@ -872,7 +849,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
         assert!(eval.needs_row_mask());
     }
@@ -896,7 +872,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -932,7 +907,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
 
         let rg = RowGroupInfo {
@@ -970,7 +944,6 @@ mod tests {
             None,
             Some(Arc::new(spt)),
             HashMap::from([(0, 0)]),
-            false,
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -1005,7 +978,6 @@ mod tests {
             None,
             Some(Arc::new(spt)),
             HashMap::from([(0, 0)]),
-            false,
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -1040,7 +1012,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -1108,7 +1079,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
 
         let rg0 = RowGroupInfo {
@@ -1164,7 +1134,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
 
         let rg0 = RowGroupInfo {
@@ -1210,7 +1179,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
 
         let rg0 = RowGroupInfo {
@@ -1256,7 +1224,6 @@ mod tests {
             None,
             None,
             HashMap::new(),
-            false,
         );
 
         let rg0 = RowGroupInfo {

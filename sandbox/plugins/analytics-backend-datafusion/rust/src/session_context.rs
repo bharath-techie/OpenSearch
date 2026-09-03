@@ -54,9 +54,10 @@ pub struct SessionContextHandle {
     pub sort_orders: Vec<String>,
     pub query_context: QueryTrackingContext,
     pub table_name: String,
-    /// When true, the shard has deleted docs and evaluators must AND the segment's liveDocs into
-    /// candidates per RG. Set on every session (vanilla + indexed) so the pure-DF indexed path
-    /// (which uses the vanilla session) also sees it. Sourced from the Java coordinator flag.
+    /// When true, the shard has deleted docs: the indexed executor ANDs a synthetic match-all
+    /// Collector leaf (reserved annotation id) into the decoded filter tree so deleted rows are
+    /// excluded via the ordinary Lucene collector machinery. Sourced from the Java per-shard
+    /// hasDeletions probe; false on shards without deletions (zero overhead).
     pub deleted_doc_filtering_required: bool,
     /// When set, indicates this session uses the indexed execution path with filter delegation.
     pub indexed_config: Option<IndexedExecutionConfig>,
@@ -84,9 +85,6 @@ pub struct IndexedExecutionConfig {
     pub delegated_predicate_count: i32,
     /// QTF query phase: scan must emit shard-global `__row_id__`.
     pub requests_row_ids: bool,
-    /// When true, the shard has deleted docs and evaluators must AND the segment's liveDocs into
-    /// candidates per RG. Sourced from the Java coordinator's `requiresDeletedDocFiltering` flag.
-    pub deleted_doc_filtering_required: bool,
 }
 
 /// Widens `inferred` to the plan's `base_schema` (for index-pattern / alias scans) so the
@@ -576,7 +574,6 @@ pub async unsafe fn create_session_context_indexed(
         tree_shape,
         delegated_predicate_count,
         requests_row_ids,
-        deleted_doc_filtering_required,
     });
 
     Ok(ptr)

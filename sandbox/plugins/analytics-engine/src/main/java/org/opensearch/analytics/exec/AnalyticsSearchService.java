@@ -845,14 +845,16 @@ public class AnalyticsSearchService implements AutoCloseable {
 
             // Lucene backend both (a) sources the shard's hasDeletions signal (probed just below so
             // instruction handlers can route pure-DF queries with deletes through the SingleCollector
-            // path) and (b) answers the getLiveDocs FFM callback on the non-Lucene driving path
-            // (registered further below when there is no delegation).
+            // path) and (b) serves the reserved match-all collector (LIVE_DOCS_MATCH_ALL_ANNOTATION_ID
+            // → segment liveDocs) that the native executor injects into its filter tree on shards
+            // with deletions (registered further below when there is no delegation).
             AnalyticsSearchBackendPlugin luceneBackend = backends.get("lucene");
 
             // Per-shard hasDeletions probe: stamps ctx.hasDeletedDocs so ShardScanInstructionHandler
-            // can route pure-DF (zero-delegation) queries through createShardScanWithDelegationNode
-            // (CONJUNCTIVE, 0) → SingleCollector, where prefetch_rg ANDs the segment's liveDocs into
-            // candidates. When false, the vanilla ListingTable path is used with no liveDocs work.
+            // can route pure-DF (zero-delegation) queries through the indexed SingleCollector path
+            // (CONJUNCTIVE), where the native executor ANDs the injected match-all Collector — whose
+            // bitset is the segment's liveDocs — into candidates. When false, the vanilla
+            // ListingTable path is used with no liveDocs work.
             ctx.setHasDeletedDocs(luceneBackend != null && luceneBackend.hasDeletedDocs(ctx));
 
             backendContext = applyInstructionHandlers(backend, resolved.plan.getInstructions(), ctx);
@@ -874,44 +876,23 @@ public class AnalyticsSearchService implements AutoCloseable {
                 AnalyticsSearchBackendPlugin acceptingBackend = backends.get(acceptingBackendId);
                 FilterDelegationHandle handle = acceptingBackend.getFilterDelegationHandle(delegation.delegatedExpressions(), ctx);
 
-                // Build a thread tracker when task resource tracking is available.
-                DelegationThreadTracker tracker = null;
-                if (taskResourceTrackingService != null) {
-                    long taskId = task.getId();
-                    TaskResourceTrackingService service = taskResourceTrackingService;
-                    tracker = new DelegationThreadTracker() {
-                        @Override
-                        public long trackStart() {
-                            long threadId = Thread.currentThread().threadId();
-                            service.taskExecutionStartedOnThread(taskId, threadId);
-                            return threadId;
-                        }
-
-                        @Override
-                        public void trackEnd(long threadId) {
-                            service.taskExecutionFinishedOnThread(taskId, threadId);
-                        }
-                    };
-                }
-
                 // Register handle and tracker together under the query's contextId so concurrent
                 // queries have isolated FFM callback bindings. The returned cleanup removes the
                 // binding after query execution completes.
-                trackerCleanup = backend.configureFilterDelegation(contextId, handle, tracker, backendContext);
-            } else if (luceneBackend != null && task != null && !"lucene".equals(resolved.plan.getBackendId())) {
-                // No delegation, but a non-Lucene driving backend (e.g. DataFusion) needs a Lucene
-                // handle registered so Rust's getLiveDocs FFM callback can resolve liveDocs for the
-                // pure-DF indexed path (the SingleCollector per-RG liveDocs AND). This is NOT a query
-                // collector — it only answers getLiveDocs(writerGeneration) with the segment's liveDocs
-                // bitset. Skip when Lucene is the driving backend: it applies liveDocs natively via its
-                // Collector and does not implement configureFilterDelegation.
+                trackerCleanup = backend.configureFilterDelegation(contextId, handle, buildDelegationThreadTracker(task), backendContext);
+            } else if (ctx.hasDeletedDocs() && luceneBackend != null && task != null && !"lucene".equals(resolved.plan.getBackendId())) {
+                // No delegation, but the shard has deletions and a non-Lucene driving backend (e.g.
+                // DataFusion) will inject the reserved match-all Collector
+                // (LIVE_DOCS_MATCH_ALL_ANNOTATION_ID) into its filter tree. Register a Lucene handle
+                // so the ordinary createProvider/createCollector/collectDocs FFM callbacks can serve
+                // that collector — its bitset is the segment's liveDocs. The handle compiles no
+                // coordinator expressions (empty list); the match-all entry is registered by the
+                // handle itself. Skip when Lucene is the driving backend: it applies liveDocs
+                // natively via its Collector and does not implement configureFilterDelegation.
+                // Shards without deletions skip this entirely (vanilla ListingTable, no binding).
                 long contextId = task.getId();
                 FilterDelegationHandle handle = luceneBackend.getFilterDelegationHandle(java.util.List.of(), ctx);
-                // Null tracker is intentional and safe: this registration exists only to serve
-                // getLiveDocs, which does not attribute per-thread resources. FilterTreeCallbacks
-                // stores the tracker and trackStart/trackEnd null-guard it (tracking is simply
-                // disabled for these upcalls); configureFilterDelegation itself only forwards it.
-                trackerCleanup = backend.configureFilterDelegation(contextId, handle, null, backendContext);
+                trackerCleanup = backend.configureFilterDelegation(contextId, handle, buildDelegationThreadTracker(task), backendContext);
             }
 
             // Hash-shuffle producer routing: if the instruction chain produced a
@@ -964,6 +945,34 @@ public class AnalyticsSearchService implements AutoCloseable {
             }
             throw e;
         }
+    }
+
+    /**
+     * Build a {@link DelegationThreadTracker} that attributes FFM delegation callback work
+     * (createProvider/createCollector/collectDocs) to the query's task via
+     * {@link TaskResourceTrackingService}. Returns {@code null} when task resource tracking is
+     * unavailable — {@code FilterTreeCallbacks} null-guards the tracker (tracking is simply
+     * disabled for those upcalls).
+     */
+    private DelegationThreadTracker buildDelegationThreadTracker(Task task) {
+        if (taskResourceTrackingService == null) {
+            return null;
+        }
+        long taskId = task.getId();
+        TaskResourceTrackingService service = taskResourceTrackingService;
+        return new DelegationThreadTracker() {
+            @Override
+            public long trackStart() {
+                long threadId = Thread.currentThread().threadId();
+                service.taskExecutionStartedOnThread(taskId, threadId);
+                return threadId;
+            }
+
+            @Override
+            public void trackEnd(long threadId) {
+                service.taskExecutionFinishedOnThread(taskId, threadId);
+            }
+        };
     }
 
     /**

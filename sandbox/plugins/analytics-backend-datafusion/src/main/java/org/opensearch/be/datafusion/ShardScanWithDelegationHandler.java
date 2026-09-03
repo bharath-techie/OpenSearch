@@ -77,9 +77,11 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
                 delegatedPredicateCount,
                 node.requestsRowIds(),
                 // Per-shard hasDeletions signal from AnalyticsSearchService (Lucene backend's
-                // directoryReader().hasDeletions()). When false, SingleCollectorEvaluator skips the
-                // per-RG getLiveDocs FFM call entirely; when true, prefetch_rg ANDs liveDocs into
-                // candidates so deleted rows are excluded before refinement.
+                // directoryReader().hasDeletions()). When true, the native indexed executor ANDs a
+                // synthetic match-all Collector (reserved annotation id, resolved by the Lucene
+                // handle to the segment's liveDocs) into the decoded filter tree where needed;
+                // trees that already carry a correctness Collector are covered by the Lucene-side
+                // liveDocs application in collectDocs. When false, zero extra work.
                 context.hasDeletedDocs(),
                 context.hasPartialAggregate(),
                 segment.address(),

@@ -290,9 +290,6 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
                 ][seed as usize % 3],
                 stats_prune_tree: stats_prune_tree.cloned(),
                 rg_index_to_pos,
-                context_id: 0,
-                writer_generation: 0,
-                deleted_doc_filtering_required: false,
             });
             Ok(eval)
         })
@@ -450,7 +447,6 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_single_collector(
                 None,
                     None,
                     std::collections::HashMap::new(),
-                false,
             ));
             let _ = segment;
             Ok(eval)

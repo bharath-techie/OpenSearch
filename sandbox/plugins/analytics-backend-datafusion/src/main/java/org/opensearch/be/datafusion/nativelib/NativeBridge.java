@@ -472,8 +472,7 @@ public final class NativeBridge {
             )
         );
 
-        // void df_register_filter_tree_callbacks(createProvider, releaseProvider, createCollector,
-        //   collectDocs, releaseCollector, getLiveDocs)
+        // void df_register_filter_tree_callbacks(createCollector, collectDocs, releaseCollector)
         REGISTER_FILTER_TREE_CALLBACKS = linker.downcallHandle(
             lib.find("df_register_filter_tree_callbacks").orElseThrow(),
             FunctionDescriptor.ofVoid(
@@ -481,8 +480,7 @@ public final class NativeBridge {
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS   // getLiveDocs
+                ValueLayout.ADDRESS
             )
         );
 
@@ -804,19 +802,6 @@ public final class NativeBridge {
                 "releaseCollector",
                 java.lang.invoke.MethodType.methodType(void.class, long.class, int.class)
             );
-            MethodHandle getLiveDocs = lookup.findStatic(
-                cb,
-                "getLiveDocs",
-                java.lang.invoke.MethodType.methodType(
-                    long.class,
-                    long.class,
-                    long.class,
-                    int.class,
-                    int.class,
-                    java.lang.foreign.MemorySegment.class,
-                    long.class
-                )
-            );
 
             java.lang.foreign.MemorySegment createProviderStub = linker.upcallStub(
                 createProvider,
@@ -858,27 +843,13 @@ public final class NativeBridge {
                 FunctionDescriptor.ofVoid(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT),
                 arena
             );
-            java.lang.foreign.MemorySegment getLiveDocsStub = linker.upcallStub(
-                getLiveDocs,
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_LONG,   // wordsWritten | -1 | -2
-                    ValueLayout.JAVA_LONG,   // contextId
-                    ValueLayout.JAVA_LONG,   // writerGeneration
-                    ValueLayout.JAVA_INT,    // minDoc
-                    ValueLayout.JAVA_INT,    // maxDoc
-                    ValueLayout.ADDRESS,     // outPtr
-                    ValueLayout.JAVA_LONG    // outWordCap
-                ),
-                arena
-            );
             NativeCall.invokeVoid(
                 REGISTER_FILTER_TREE_CALLBACKS,
                 createProviderStub,
                 releaseProviderStub,
                 createCollectorStub,
                 collectDocsStub,
-                releaseCollectorStub,
-                getLiveDocsStub
+                releaseCollectorStub
             );
         } catch (Throwable t) {
             throw new ExceptionInInitializerError(t);

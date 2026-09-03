@@ -94,14 +94,15 @@ public interface FilterDelegationHandle extends Closeable {
     }
 
     /**
-     * Fetch the segment's liveDocs bitset for the doc range {@code [minDoc, maxDoc)}, packed as
-     * LSB-first {@code u64} words into {@code out}. Used by the deleted-doc filtering path (Rust ANDs
-     * this into per-row-group candidates).
+     * Reserved annotation id for the deleted-doc filtering path: the accepting backend resolves it
+     * to a match-all query whose per-RG collector emits the segment's live docs (set bit == live).
+     * The driving backend ANDs this synthetic Collector leaf into its decoded filter tree when the
+     * shard has deletions, so deleted rows are excluded through the ordinary
+     * createProvider/createCollector/collectDocs machinery — no dedicated liveDocs FFI.
      *
-     * @return number of {@code u64} words written, {@code -2} if all docs are alive (no deletions),
-     *         or {@code -1} on error
+     * <p>Coordinator-assigned annotation ids are non-negative ({@code PlannerContext.nextAnnotationId}
+     * counter), so a negative reserved id can never collide. Must match
+     * {@code LIVE_DOCS_MATCH_ALL_ANNOTATION_ID} in the native indexed executor.
      */
-    default int getLiveDocs(long writerGeneration, int minDoc, int maxDoc, java.lang.foreign.MemorySegment out) {
-        return -2;
-    }
+    int LIVE_DOCS_MATCH_ALL_ANNOTATION_ID = -2;
 }
