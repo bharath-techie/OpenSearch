@@ -43,7 +43,7 @@ use datafusion::physical_expr::{
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
-    Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+    Count, ExecutionPlanMetricsSet, Gauge, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion_common::DataFusionError;
@@ -168,7 +168,344 @@ fn build_projected_lex_ordering(
     LexOrdering::new(exprs)
 }
 
-/// Configuration used to build an `IndexedTableProvider`.
+/// Planning-time snapshot of the timestamp fast-path / QTF top-K "activation
+/// chain" decisions, carried from `execute_indexed_with_context_inner` to
+/// `IndexedTableProvider::scan` where each field is surfaced as a
+/// profile-visible metric (see `scan()` — the `activation_*` counters/gauges).
+///
+/// This is diagnostics-only: it never influences execution. It exists so a
+/// `profile:true` run shows exactly which condition gated (or failed to gate)
+/// the per-row-group top-K truncation, without adding per-row logging. All
+/// fields default to the "inactive" value, so test constructors can use
+/// `Default::default()`.
+#[derive(Debug, Clone, Default)]
+pub struct ActivationDiagnostics {
+    /// A shard filter predicate was extracted from the logical plan.
+    pub filter_expr_present: bool,
+    /// Arrow `TimeUnit` the leading sort column resolved to, encoded as
+    /// `0` = none/not-a-timestamp, `1` = second, `2` = millisecond,
+    /// `3` = microsecond, `4` = nanosecond. The footer/bound unit mismatch
+    /// (ns folded bound vs ms footer) is diagnosed by comparing this against
+    /// the normalized `candidate_*` bounds.
+    pub sort_column_unit_code: u8,
+    /// A conjunctive sort-column range was derived from the (const-folded)
+    /// predicate after unit normalization.
+    pub candidate_range_detected: bool,
+    /// Normalized inclusive lower bound (in the sort column's footer unit).
+    pub candidate_lower: Option<i64>,
+    /// Normalized inclusive upper bound (in the sort column's footer unit).
+    pub candidate_upper: Option<i64>,
+    /// The BoolNode tree shape supports the count/tautology fast path for the
+    /// sort-range column (`count_tree_shape_supported`).
+    pub count_tree_shape_supported: bool,
+    /// A top-level ORDER BY was found (`analyze_top_sort`).
+    pub top_sort_present: bool,
+    /// The top-level sort has exactly one sort key.
+    pub top_sort_single_key: bool,
+    /// The enclosing top-K row budget (`fetch`), when bounded.
+    pub top_sort_fetch: Option<usize>,
+    /// The leading sort key matches the catalog's leading `index.sort.field`.
+    pub top_sort_key_matches_catalog: bool,
+    /// The fail-closed Sort→TableScan path guard
+    /// (`analyze_scan_topk_truncation_path`) proved every operator between the
+    /// bounded top-K Sort and the indexed scan is on the safe allowlist, so
+    /// scan-level candidate truncation is eligible. `false` means a barrier
+    /// (Window/ROW_NUMBER, Aggregate, Join, Distinct, set op, Unnest, inner
+    /// Sort, …) sits on the path — truncation is fail-closed OFF regardless of
+    /// the top-K shape. Surfaced as `activation_topk_truncation_path_safe`.
+    pub topk_truncation_path_safe: bool,
+    /// Reason-level tally from the strict WITHIN sort-range classifier
+    /// (`segment_within_rgs`) — why the WITHIN set is (or is not) empty.
+    pub within_reasons: WithinClassifierReasons,
+    /// Reason-level tally from the dedicated Top-K WITHIN classifier pass — the
+    /// SAME `segment_within_rgs` footer check, but run under the Top-K shape
+    /// gate instead of the count-shortcut gate. Independent of `within_reasons`
+    /// (populated even when the strict count set is empty). Surfaced as
+    /// `activation_topk_within_reason_*` gauges. Diagnostics-only.
+    pub topk_within_reasons: WithinClassifierReasons,
+}
+
+/// Reason-level counters for the strict WITHIN sort-range classifier
+/// (`segment_within_rgs`), aggregated across every segment of the classifier
+/// pass. Diagnostics-only: incrementing a counter never influences the WITHIN
+/// set the classifier returns. Surfaced as `activation_within_reason_*` gauges
+/// so a `profile:true` run shows exactly which fail-closed exit / row-group
+/// rejection kept the WITHIN set empty (the `sort_range_within_rgs = 0` /
+/// `rg_topk_truncated = 0` gap) without any per-row logging.
+///
+/// Segment-level counters (`*_error`, `*_missing`, `*_failure`,
+/// `vector_length_mismatch`) tally once per segment that took the matching
+/// fail-closed early exit. Row-group counters tally once per row group; a
+/// single row group may contribute to more than one rejection counter (e.g. a
+/// missing min AND an unavailable null count) — they are independent tallies,
+/// not a partition. `within_accepted` is mutually exclusive with the row-group
+/// rejection counters for a given row group.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WithinClassifierReasons {
+    /// `StatisticsConverter::try_new` failed (segment-level fail-closed exit).
+    pub converter_creation_failure: usize,
+    /// The converter resolved no parquet column index for the sort column
+    /// (segment-level fail-closed exit).
+    pub parquet_column_index_missing: usize,
+    /// `row_group_mins` returned an error (segment-level fail-closed exit).
+    pub row_group_mins_error: usize,
+    /// `row_group_maxes` returned an error (segment-level fail-closed exit).
+    pub row_group_maxes_error: usize,
+    /// `row_group_null_counts` returned an error (segment-level fail-closed exit).
+    pub row_group_null_counts_error: usize,
+    /// mins/maxes/null_counts length disagreed with the row-group count
+    /// (segment-level fail-closed exit).
+    pub vector_length_mismatch: usize,
+    /// A row group's min statistic was absent or not an i64/timestamp scalar.
+    pub min_scalar_unsupported: usize,
+    /// A row group's max statistic was absent or not an i64/timestamp scalar.
+    pub max_scalar_unsupported: usize,
+    /// A row group's null count statistic was unavailable (null).
+    pub null_count_unavailable: usize,
+    /// A row group had a non-zero null count.
+    pub null_count_nonzero: usize,
+    /// A row group's min was below the range's lower bound.
+    pub lower_bound_rejection: usize,
+    /// A row group's max was above the range's upper bound.
+    pub upper_bound_rejection: usize,
+    /// A row group was accepted as fully WITHIN.
+    pub within_accepted: usize,
+}
+
+/// Emit the activation-chain diagnostics onto `metrics` as `global_*`
+/// (partition-less) counters/gauges. `activation_*` boolean flags are a
+/// `Count` set to 0/1 (always registered so a `0` is explicit in the profile);
+/// scalar values are gauges. Called once per shard scan and re-called when the
+/// node is rebuilt for a dynamic-filter pushdown, so the counters survive a
+/// TopK filter pushdown. Diagnostics-only: reads config, never mutates it.
+fn record_activation_diagnostics(metrics: &ExecutionPlanMetricsSet, config: &IndexedTableConfig) {
+    let d = &config.activation_diagnostics;
+    let flag = |name: &'static str, on: bool| {
+        let c: Count = MetricBuilder::new(metrics).global_counter(name);
+        c.add(on as usize);
+    };
+    let gauge = |name: &'static str, v: usize| {
+        let g: Gauge = MetricBuilder::new(metrics).global_gauge(name);
+        g.set(v);
+    };
+    // Row-id emission / QTF request (== requests_row_ids on the Java side).
+    flag("activation_emit_row_ids", config.emit_row_ids);
+    flag("activation_filter_expr_present", d.filter_expr_present);
+    // Sort catalog + resolved unit.
+    gauge("activation_sort_fields_count", config.sort_fields.len());
+    gauge(
+        "activation_sort_column_unit",
+        d.sort_column_unit_code as usize,
+    );
+    // Top-level ORDER BY shape.
+    flag("activation_top_sort_present", d.top_sort_present);
+    flag("activation_top_sort_single_key", d.top_sort_single_key);
+    gauge("activation_top_sort_fetch", d.top_sort_fetch.unwrap_or(0));
+    flag(
+        "activation_top_sort_key_matches_catalog",
+        d.top_sort_key_matches_catalog,
+    );
+    // Strict Sort→scan path guard for scan-level candidate truncation. `0` here
+    // (with `top_sort_present=1`) is the Q5 signature: a bounded top-K exists
+    // but a barrier operator between the Sort and the scan disqualified
+    // truncation.
+    flag(
+        "activation_topk_truncation_path_safe",
+        d.topk_truncation_path_safe,
+    );
+    // Candidate sort-range detection + normalized bounds. `has_*` flags
+    // disambiguate an open bound from a clamped `0`; the value gauges clamp
+    // negatives to 0 (log timestamps are non-negative).
+    flag(
+        "activation_candidate_sort_range_detected",
+        d.candidate_range_detected,
+    );
+    flag(
+        "activation_candidate_sort_range_has_lower",
+        d.candidate_lower.is_some(),
+    );
+    flag(
+        "activation_candidate_sort_range_has_upper",
+        d.candidate_upper.is_some(),
+    );
+    gauge(
+        "activation_candidate_sort_range_lower",
+        d.candidate_lower.unwrap_or(0).max(0) as usize,
+    );
+    gauge(
+        "activation_candidate_sort_range_upper",
+        d.candidate_upper.unwrap_or(0).max(0) as usize,
+    );
+    flag(
+        "activation_count_tree_shape_supported",
+        d.count_tree_shape_supported,
+    );
+    // Segment / row-group universe examined by the WITHIN classifier.
+    gauge("activation_segments_total", config.segments.len());
+    let rg_total: usize = config.segments.iter().map(|s| s.row_groups.len()).sum();
+    gauge("activation_row_groups_total", rg_total);
+    // Strict (count-shortcut) and relaxed (projection-pruning) WITHIN row-group
+    // counts, summed across segments.
+    let within_strict: usize = config
+        .sort_range_within_rgs
+        .as_ref()
+        .map(|m| m.values().map(|s| s.len()).sum())
+        .unwrap_or(0);
+    gauge("activation_sort_range_within_rgs", within_strict);
+    // Reason-level breakdown of the strict WITHIN classifier — why the WITHIN
+    // set above is (or is not) empty. Aggregated across all segments of the
+    // strict pass. Segment-level fail-closed exits and per-row-group rejections
+    // are independent tallies; `within_accepted` sums the RGs actually admitted.
+    record_within_reason_metrics(metrics, &d.within_reasons);
+    let within_relaxed: usize = config
+        .timestamp_within_rgs
+        .as_ref()
+        .map(|m| m.values().map(|s| s.len()).sum())
+        .unwrap_or(0);
+    gauge("activation_timestamp_within_rgs", within_relaxed);
+    // Dedicated Top-K WITHIN row-group count (drives `sort_topk_truncate`),
+    // independent of the strict count set above. Plus its reason-level
+    // breakdown (`activation_topk_within_reason_*`) so a `profile:true` run can
+    // explain an empty Top-K WITHIN set even when the strict tally is empty.
+    let topk_within: usize = config
+        .topk_range_within_rgs
+        .as_ref()
+        .map(|m| m.values().map(|s| s.len()).sum())
+        .unwrap_or(0);
+    gauge("activation_topk_range_within_rgs", topk_within);
+    record_topk_within_reason_metrics(metrics, &d.topk_within_reasons);
+    // Top-K truncation config actually placed on the provider.
+    let (tk_conf, tk_keep, tk_budget) = match config.sort_topk_truncate {
+        Some((keep_last, budget)) => (true, keep_last, budget),
+        None => (false, false, 0),
+    };
+    flag("activation_sort_topk_truncate_configured", tk_conf);
+    flag("activation_sort_topk_truncate_keep_last", tk_keep);
+    gauge("activation_sort_topk_truncate_budget", tk_budget);
+}
+
+/// Emit the strict WITHIN classifier's reason-level tally as
+/// `activation_within_reason_*` global gauges. Split out of
+/// [`record_activation_diagnostics`] so the exact metric names can be
+/// unit-verified without constructing a full `IndexedTableConfig`.
+fn record_within_reason_metrics(metrics: &ExecutionPlanMetricsSet, r: &WithinClassifierReasons) {
+    emit_within_reason_gauges(metrics, "activation_within_reason_", r);
+}
+
+/// Emit the dedicated Top-K WITHIN classifier pass's reason-level tally as
+/// `activation_topk_within_reason_*` global gauges. Same footer classifier as
+/// the strict pass, but gated by the Top-K shape instead of the count shortcut,
+/// so a `profile:true` run can explain an empty `topk_range_within_rgs` set
+/// even when the strict `within_reasons` tally is empty.
+fn record_topk_within_reason_metrics(
+    metrics: &ExecutionPlanMetricsSet,
+    r: &WithinClassifierReasons,
+) {
+    emit_within_reason_gauges(metrics, "activation_topk_within_reason_", r);
+}
+
+/// Emit a [`WithinClassifierReasons`] tally as global gauges under `<prefix>*`.
+/// Shared by the strict and Top-K WITHIN passes so the two only differ by their
+/// metric-name prefix. `prefix` must include the trailing separator (e.g.
+/// `"activation_within_reason_"`).
+fn emit_within_reason_gauges(
+    metrics: &ExecutionPlanMetricsSet,
+    prefix: &str,
+    r: &WithinClassifierReasons,
+) {
+    let gauge = |suffix: &str, v: usize| {
+        let g: Gauge = MetricBuilder::new(metrics).global_gauge(format!("{prefix}{suffix}"));
+        g.set(v);
+    };
+    gauge("converter_creation_failure", r.converter_creation_failure);
+    gauge(
+        "parquet_column_index_missing",
+        r.parquet_column_index_missing,
+    );
+    gauge("row_group_mins_error", r.row_group_mins_error);
+    gauge("row_group_maxes_error", r.row_group_maxes_error);
+    gauge("row_group_null_counts_error", r.row_group_null_counts_error);
+    gauge("vector_length_mismatch", r.vector_length_mismatch);
+    gauge("min_scalar_unsupported", r.min_scalar_unsupported);
+    gauge("max_scalar_unsupported", r.max_scalar_unsupported);
+    gauge("null_count_unavailable", r.null_count_unavailable);
+    gauge("null_count_nonzero", r.null_count_nonzero);
+    gauge("lower_bound_rejection", r.lower_bound_rejection);
+    gauge("upper_bound_rejection", r.upper_bound_rejection);
+    gauge("within_accepted", r.within_accepted);
+}
+
+#[cfg(test)]
+mod within_reason_metric_tests {
+    use super::*;
+
+    /// The reason-level counters surface under their exact
+    /// `activation_within_reason_*` names, each carrying its own value — the
+    /// contract a `profile:true` inspection relies on.
+    #[test]
+    fn within_reason_gauges_surface_by_exact_name() {
+        let reasons = WithinClassifierReasons {
+            converter_creation_failure: 1,
+            parquet_column_index_missing: 2,
+            row_group_mins_error: 3,
+            row_group_maxes_error: 4,
+            row_group_null_counts_error: 5,
+            vector_length_mismatch: 6,
+            min_scalar_unsupported: 7,
+            max_scalar_unsupported: 8,
+            null_count_unavailable: 9,
+            null_count_nonzero: 10,
+            lower_bound_rejection: 11,
+            upper_bound_rejection: 12,
+            within_accepted: 13,
+        };
+        let metrics = ExecutionPlanMetricsSet::new();
+        record_within_reason_metrics(&metrics, &reasons);
+        let set = metrics.clone_inner();
+        let g = |name: &str| set.sum_by_name(name).map(|v| v.as_usize());
+
+        assert_eq!(
+            g("activation_within_reason_converter_creation_failure"),
+            Some(1)
+        );
+        assert_eq!(
+            g("activation_within_reason_parquet_column_index_missing"),
+            Some(2)
+        );
+        assert_eq!(g("activation_within_reason_row_group_mins_error"), Some(3));
+        assert_eq!(g("activation_within_reason_row_group_maxes_error"), Some(4));
+        assert_eq!(
+            g("activation_within_reason_row_group_null_counts_error"),
+            Some(5)
+        );
+        assert_eq!(
+            g("activation_within_reason_vector_length_mismatch"),
+            Some(6)
+        );
+        assert_eq!(
+            g("activation_within_reason_min_scalar_unsupported"),
+            Some(7)
+        );
+        assert_eq!(
+            g("activation_within_reason_max_scalar_unsupported"),
+            Some(8)
+        );
+        assert_eq!(
+            g("activation_within_reason_null_count_unavailable"),
+            Some(9)
+        );
+        assert_eq!(g("activation_within_reason_null_count_nonzero"), Some(10));
+        assert_eq!(
+            g("activation_within_reason_lower_bound_rejection"),
+            Some(11)
+        );
+        assert_eq!(
+            g("activation_within_reason_upper_bound_rejection"),
+            Some(12)
+        );
+        assert_eq!(g("activation_within_reason_within_accepted"), Some(13));
+    }
+}
 pub struct IndexedTableConfig {
     pub schema: SchemaRef,
     pub segments: Vec<SegmentFileInfo>,
@@ -223,6 +560,23 @@ pub struct IndexedTableConfig {
     /// `segments`). `None` disables the WITHIN count shortcut.
     pub sort_range_within_rgs:
         Option<Arc<std::collections::HashMap<usize, std::collections::HashSet<usize>>>>,
+    /// Dedicated per-segment WITHIN sets that drive per-RG Top-K candidate
+    /// truncation (`sort <key> | head N`). Computed INDEPENDENTLY of
+    /// `sort_range_within_rgs` and its `count_tree_shape_supported` gate: this
+    /// set is gated ONLY by the Top-K shape (single-key, bounded fetch, key ==
+    /// leading catalog sort field) plus footer-WITHIN classification
+    /// (`segment_within_rgs`). Keyed by segment index (matching `segments`).
+    /// `None` disables Top-K truncation.
+    ///
+    /// Kept separate from `sort_range_within_rgs` on purpose: the strict count
+    /// shortcut only populates that field when the ENTIRE residual is a
+    /// sort-range tautology, so a `match(...) AND ts-range | sort ts | head N`
+    /// query (single-shard Q4) left it empty and truncation never armed even
+    /// though the Top-K preconditions all held. Truncation must also NOT ride
+    /// the relaxed `timestamp_within_rgs` projection-stripping set, hence a
+    /// third, dedicated map here.
+    pub topk_range_within_rgs:
+        Option<Arc<std::collections::HashMap<usize, std::collections::HashSet<usize>>>>,
     /// Relaxed per-segment WITHIN sets for projection/predicate pruning. A
     /// superset of `sort_range_within_rgs`: populated whenever the residual has
     /// at least one strippable sort-range conjunct on the leading sort field
@@ -240,8 +594,12 @@ pub struct IndexedTableConfig {
         Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     /// Top-K candidate truncation for single-key sorts on the leading sort
     /// field: `(keep_last_in_storage_order, row_budget)`. Applied by
-    /// `IndexedStream` to WITHIN row groups only. `None` disables.
+    /// `IndexedStream` to `topk_range_within_rgs` row groups only (NOT the
+    /// strict `sort_range_within_rgs` count set). `None` disables.
     pub sort_topk_truncate: Option<(bool, usize)>,
+    /// Planning-time activation-chain diagnostics, surfaced as `activation_*`
+    /// profile metrics in `scan()`. Diagnostics-only — never affects execution.
+    pub activation_diagnostics: ActivationDiagnostics,
     /// Per-query cancellation token (from the global `QUERY_REGISTRY`). Threaded
     /// down to `IndexReader` so the scan cooperatively stops when the query task
     /// is cancelled. `None` for untracked queries (`context_id == 0`) and tests.
@@ -451,6 +809,16 @@ impl TableProvider for IndexedTableProvider {
         if advertised_ordering.is_some() {
             ordering_optimized.add(1);
         }
+
+        // ── Activation-chain diagnostics (timestamp fast-path / QTF top-K) ──
+        //
+        // Surface every planning-time condition in the per-row-group top-K
+        // truncation activation chain as a profile-visible metric, so a
+        // `profile:true` run shows exactly where the fast path did (or did not)
+        // engage — without any per-row logging. Emitted here AND re-emitted in
+        // `clone_with_dynamic_filters` so the counters survive a TopK dynamic
+        // filter pushdown (which rebuilds the node with a fresh metrics set).
+        record_activation_diagnostics(&metrics, &self.config);
 
         Ok(Arc::new(QueryShardExec {
             config: Arc::clone(&self.config),
@@ -750,6 +1118,17 @@ impl ExecutionPlan for QueryShardExec {
                 .cloned()
                 .unwrap_or_default();
 
+            // Dedicated Top-K WITHIN set for this segment — drives per-RG
+            // candidate truncation, independent of the strict `within_rgs`
+            // count set above (which stays tied to the count shortcut).
+            let topk_within_rgs: HashSet<usize> = self
+                .config
+                .topk_range_within_rgs
+                .as_ref()
+                .and_then(|map| map.get(&chunk.segment_idx))
+                .cloned()
+                .unwrap_or_default();
+
             let timestamp_within_rgs: HashSet<usize> = self
                 .config
                 .timestamp_within_rgs
@@ -782,16 +1161,20 @@ impl ExecutionPlan for QueryShardExec {
                 cancellation_token: self.config.cancellation_token.clone(),
                 seg_arrow_schema: segment.arrow_schema.clone(),
                 within_rgs,
+                topk_within_rgs,
                 timestamp_within_rgs,
-                predicate_sans_sort_range: self
-                    .config
-                    .pushdown_predicate_sans_sort_range
-                    .clone(),
-                sort_topk_truncate: if self.config.emit_row_ids {
-                    None
-                } else {
-                    self.config.sort_topk_truncate
-                },
+                predicate_sans_sort_range: self.config.pushdown_predicate_sans_sort_range.clone(),
+                // Per-RG top-K candidate truncation is sound under QTF
+                // (`emit_row_ids`) too: it shrinks the post-match candidate
+                // bitmap to at most `budget` set bits per WITHIN row group
+                // BEFORE the RowSelection / PositionMap / decode are built
+                // (see `IndexedStream::poll` and `row_id_injection`). Surviving
+                // bits keep their true storage positions, so position-derived
+                // `__row_id__` values stay exact. Budget equals the global
+                // fetch K and truncation is limited to a single leading-sort-key
+                // top-K over WITHIN row groups (see `indexed_executor`), so the
+                // global top-K is preserved — identical to the non-QTF path.
+                sort_topk_truncate: self.config.sort_topk_truncate,
             };
             streams.push(exec.execute(0, Arc::clone(&context))?);
         }
@@ -923,6 +1306,11 @@ impl QueryShardExec {
         &self,
         dynamic_filters: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     ) -> Self {
+        // Rebuilt node gets a fresh metrics set; re-emit the activation-chain
+        // diagnostics so a TopK dynamic-filter pushdown (which produces this
+        // clone) does not drop the `activation_*` counters from the profile.
+        let metrics = ExecutionPlanMetricsSet::new();
+        record_activation_diagnostics(&metrics, &self.config);
         QueryShardExec {
             config: Arc::clone(&self.config),
             full_schema: self.full_schema.clone(),
@@ -931,7 +1319,7 @@ impl QueryShardExec {
             assignments: self.assignments.clone(),
             properties: Arc::clone(&self.properties),
             predicate: self.predicate.clone(),
-            metrics: ExecutionPlanMetricsSet::new(),
+            metrics,
             inner_parquet_metrics: Arc::clone(&self.inner_parquet_metrics),
             io_stats: Arc::clone(&self.io_stats),
             row_id_output_index: self.row_id_output_index,
@@ -981,9 +1369,11 @@ mod tests {
             sort_fields: vec![],
             sort_orders: vec![],
             sort_range_within_rgs: None,
+            topk_range_within_rgs: None,
             timestamp_within_rgs: None,
             pushdown_predicate_sans_sort_range: None,
             sort_topk_truncate: None,
+            activation_diagnostics: Default::default(),
             cancellation_token: None,
         }
     }

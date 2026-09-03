@@ -319,9 +319,11 @@ async fn run_tree_and_plan(
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        topk_range_within_rgs: None,
         timestamp_within_rgs: None,
         pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
+        activation_diagnostics: Default::default(),
         cancellation_token: None,
     }));
 

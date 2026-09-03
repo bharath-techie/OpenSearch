@@ -43,8 +43,9 @@ import java.util.List;
  * the structural post-conditions QTF must produce:
  * <ul>
  *   <li>Scan rowType narrowed to {@code BelowAnchorPhysicalFields + ___row_id}.</li>
- *   <li>ER output declares {@code ___ugsi} as the last field. Single-shard plans do not trigger
- *       QTF (no gather to skip).</li>
+ *   <li>ER output declares {@code ___ugsi} as the last field (multi-shard). Single-shard plans
+ *       also trigger QTF but have no ER — {@code ___ugsi} is stamped at runtime by the DAG cut,
+ *       not declared in the RelNode rowType.</li>
  *   <li>Wrapper output rowType = {@code AboveAnchorPhysicalFields}, in
  *       {@code TopmostOperatorAboveAnchor} order. Helpers stripped.</li>
  *   <li>Outer Project's RexInputRefs are remapped to wrapper-output indices.</li>
@@ -271,12 +272,63 @@ public class LateMaterializationPlanShapeTests extends BasePlannerRulesTests {
         );
     }
 
-    public void testQtfDeclined_singleShard() {
-        // Single shard: CBO inserts no ExchangeReducer below the anchor (the scan's
-        // SOURCE(SINGLETON) already satisfies the parent Sort's demand). QTF's win comes from
-        // avoiding cross-node materialization of fetch-only columns through the gather; with
-        // no gather there's nothing to save, so the rewriter declines.
+    public void testQtfFires_multiShard_sortKeyOnlyBelow_gateDoesNotApply() {
+        // Same sort-key-only-below shape as testQtfDeclined_singleShard_sortKeyOnlyBelow, but with
+        // 2 shards there IS an ExchangeReducer below the anchor, so the single-shard cost gate does
+        // not apply and QTF still fires. Locks the "multi-shard behavior unchanged" invariant: each
+        // shard's local top-K would otherwise ship URL for rows that lose the global merge.
+        assertQtfFired(
+            "SELECT URL, EventDate FROM hits ORDER BY EventDate LIMIT 10",
+            2,
+            Expect.scanCols("EventDate"),
+            Expect.aboveAnchorPhysicalFields("URL", "EventDate"),
+            Expect.erHasUgsi(true),
+            Expect.wrapperOutput("URL", "EventDate")
+        );
+    }
+
+    public void testQtfDeclined_singleShard_sortKeyOnlyBelow() {
+        // Q3 shape. Single shard: CBO inserts no ExchangeReducer below the anchor. The below-anchor
+        // input reads only the sort key (EventDate) — no predicate/filter column beyond it. The
+        // non-QTF path reads the index in physical sort order and early-terminates at the Sort+Limit
+        // K without materializing the wide fetch-only column (URL) for non-survivors, so QTF's fetch
+        // round-trip saves no predicate-column decode and only adds a stage (measured Q3 regression
+        // 37ms → 138ms). The single-shard cost gate declines. Contrast testQtfFires_simpleSortProject
+        // (same SQL, 2 shards) which still fires — multi-shard is not gated.
         assertQtfDeclined("SELECT URL, EventDate FROM hits ORDER BY EventDate LIMIT 10", 1);
+    }
+
+    public void testQtfDeclined_singleShard_starProjectionSortKeyOnlyBelow() {
+        // Project-wide Q3 shape. SELECT * with a sort-key-only below-anchor on a single shard —
+        // even though the fetch-only set is huge, there is no predicate column below the anchor, so
+        // baseline sorted early termination materializes exactly the K survivors' rows. Cost gate
+        // declines.
+        assertQtfDeclined("SELECT * FROM hits ORDER BY EventDate LIMIT 10", 1);
+    }
+
+    public void testQtfFires_singleShard_predicateColumnBelow() {
+        // Q1/Q4-like: single shard, but WHERE CounterID = 5 puts CounterID (a predicate column
+        // beyond the sort key EventDate) into the below-anchor input. The query phase must decode
+        // CounterID for every match regardless, and QTF still avoids decoding the wide fetch-only
+        // column (URL) for the non-survivors — so QTF fires even on a single shard. This is the
+        // exact discriminator between the regressed Q3 shape (declines) and the improved Q1/Q4/Q6
+        // shapes (fire).
+        assertQtfFired(
+            "SELECT URL, EventDate FROM hits WHERE CounterID = 5 ORDER BY EventDate LIMIT 10",
+            1,
+            Expect.scanCols("CounterID", "EventDate"),
+            Expect.aboveAnchorPhysicalFields("URL", "EventDate"),
+            Expect.erHasUgsi(false),
+            Expect.wrapperOutput("URL", "EventDate"),
+            Expect.outerProjectExprIndices(0, 1)
+        );
+    }
+
+    public void testQtfDeclined_singleShard_noFetchOnlyColumns() {
+        // Single shard, but the only projected column is the sort key — FetchOnly = {} → skip.
+        // With nothing to defer to a fetch phase, the query-phase decode already reads exactly the
+        // columns the result needs, so QTF would only add a pointless fetch round-trip.
+        assertQtfDeclined("SELECT EventDate FROM hits ORDER BY EventDate LIMIT 10", 1);
     }
 
     public void testQtfFires_descendingSort() {

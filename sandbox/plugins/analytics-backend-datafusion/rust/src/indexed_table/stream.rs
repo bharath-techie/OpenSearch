@@ -520,6 +520,11 @@ pub struct IndexedExec {
     /// tautology (WITHIN + null-free). For count-only shapes these emit the
     /// candidate cardinality without a parquet read. Empty disables.
     pub(crate) within_rgs: std::collections::HashSet<usize>,
+    /// Row-group indices selected for per-RG Top-K candidate truncation —
+    /// footer-WITHIN under the Top-K shape gate, computed INDEPENDENTLY of
+    /// `within_rgs` (the count-shortcut set). Truncation reads this set, never
+    /// `within_rgs`. See `IndexedTableConfig::topk_range_within_rgs`.
+    pub(crate) topk_within_rgs: std::collections::HashSet<usize>,
     /// Relaxed WITHIN row groups (superset of `within_rgs`): the sort column is
     /// dropped from these RGs' parquet projection and their pushdown predicate
     /// is replaced with `predicate_sans_sort_range`. See
@@ -528,10 +533,10 @@ pub struct IndexedExec {
     /// Pushdown predicate with sort-range conjuncts stripped, used for row
     /// groups in `timestamp_within_rgs`. `None` = residual was solely the sort
     /// range (fully stripped → no predicate for those RGs).
-    pub(crate) predicate_sans_sort_range:
-        Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
-    /// Top-K candidate truncation `(keep_last, budget)` for WITHIN RGs on
-    /// single-key sorts over the leading sort field. `None` disables.
+    pub(crate) predicate_sans_sort_range: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    /// Top-K candidate truncation `(keep_last, budget)` applied to
+    /// `topk_within_rgs` row groups on single-key sorts over the leading sort
+    /// field. `None` disables.
     pub(crate) sort_topk_truncate: Option<(bool, usize)>,
 }
 
@@ -644,6 +649,7 @@ impl ExecutionPlan for IndexedExec {
             self.dynamic_filter.clone(),
             self.seg_arrow_schema.clone(),
             self.within_rgs.clone(),
+            self.topk_within_rgs.clone(),
             self.timestamp_within_rgs.clone(),
             self.predicate_sans_sort_range.clone(),
             self.sort_topk_truncate,
@@ -731,6 +737,10 @@ struct IndexedStream {
     /// Row-group indices with a WITHIN (tautological) sort-range residual —
     /// see `IndexedExec::within_rgs`.
     within_rgs: std::collections::HashSet<usize>,
+    /// Row-group indices selected for per-RG Top-K candidate truncation —
+    /// see `IndexedExec::topk_within_rgs`. Truncation gates on THIS set, not
+    /// `within_rgs`.
+    topk_within_rgs: std::collections::HashSet<usize>,
     /// Relaxed WITHIN row groups — see `IndexedExec::timestamp_within_rgs`.
     timestamp_within_rgs: std::collections::HashSet<usize>,
     /// Pushdown predicate with sort-range conjuncts stripped, handed to parquet
@@ -766,6 +776,7 @@ impl IndexedStream {
         dynamic_filter: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         seg_arrow_schema: SchemaRef,
         within_rgs: std::collections::HashSet<usize>,
+        topk_within_rgs: std::collections::HashSet<usize>,
         timestamp_within_rgs: std::collections::HashSet<usize>,
         predicate_sans_sort_range: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         sort_topk_truncate: Option<(bool, usize)>,
@@ -820,6 +831,7 @@ impl IndexedStream {
             row_id_output_index,
             dynamic_rg_pruner,
             within_rgs,
+            topk_within_rgs,
             timestamp_within_rgs,
             predicate_sans_sort_range,
             sort_topk_truncate,
@@ -850,7 +862,10 @@ impl IndexedStream {
         }
     }
 
-    fn projection_for_rg(&self, required_predicate_columns: Option<&[usize]>) -> Option<Vec<usize>> {
+    fn projection_for_rg(
+        &self,
+        required_predicate_columns: Option<&[usize]>,
+    ) -> Option<Vec<usize>> {
         // Evaluators that do not expose RG ownership retain the existing
         // conservative query-wide projection. Row-id emission also stays on
         // the existing path because its synthetic output column has separate
@@ -1302,14 +1317,21 @@ impl IndexedStream {
                     let rg = prefetched.rg.clone();
 
                     // Top-K candidate truncation: rows in this RG are stored
-                    // in catalog sort order and the RG is WITHIN (residual
-                    // tautology), so only the first/last `budget` candidates
-                    // can reach the global top-K. Shrinks the RowSelection —
-                    // and therefore the parquet decode — to at most `budget`
-                    // rows per RG. The prefetch-built mask buffer no longer
-                    // matches, so drop it (masks rebuild from candidates).
+                    // in catalog sort order and the RG is Top-K-WITHIN (its
+                    // footer sort-range is a tautology), so only the first/last
+                    // `budget` candidates can reach the global top-K. Gated on
+                    // `topk_within_rgs` — the DEDICATED Top-K set, NOT the
+                    // strict `within_rgs` count-shortcut set (whose stricter
+                    // gate left single-shard Q4 unarmed). Shrinks the
+                    // RowSelection — and therefore the parquet decode — to at
+                    // most `budget` rows per RG. The prefetch-built mask buffer
+                    // no longer matches, so drop it (masks rebuild from
+                    // candidates).
                     if let Some((keep_last, budget)) = self.sort_topk_truncate {
-                        if self.within_rgs.contains(&rg.index) {
+                        if self.topk_within_rgs.contains(&rg.index) {
+                            if let Some(ref c) = self.metrics.rg_within_at_decode {
+                                c.add(1);
+                            }
                             let truncated = truncate_candidates_for_topk(
                                 &mut prefetched.prefetched.candidates,
                                 keep_last,
@@ -1320,7 +1342,28 @@ impl IndexedStream {
                                 if let Some(ref c) = self.metrics.rg_topk_truncated {
                                     c.add(1);
                                 }
+                            } else if let Some(ref c) =
+                                self.metrics.rg_topk_truncate_skip_below_budget
+                            {
+                                // WITHIN + configured, but candidate count already
+                                // <= budget so no bits were removed.
+                                c.add(1);
                             }
+                        } else if let Some(ref c) = self.metrics.rg_topk_truncate_skip_not_within {
+                            // Configured, but this RG is a boundary (non-WITHIN) RG:
+                            // full candidates are retained.
+                            c.add(1);
+                        }
+                    } else {
+                        // No truncation config reached this stream (planning declined
+                        // it — see the `activation_sort_topk_truncate_configured` metric).
+                        if self.within_rgs.contains(&rg.index) {
+                            if let Some(ref c) = self.metrics.rg_within_at_decode {
+                                c.add(1);
+                            }
+                        }
+                        if let Some(ref c) = self.metrics.rg_topk_truncate_skip_no_config {
+                            c.add(1);
                         }
                     }
 
@@ -1340,10 +1383,8 @@ impl IndexedStream {
                         }
                     }
 
-                    let required_predicate_columns = prefetched
-                        .prefetched
-                        .required_predicate_columns
-                        .take();
+                    let required_predicate_columns =
+                        prefetched.prefetched.required_predicate_columns.take();
                     let candidates = prefetched.prefetched.candidates;
                     let prefetch_mask_buffer = prefetched.prefetched.mask_buffer;
 
@@ -1512,9 +1553,8 @@ impl IndexedStream {
                         && !alignment_risk
                         && !self.evaluator.forbid_parquet_pushdown();
 
-                    let rg_projection = self.projection_for_rg(
-                        required_predicate_columns.as_deref(),
-                    );
+                    let rg_projection =
+                        self.projection_for_rg(required_predicate_columns.as_deref());
                     // Relaxed timestamp-WITHIN: this RG's sort-range residual is
                     // a footer-proven tautology, so hand parquet the predicate
                     // with the sort-range conjuncts stripped (may be `None`).
@@ -1527,7 +1567,13 @@ impl IndexedStream {
                     } else {
                         self.predicate.clone()
                     };
-                    match self.create_row_selection_stream(&rg, selection, push, rg_projection, rg_predicate) {
+                    match self.create_row_selection_stream(
+                        &rg,
+                        selection,
+                        push,
+                        rg_projection,
+                        rg_predicate,
+                    ) {
                         Ok((stream, plan)) => {
                             if let Some(ref timer) = self.metrics.parquet_time {
                                 timer.add_duration(t_plan.elapsed());

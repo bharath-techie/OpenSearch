@@ -151,9 +151,11 @@ async fn run_missing_col_tree(tree_bool: BoolNode) -> usize {
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        topk_range_within_rgs: None,
         timestamp_within_rgs: None,
         pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
+        activation_diagnostics: Default::default(),
         cancellation_token: None,
     }));
     let ctx = SessionContext::new();
@@ -471,9 +473,11 @@ async fn query_with_mismatched_schema(
         sort_fields: vec![],
         sort_orders: vec![],
         sort_range_within_rgs: None,
+        topk_range_within_rgs: None,
         timestamp_within_rgs: None,
         pushdown_predicate_sans_sort_range: None,
         sort_topk_truncate: None,
+        activation_diagnostics: Default::default(),
         cancellation_token: None,
     }));
     let ctx = SessionContext::new();

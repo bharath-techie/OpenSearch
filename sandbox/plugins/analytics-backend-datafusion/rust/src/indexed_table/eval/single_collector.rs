@@ -55,9 +55,7 @@ const HARDCODED_SELECTIVITY_THRESHOLD: f64 = 0.05;
 /// Full-schema column indices referenced by an expression. These indices are
 /// carried into the per-RG prefetch result so the stream can construct the
 /// Parquet projection AFTER the DelegationPossible XOR decision.
-fn expr_column_indices(
-    expr: &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
-) -> Vec<usize> {
+fn expr_column_indices(expr: &Arc<dyn datafusion::physical_expr::PhysicalExpr>) -> Vec<usize> {
     use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
     use datafusion::physical_expr::expressions::Column;
 
@@ -704,8 +702,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         } else {
             (&self.always_residual_columns, self.residual_expr.clone())
         };
-        let mut required_predicate_columns: HashSet<usize> =
-            seed_columns.iter().copied().collect();
+        let mut required_predicate_columns: HashSet<usize> = seed_columns.iter().copied().collect();
         for leaf in &self.performance_leaves {
             // Sound-stats selectivity of THIS leaf on THIS RG (independent of other predicates).
             // `None` == no usable parquet stats for the leaf's column → cannot prove DataFusion is
@@ -761,7 +758,8 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             let mut just_initialized = false;
             let provider = lock.get_or_init(|| {
                 just_initialized = true;
-                create_provider(context_id, annotation_id).expect("create_provider FFM upcall failed")
+                create_provider(context_id, annotation_id)
+                    .expect("create_provider FFM upcall failed")
             });
             if just_initialized {
                 log_debug!(
@@ -800,7 +798,10 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             let offset = (min_doc as i64 - rg.first_row) as u32;
             let num_docs = (max_doc - min_doc) as u32;
             let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(result.words.as_ptr() as *const u8, result.words.len() * 8)
+                std::slice::from_raw_parts(
+                    result.words.as_ptr() as *const u8,
+                    result.words.len() * 8,
+                )
             };
             let mut peer_bm = RoaringBitmap::from_lsb0_bytes(offset, bytes);
             let upper = offset.saturating_add(num_docs);
@@ -1112,9 +1113,8 @@ mod tests {
         use datafusion::physical_expr::PhysicalExpr;
         use std::collections::HashSet;
 
-        let col = |name: &str, idx: usize| -> Arc<dyn PhysicalExpr> {
-            Arc::new(Column::new(name, idx))
-        };
+        let col =
+            |name: &str, idx: usize| -> Arc<dyn PhysicalExpr> { Arc::new(Column::new(name, idx)) };
         let lit = |v: i64| -> Arc<dyn PhysicalExpr> {
             Arc::new(Literal::new(ScalarValue::Int64(Some(v))))
         };
@@ -1126,13 +1126,17 @@ mod tests {
             Arc::new(BinaryExpr::new(col("other", 3), Operator::GtEq, lit(0)));
         let ts_range: Arc<dyn PhysicalExpr> =
             Arc::new(BinaryExpr::new(ts_ge, Operator::And, ts_le));
-        let full_residual: Arc<dyn PhysicalExpr> =
-            Arc::new(BinaryExpr::new(ts_range, Operator::And, Arc::clone(&other_ge)));
+        let full_residual: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            ts_range,
+            Operator::And,
+            Arc::clone(&other_ge),
+        ));
         let stripped_residual: Arc<dyn PhysicalExpr> = Arc::clone(&other_ge);
 
         // Candidates over both RGs so neither prefetch returns None.
-        let collector =
-            Arc::new(StubCollector { docs: (0..16).collect() }) as Arc<dyn RowGroupDocsCollector>;
+        let collector = Arc::new(StubCollector {
+            docs: (0..16).collect(),
+        }) as Arc<dyn RowGroupDocsCollector>;
         let pruner = minimal_page_pruner();
         let eval = SingleCollectorEvaluator::new(
             Some(collector),
@@ -1151,11 +1155,21 @@ mod tests {
             HashMap::new(),
             Vec::new(),
         )
-        .with_relaxed_within(Some(Arc::clone(&stripped_residual)), HashSet::from([0usize]));
+        .with_relaxed_within(
+            Some(Arc::clone(&stripped_residual)),
+            HashSet::from([0usize]),
+        );
 
         // RG 0 is WITHIN: sort column (0) dropped, only stripped column {3}.
-        let rg0 = RowGroupInfo { index: 0, first_row: 0, num_rows: 8 };
-        let pf0 = eval.prefetch_rg(&rg0, 0, 8).unwrap().expect("rg0 candidates");
+        let rg0 = RowGroupInfo {
+            index: 0,
+            first_row: 0,
+            num_rows: 8,
+        };
+        let pf0 = eval
+            .prefetch_rg(&rg0, 0, 8)
+            .unwrap()
+            .expect("rg0 candidates");
         assert_eq!(
             pf0.required_predicate_columns.as_ref().unwrap(),
             &vec![3usize],
@@ -1171,8 +1185,15 @@ mod tests {
         );
 
         // RG 1 is NOT WITHIN: full residual + full column set {0, 3}.
-        let rg1 = RowGroupInfo { index: 1, first_row: 8, num_rows: 8 };
-        let pf1 = eval.prefetch_rg(&rg1, 8, 16).unwrap().expect("rg1 candidates");
+        let rg1 = RowGroupInfo {
+            index: 1,
+            first_row: 8,
+            num_rows: 8,
+        };
+        let pf1 = eval
+            .prefetch_rg(&rg1, 8, 16)
+            .unwrap()
+            .expect("rg1 candidates");
         assert_eq!(
             pf1.required_predicate_columns.as_ref().unwrap(),
             &vec![0usize, 3usize],
@@ -1699,7 +1720,8 @@ mod tests {
         let mut m = HashMap::new();
         for &id in ids {
             let lock = Arc::new(OnceLock::new());
-            lock.set(ProviderHandle::new_for_test(id)).expect("OnceLock set");
+            lock.set(ProviderHandle::new_for_test(id))
+                .expect("OnceLock set");
             m.insert(id, lock);
         }
         Arc::new(m)
@@ -1719,10 +1741,7 @@ mod tests {
 
     fn perf_leaf(id: i32, op: datafusion::logical_expr::Operator, v: i32) -> PerformanceLeaf {
         let expr = int_cmp_expr(op, v);
-        let pp = crate::indexed_table::page_pruner::build_pruning_predicate(
-            &expr,
-            int_schema(),
-        );
+        let pp = crate::indexed_table::page_pruner::build_pruning_predicate(&expr, int_schema());
         PerformanceLeaf {
             annotation_id: id,
             expr,
@@ -1777,11 +1796,18 @@ mod tests {
             num_rows: 8,
         };
         let pf = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("has matches");
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "peer must be consulted once");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "peer must be consulted once"
+        );
         let got: Vec<u32> = pf.candidates.iter().collect();
         assert_eq!(got, vec![1u32, 3], "candidates = collector ∩ peer bitmap");
         // XOR: the leaf's native expr must NOT be applied as a residual.
-        assert!(perf_state(&pf).perf_residual.is_none(), "Lucene-selected leaf leaves no DF residual");
+        assert!(
+            perf_state(&pf).perf_residual.is_none(),
+            "Lucene-selected leaf leaves no DF residual"
+        );
         assert_eq!(
             pf.required_predicate_columns.as_ref().unwrap(),
             &Vec::<usize>::new(),
@@ -1824,7 +1850,10 @@ mod tests {
             first_row: 0,
             num_rows: 8,
         };
-        let pf = eval.prefetch_rg(&rg, 0, 8).unwrap().expect("collector matched");
+        let pf = eval
+            .prefetch_rg(&rg, 0, 8)
+            .unwrap()
+            .expect("collector matched");
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             0,

@@ -126,6 +126,19 @@ pub struct StreamMetrics {
     /// Row groups whose candidate bitmap was truncated to the top-K budget
     /// before decode (single-key sort on the leading sort field, WITHIN RG).
     pub rg_topk_truncated: Option<Count>,
+    /// Row groups reaching the decode phase that the stream observed to be in
+    /// its WITHIN set. Cross-checks the planning-time `activation_sort_range_within_rgs`
+    /// count against what the stream actually received per chunk.
+    pub rg_within_at_decode: Option<Count>,
+    /// Decode-phase RGs where top-K truncation was NOT attempted because the
+    /// stream received no `sort_topk_truncate` config (planning declined it).
+    pub rg_topk_truncate_skip_no_config: Option<Count>,
+    /// Decode-phase RGs where truncation was configured but the RG was NOT in
+    /// the WITHIN set (boundary RG — full candidates kept).
+    pub rg_topk_truncate_skip_not_within: Option<Count>,
+    /// Decode-phase RGs where truncation was configured and the RG was WITHIN,
+    /// but the candidate count was already `<= budget` so no bits were removed.
+    pub rg_topk_truncate_skip_below_budget: Option<Count>,
     /// Object-store read wall-time accumulator, shared across all RG readers
     /// within this partition.
     pub io_stats: Option<Arc<ReadIoStats>>,
@@ -176,6 +189,10 @@ impl StreamMetrics {
             dynamic_filter_rg_pruned_at_poll: None,
             rg_count_from_index: None,
             rg_topk_truncated: None,
+            rg_within_at_decode: None,
+            rg_topk_truncate_skip_no_config: None,
+            rg_topk_truncate_skip_not_within: None,
+            rg_topk_truncate_skip_below_budget: None,
             io_stats: None,
             inner_parquet_metrics: None,
         }
@@ -222,6 +239,10 @@ pub struct PartitionMetrics {
     pub dynamic_filter_rg_pruned_at_poll: Count,
     pub rg_count_from_index: Count,
     pub rg_topk_truncated: Count,
+    pub rg_within_at_decode: Count,
+    pub rg_topk_truncate_skip_no_config: Count,
+    pub rg_topk_truncate_skip_not_within: Count,
+    pub rg_topk_truncate_skip_below_budget: Count,
 }
 
 impl PartitionMetrics {
@@ -273,6 +294,10 @@ impl PartitionMetrics {
             dynamic_filter_rg_pruned_at_poll: counter("dynamic_filter_rg_pruned_at_poll"),
             rg_count_from_index: counter("rg_count_from_index"),
             rg_topk_truncated: counter("rg_topk_truncated"),
+            rg_within_at_decode: counter("rg_within_at_decode"),
+            rg_topk_truncate_skip_no_config: counter("rg_topk_truncate_skip_no_config"),
+            rg_topk_truncate_skip_not_within: counter("rg_topk_truncate_skip_not_within"),
+            rg_topk_truncate_skip_below_budget: counter("rg_topk_truncate_skip_below_budget"),
         }
     }
 
@@ -320,6 +345,10 @@ impl PartitionMetrics {
             dynamic_filter_rg_pruned_at_poll: Some(self.dynamic_filter_rg_pruned_at_poll),
             rg_count_from_index: Some(self.rg_count_from_index),
             rg_topk_truncated: Some(self.rg_topk_truncated),
+            rg_within_at_decode: Some(self.rg_within_at_decode),
+            rg_topk_truncate_skip_no_config: Some(self.rg_topk_truncate_skip_no_config),
+            rg_topk_truncate_skip_not_within: Some(self.rg_topk_truncate_skip_not_within),
+            rg_topk_truncate_skip_below_budget: Some(self.rg_topk_truncate_skip_below_budget),
             io_stats: Some(Arc::new(ReadIoStats::default())),
             inner_parquet_metrics,
         }

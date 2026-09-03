@@ -61,6 +61,16 @@ import java.util.Set;
  * If every above-anchor reference is already in the reduce-set, the non-QTF path reads
  * the same physical fields and skips the fetch round-trip — strictly cheaper.
  *
+ * <h2>Single-shard cost gate</h2>
+ * On a single-shard plan (no {@link OpenSearchExchangeReducer} below the anchor), QTF is
+ * additionally declined when the below-anchor physical fields contain no field beyond the
+ * anchor's sort keys — i.e. no predicate/filter column is decoded below the anchor. In that
+ * shape the non-QTF path reads the index in physical sort order and early-terminates at the
+ * Sort+Limit K without materializing fetch-only columns for non-survivors, so the fetch
+ * round-trip saves no predicate-column decode and only adds a stage. Multi-shard is not gated:
+ * per-shard local top-K still ships fetch-only columns for rows that lose the global merge, so
+ * deferring the fetch remains a win regardless of physical sort order.
+ *
  * <h2>Allow-lists</h2>
  * Above-anchor: {@link OpenSearchProject} (no {@code RexOver}), {@link OpenSearchFilter},
  * {@link OpenSearchSort}. {@link OpenSearchAggregate} is rejected for now — group / agg-call
@@ -139,12 +149,18 @@ public final class OpenSearchLateMaterializationRewriter {
             return null;
         }
 
-        // Single-shard plans don't trigger late materialization.
-        if (!belowChain.hasExchangeReducer()) {
-            LOGGER.debug("[QTF] single-shard plan (no ExchangeReducer below anchor); skipping rewrite");
-            return null;
-        }
-
+        // NOTE: single-shard plans (no ExchangeReducer below the anchor) DO trigger QTF.
+        // The multi-shard win is skipping cross-node materialization of fetch-only columns
+        // through the gather; the single-shard / intra-node win is skipping the Parquet decode
+        // of wide fetch-only columns for every matching row when only K survive the Sort+Limit —
+        // the query phase decodes only [sort/filter cols, ___row_id], and the fetch phase decodes
+        // the fetch-only columns for just the K survivors on the same shard. Both wins are gated
+        // by the same skip predicate below (fetch-only set non-empty); a single-shard plan with no
+        // fetch-only columns still declines. ___ugsi is not declared in the RelNode rowType on the
+        // single-shard path (there is no ExchangeReducer to append it); it is stamped at runtime by
+        // the OrdinalAppendingSink the DAG cut installs on the LM stage's input sink (ordinal 0 for
+        // the single shard). See DAGBuilder.cutAtLateMaterialization and
+        // LateMaterializationStageExecution.inputSink.
         Set<String> belowAnchorPhysicalFields = computeBelowAnchorPhysicalFields(anchorCtx.anchor, belowChain);
         LinkedHashSet<String> aboveAnchorPhysicalFields = computeAboveAnchorPhysicalFields(
             anchorCtx.aboveAnchorOperators,
@@ -156,6 +172,36 @@ public final class OpenSearchLateMaterializationRewriter {
         if (!hasFetchOnly) {
             LOGGER.debug("[QTF] aboveAnchorPhysicalFields ⊆ belowAnchorPhysicalFields; QTF would not save any I/O — skipping");
             return null;
+        }
+
+        // Cost gate — single-shard sorted early-termination. When there is NO ExchangeReducer below
+        // the anchor (single-shard / intra-node plan) AND the below-anchor physical fields contain
+        // no field beyond the anchor's sort keys (i.e. no predicate/filter column is decoded below
+        // the anchor), the query phase would decode only the sort key(s). In that shape the non-QTF
+        // path reads the index in its physical sort order and early-terminates at the Sort+Limit K —
+        // it never materializes the wide fetch-only columns for non-survivors either. QTF's fetch
+        // round-trip therefore saves no predicate-column decode over the baseline; it only adds an
+        // extra stage and defeats the sorted early-termination fast path (measured Q3 regression
+        // 37ms → 138ms). Decline and let the baseline sorted path run.
+        //
+        // Multi-shard is intentionally NOT gated: each shard's local top-K still materializes and
+        // ships fetch-only columns for shard-local rows that lose the global coordinator merge, so
+        // deferring the fetch to the survivors of the global top-K remains a real win there,
+        // independent of physical sort order (Q1/Q4/Q6 gains preserved). A single-shard plan that
+        // DOES read a predicate column below the anchor (Q1/Q4-like) also still fires: the query
+        // phase must decode that predicate column for every match, and QTF still avoids decoding the
+        // wide fetch-only columns for the non-survivors.
+        if (!belowChain.hasExchangeReducer()) {
+            Set<String> sortKeyPhysicalFields = computeSortKeyPhysicalFields(anchorCtx.anchor, belowChain);
+            boolean belowReadsOnlySortKeys = belowAnchorPhysicalFields.stream().allMatch(sortKeyPhysicalFields::contains);
+            if (belowReadsOnlySortKeys) {
+                LOGGER.debug(
+                    "[QTF] single-shard, below-anchor reads only sort keys {} (no predicate column beyond them); "
+                        + "baseline sorted early termination is cheaper than a fetch round-trip — skipping",
+                    sortKeyPhysicalFields
+                );
+                return null;
+            }
         }
 
         return new Detection(
@@ -299,6 +345,23 @@ public final class OpenSearchLateMaterializationRewriter {
                     fields.add(scanFields.get(refIdx).getName());
                 }
             }
+        }
+        return fields;
+    }
+
+    /**
+     * Physical (Scan-level) field names referenced by the anchor's sort collation, resolved through
+     * an optional below-Project. This is the sort-key-only subset of
+     * {@link #computeBelowAnchorPhysicalFields}: it excludes below-filter columns. Used solely by
+     * the single-shard cost gate in {@link #detect} to decide whether the below-anchor input reads
+     * any predicate/filter column beyond the sort keys.
+     */
+    private static Set<String> computeSortKeyPhysicalFields(OpenSearchSort anchor, BelowChain belowChain) {
+        Set<String> fields = new HashSet<>();
+        List<RelDataTypeField> scanFields = belowChain.scan.getRowType().getFieldList();
+        for (RelFieldCollation fc : anchor.getCollation().getFieldCollations()) {
+            int scanIdx = (belowChain.belowProjOutToScan == null) ? fc.getFieldIndex() : belowChain.belowProjOutToScan[fc.getFieldIndex()];
+            fields.add(scanFields.get(scanIdx).getName());
         }
         return fields;
     }
