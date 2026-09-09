@@ -1691,7 +1691,7 @@ async unsafe fn execute_indexed_with_context_inner(
     // stream consults these plans for metrics but every RG still takes the Full
     // decode path (Stage C3 wires the count/strip arms).
     let sort_column: Option<String> = sort_fields.first().cloned();
-    let (sort_col_idx, physical_range) = match sort_column.as_deref() {
+    let (sort_col_idx, physical_range, bucket_fn) = match sort_column.as_deref() {
         Some(name) => {
             let idx = schema.index_of(name).ok();
             // Physical unit of the sort column: an arrow Timestamp carries it
@@ -1719,9 +1719,16 @@ async unsafe fn execute_indexed_with_context_inner(
             let range = physical_unit.and_then(|u| {
                 crate::fast_path_hints::sort_range_in_physical_unit(&fast_path_hints, u)
             });
-            (idx, range)
+            // PR3 (Stage C): reconstruct the histogram bucket function in the
+            // column's physical unit so a WITHIN RG's footer min/max classify to
+            // an interior bucket exactly as DataFusion's own span() arithmetic
+            // would. `None` for any non-histogram shape (op == 0).
+            let bucket = physical_unit.and_then(|u| {
+                crate::indexed_table::row_group_plan::BucketFn::from_hints(&fast_path_hints, u)
+            });
+            (idx, range, bucket)
         }
-        None => (None, None),
+        None => (None, None, None),
     };
     let row_group_plans = {
         let mut m = std::collections::HashMap::with_capacity(segments.len());
@@ -1734,6 +1741,7 @@ async unsafe fn execute_indexed_with_context_inner(
                     &fast_path_hints,
                     physical_range.as_ref(),
                     deleted_doc_filtering_required,
+                    bucket_fn.as_ref(),
                 ),
             );
         }
@@ -1774,6 +1782,17 @@ async unsafe fn execute_indexed_with_context_inner(
     // This makes the indexed executor produce Binary HLL state (Partial) instead of Int64 (Final).
     let physical_plan = if aggregate_mode != crate::agg_mode::Mode::Default {
         crate::agg_mode::apply_aggregate_mode(physical_plan, aggregate_mode, handle.has_topk)?
+    } else {
+        physical_plan
+    };
+    // PR3 Stage C2 (Fix 5): when the planner declared a `span()` histogram
+    // shape, wrap the partial count aggregate over the single indexed leaf in a
+    // `HistogramCountsExec` and install a per-partition sink on that leaf so
+    // interior row groups contribute `(bucket, count)` from the index (no
+    // decode). Fail-closed: any non-matching plan is returned unchanged.
+    let physical_plan = if fast_path_hints.shape == crate::fast_path_hints::FastPathShape::Histogram
+    {
+        crate::indexed_table::histogram::install_histogram_rewrite(physical_plan, &fast_path_hints)?
     } else {
         physical_plan
     };

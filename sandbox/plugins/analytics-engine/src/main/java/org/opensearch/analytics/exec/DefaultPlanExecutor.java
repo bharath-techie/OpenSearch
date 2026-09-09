@@ -53,6 +53,7 @@ import org.opensearch.analytics.planner.dag.BackendPlanAdapter;
 import org.opensearch.analytics.planner.dag.DAGBuilder;
 import org.opensearch.analytics.planner.dag.FragmentConversionDriver;
 import org.opensearch.analytics.planner.dag.GeneralShuffleDAGRewriter;
+import org.opensearch.analytics.planner.dag.LeadingSortInfo;
 import org.opensearch.analytics.planner.dag.PlanAlternativeSelector;
 import org.opensearch.analytics.planner.dag.PlanForker;
 import org.opensearch.analytics.planner.dag.QueryDAG;
@@ -77,6 +78,7 @@ import org.opensearch.core.rest.RestStatus;
 import org.opensearch.core.tasks.TaskId;
 import org.opensearch.index.IndexSortConfig;
 import org.opensearch.search.SearchService;
+import org.opensearch.search.sort.SortOrder;
 import org.opensearch.tasks.Task;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportException;
@@ -214,7 +216,7 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
      * field shared by every backing index is trusted, because the native fast path checks the range
      * against the footer stats of exactly that column.
      */
-    private String resolveLeadingSortField(String logicalTableName) {
+    private LeadingSortInfo resolveLeadingSortField(String logicalTableName) {
         if (logicalTableName == null) {
             return null;
         }
@@ -229,6 +231,7 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
                 return null;
             }
             String common = null;
+            boolean commonDescending = false;
             for (String indexName : concreteIndices) {
                 IndexMetadata meta = state.metadata().index(indexName);
                 if (meta == null) {
@@ -239,13 +242,18 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
                     return null;
                 }
                 String leading = sortFields.get(0);
+                // The leading field's order: absent order defaults to ASC (Lucene's default), and a
+                // missing per-field entry (fewer orders than fields) also means ASC for that position.
+                List<SortOrder> orders = IndexSortConfig.INDEX_SORT_ORDER_SETTING.get(meta.getSettings());
+                boolean descending = orders.isEmpty() == false && orders.get(0) == SortOrder.DESC;
                 if (common == null) {
                     common = leading;
-                } else if (common.equals(leading) == false) {
-                    return null; // alias/pattern spans indices with different sort fields — decline
+                    commonDescending = descending;
+                } else if (common.equals(leading) == false || commonDescending != descending) {
+                    return null; // alias/pattern spans indices that disagree on the leading sort field/order
                 }
             }
-            return common;
+            return common == null ? null : new LeadingSortInfo(common, commonDescending);
         } catch (RuntimeException e) {
             logger.debug("[DefaultPlanExecutor] leading sort field resolution failed for [{}]: {}", logicalTableName, e.getMessage());
             return null;

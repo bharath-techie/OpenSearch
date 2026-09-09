@@ -48,6 +48,7 @@ use datafusion::physical_plan::{
 use datafusion_common::DataFusionError;
 use futures::{Future, Stream};
 use native_bridge_common::log_debug;
+use roaring::RoaringBitmap;
 use tokio::task::JoinHandle;
 
 use super::eval::{PrefetchedRg, RowGroupBitsetSource};
@@ -78,6 +79,40 @@ pub enum FilterStrategy {
     RowSelection,
     /// Force a single whole-RG select (`min_skip_run > rg_num_rows`).
     BooleanMask,
+}
+
+/// Keep only the top-K candidates a global Sort+Limit could retain from this
+/// row group: the LAST `budget` set bits when `keep_last` (query sort opposes
+/// the index order, so the "newest" rows sit at the end of an index-sorted RG),
+/// otherwise the FIRST `budget`. Positions are RG-relative and stored in index
+/// sort order, so dropping the rest is sound on a WITHIN RG under an outer
+/// Sort+Limit(`budget`).
+///
+/// Pure: mutates `candidates` in place and returns `true` when bits were
+/// actually removed. A no-op (`false`) when `budget == 0` or the RG already
+/// holds `<= budget` candidates (nothing to truncate).
+pub(crate) fn truncate_candidates(
+    candidates: &mut RoaringBitmap,
+    keep_last: bool,
+    budget: u32,
+) -> bool {
+    let len = candidates.len();
+    if budget == 0 || len <= budget as u64 {
+        return false;
+    }
+    if keep_last {
+        // Drop everything strictly below the first kept set bit (rank len-budget).
+        let first_kept_rank = (len - budget as u64) as u32;
+        if let Some(cutoff) = candidates.select(first_kept_rank) {
+            candidates.remove_range(0..cutoff);
+        }
+    } else {
+        // Drop everything strictly above the last kept set bit (rank budget-1).
+        if let Some(cutoff) = candidates.select(budget - 1) {
+            candidates.remove_range(cutoff.saturating_add(1)..);
+        }
+    }
+    true
 }
 
 // ── Prefetched Row Group ─────────────────────────────────────────────
@@ -155,6 +190,11 @@ struct IndexReader {
     /// for this segment. For these the prefetch task tries `evaluator.count_rg`
     /// first; a `Some(n)` skips the bitmap materialization (Fix 2/3).
     count_from_index_rgs: Arc<std::collections::HashSet<usize>>,
+    /// RG indices classified `RowGroupPlan::HistogramBucket` for which a
+    /// `HistogramSink` is installed. These ALSO try `evaluator.count_rg` in the
+    /// prefetch task (PR3 Fix 5); a `Some(n)` routes the count into the sink.
+    /// Empty when no histogram rewrite was installed, so those RGs decode fully.
+    histogram_count_rgs: Arc<std::collections::HashSet<usize>>,
 }
 
 impl IndexReader {
@@ -170,6 +210,7 @@ impl IndexReader {
         dynamic_filter_rg_pruned_at_prefetch: Option<datafusion::physical_plan::metrics::Count>,
         cancellation_token: Option<tokio_util::sync::CancellationToken>,
         count_from_index_rgs: Arc<std::collections::HashSet<usize>>,
+        histogram_count_rgs: Arc<std::collections::HashSet<usize>>,
     ) -> Self {
         Self {
             evaluator,
@@ -187,6 +228,7 @@ impl IndexReader {
             dynamic_filter_rg_pruned_at_prefetch,
             cancellation_token,
             count_from_index_rgs,
+            histogram_count_rgs,
         }
     }
 
@@ -214,6 +256,7 @@ impl IndexReader {
         )>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
         count_from_index_rgs: &std::collections::HashSet<usize>,
+        histogram_count_rgs: &std::collections::HashSet<usize>,
     ) -> std::result::Result<PrefetchOutcome, String> {
         if rg_idx >= row_groups.len() {
             return Ok(PrefetchOutcome::Empty);
@@ -248,7 +291,10 @@ impl IndexReader {
         // PR2 Fix 2/3: a CountFromIndex RG may be answered by the Weight#count /
         // docFreq short-circuit, avoiding the bitmap materialization. `Some(n)`
         // ends the prefetch; `None` declines and falls through to prefetch_rg.
-        if count_from_index_rgs.contains(&rg.index) {
+        // PR3 Fix 5: an interior HistogramBucket RG with a sink installed uses
+        // the SAME short-circuit — the resulting count is routed into the sink
+        // by `poll_inner` (keyed by the RG's classified bucket).
+        if count_from_index_rgs.contains(&rg.index) || histogram_count_rgs.contains(&rg.index) {
             if let Some(count) = evaluator.count_rg(&rg, min_doc, max_doc)? {
                 return Ok(PrefetchOutcome::Counted { rg, count });
             }
@@ -278,6 +324,7 @@ impl IndexReader {
         };
         let token = self.cancellation_token.clone();
         let count_from_index_rgs = Arc::clone(&self.count_from_index_rgs);
+        let histogram_count_rgs = Arc::clone(&self.histogram_count_rgs);
         let handle = tokio::task::spawn_blocking(move || {
             Self::fetch_row_group(
                 &evaluator,
@@ -287,6 +334,7 @@ impl IndexReader {
                 prune,
                 token.as_ref(),
                 &count_from_index_rgs,
+                &histogram_count_rgs,
             )
         });
         self.pending_prefetch = Some(handle);
@@ -449,6 +497,15 @@ pub struct IndexedExec {
         Arc<std::collections::HashMap<i64, Vec<super::row_group_plan::RowGroupPlan>>>,
     /// Leading sort-field column name, or `None`. Carried for Stage C3's strip.
     pub(crate) sort_column: Option<String>,
+    /// Per-partition histogram sink (PR3 Fix 5). `Some` only when
+    /// [`super::histogram::install_histogram_rewrite`] wrapped this leaf's
+    /// aggregate; interior `HistogramBucket` RGs then route their index-only
+    /// counts into `histogram_sink[histogram_partition]`. `None` => those RGs
+    /// decode fully (the uninstalled path never loses counts).
+    pub(crate) histogram_sink: Option<super::histogram::HistogramSink>,
+    /// This exec's leaf output partition index — the slot in `histogram_sink`
+    /// its interior-RG counts accumulate into.
+    pub(crate) histogram_partition: usize,
 }
 
 impl fmt::Debug for IndexedExec {
@@ -560,6 +617,28 @@ impl ExecutionPlan for IndexedExec {
                     .unwrap_or_default();
                 Arc::new(set)
             },
+            {
+                // RGs classified `HistogramBucket` — tried via `count_rg` only
+                // when a sink is installed (PR3 Fix 5). Empty otherwise, so the
+                // uninstalled path decodes those RGs fully.
+                use super::row_group_plan::RowGroupPlan;
+                let set: std::collections::HashSet<usize> = if self.histogram_sink.is_some() {
+                    self.row_group_plans
+                        .get(&self.writer_generation)
+                        .map(|plans| {
+                            plans
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, p)| matches!(p, RowGroupPlan::HistogramBucket(_)))
+                                .map(|(i, _)| i)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    std::collections::HashSet::new()
+                };
+                Arc::new(set)
+            },
         );
         Ok(Box::pin(IndexedStream::new(
             self.schema.clone(),
@@ -586,6 +665,8 @@ impl ExecutionPlan for IndexedExec {
             self.writer_generation,
             Arc::clone(&self.row_group_plans),
             self.sort_column.clone(),
+            self.histogram_sink.clone(),
+            self.histogram_partition,
         )))
     }
 }
@@ -679,6 +760,12 @@ struct IndexedStream {
     /// One-shot guard so the per-segment plan-variant debug summary is logged
     /// only once, on the first RG this stream opens.
     plan_summary_logged: bool,
+    /// Per-partition histogram sink (PR3 Fix 5); `Some` only when the histogram
+    /// rewrite is installed. Interior `HistogramBucket` RGs counted from the
+    /// index add `bucket -> count` into `histogram_sink[histogram_partition]`.
+    histogram_sink: Option<super::histogram::HistogramSink>,
+    /// This stream's leaf output partition index (slot into `histogram_sink`).
+    histogram_partition: usize,
 }
 
 impl IndexedStream {
@@ -710,6 +797,8 @@ impl IndexedStream {
             std::collections::HashMap<i64, Vec<super::row_group_plan::RowGroupPlan>>,
         >,
         sort_column: Option<String>,
+        histogram_sink: Option<super::histogram::HistogramSink>,
+        histogram_partition: usize,
     ) -> Self {
         let evaluator = Arc::clone(&index_reader.evaluator);
         let output_projection: Vec<usize> = schema
@@ -764,6 +853,8 @@ impl IndexedStream {
             row_group_plans,
             sort_column,
             plan_summary_logged: false,
+            histogram_sink,
+            histogram_partition,
         }
     }
 
@@ -786,19 +877,24 @@ impl IndexedStream {
         self.plan_summary_logged = true;
         use super::row_group_plan::RowGroupPlan;
         if let Some(plans) = self.row_group_plans.get(&self.writer_generation) {
-            let (mut count_idx, mut ts_strip, mut full) = (0usize, 0usize, 0usize);
+            let (mut count_idx, mut ts_strip, mut topk, mut full, mut hist) =
+                (0usize, 0usize, 0usize, 0usize, 0usize);
             for p in plans {
                 match p {
                     RowGroupPlan::CountFromIndex => count_idx += 1,
                     RowGroupPlan::TimestampStripped => ts_strip += 1,
+                    RowGroupPlan::TopKTruncated { .. } => topk += 1,
+                    RowGroupPlan::HistogramBucket(_) => hist += 1,
                     RowGroupPlan::Full => full += 1,
                 }
             }
             native_bridge_common::log_debug!(
-                "[fast-path-plan] segment writer_generation={} rgs: count_from_index={} timestamp_stripped={} full={}",
+                "[fast-path-plan] segment writer_generation={} rgs: count_from_index={} timestamp_stripped={} topk_truncated={} histogram_bucket={} full={}",
                 self.writer_generation,
                 count_idx,
                 ts_strip,
+                topk,
+                hist,
                 full
             );
         }
@@ -1145,6 +1241,15 @@ impl Stream for IndexedStream {
 
         if !self.initialized {
             self.stream_start = Some(Instant::now());
+            // Fix 6b: attach the freshest dynamic-filter snapshot BEFORE the
+            // first prefetch of this chunk. Chunk streams are chained, so every
+            // stream after the first initializes long after the top-K threshold
+            // has tightened — its first row group can then be pruned WITHOUT a
+            // Lucene eval. Without this, init_prefetch ran with no snapshot,
+            // costing one full un-pruned Lucene bitmap per chunk.
+            if let Some(ref mut pruner) = self.dynamic_rg_pruner {
+                self.index_reader.dynamic_prune_ctx = pruner.current_pruning_predicate();
+            }
             let t0 = Instant::now();
             self.index_reader.init_prefetch();
             if let Some(ref t) = self.metrics.init_prefetch_time {
@@ -1317,6 +1422,25 @@ impl IndexedStream {
                         NextRowGroup::Counted { rg, count } => {
                             self.current_rg_first_row = rg.first_row;
                             self.log_plan_summary_once();
+                            // PR3 Fix 5: an interior `HistogramBucket` RG counted
+                            // from the index routes its `(bucket, count)` into the
+                            // sink instead of emitting a count batch. The FINAL
+                            // aggregate later sums it with the decoded partials.
+                            if let super::row_group_plan::RowGroupPlan::HistogramBucket(bucket) =
+                                self.plan_for(self.writer_generation, rg.index)
+                            {
+                                if let Some(ref sink) = self.histogram_sink {
+                                    if let Some(map) = sink.get(self.histogram_partition) {
+                                        let mut m = map.lock().unwrap();
+                                        *m.entry(bucket).or_insert(0) += count;
+                                    }
+                                    if let Some(ref c) = self.metrics.rg_histogram_interior {
+                                        c.add(1);
+                                    }
+                                    continue;
+                                }
+                            }
+                            // CountFromIndex docFreq short-circuit (Fix 2/3).
                             if let Some(ref c) = self.metrics.rg_count_from_docfreq {
                                 c.add(1);
                             }
@@ -1348,12 +1472,45 @@ impl IndexedStream {
                         }
                     }
 
-                    let candidates = prefetched.prefetched.candidates;
+                    let mut candidates = prefetched.prefetched.candidates;
                     let prefetch_mask_buffer = prefetched.prefetched.mask_buffer;
                     // Fix 9: per-RG DataFusion-owned predicate columns (from the evaluator's owner
                     // election). `None` keeps the conservative query-wide projection.
                     let required_predicate_columns =
                         prefetched.prefetched.required_predicate_columns;
+
+                    self.current_rg_first_row = rg.first_row;
+
+                    // PR2/PR3: the single per-RG fast-path decision, consulted once.
+                    self.log_plan_summary_once();
+                    let plan = self.plan_for(self.writer_generation, rg.index);
+
+                    // PR3 Fix 4/14: a `TopKTruncated` RG keeps only the `budget`
+                    // candidates a global Sort+Limit could retain (first/last per
+                    // WITHIN RG, in index-sort order). Truncate BEFORE the per-row
+                    // metrics and decode so `rows_matched`/the RowSelection reflect
+                    // the reduced set. Applies with `emit_row_ids` too (the QTF
+                    // query phase must decode only the survivors). Unsound if
+                    // DataFusion still owns a predicate for this RG (it would filter
+                    // survivors after truncation), so that case is skipped.
+                    if let super::row_group_plan::RowGroupPlan::TopKTruncated {
+                        keep_last,
+                        budget,
+                    } = plan
+                    {
+                        let df_owns_predicate = required_predicate_columns
+                            .as_deref()
+                            .is_some_and(|c| !c.is_empty());
+                        if !df_owns_predicate
+                            && truncate_candidates(&mut candidates, keep_last, budget)
+                        {
+                            if let Some(ref c) = self.metrics.rg_topk_truncated {
+                                c.add(1);
+                            }
+                        } else if let Some(ref c) = self.metrics.rg_topk_skip_below_budget {
+                            c.add(1);
+                        }
+                    }
 
                     if let Some(ref timer) = self.metrics.index_time {
                         timer.add_duration(Duration::from_nanos(prefetched.prefetched.eval_nanos));
@@ -1373,15 +1530,12 @@ impl IndexedStream {
                         counter.add(1);
                     }
 
-                    self.current_rg_first_row = rg.first_row;
-
-                    // PR2 (Stage C3): consult the per-RG fast-path plan and act on it.
+                    // PR2 (Stage C3): act on the per-RG fast-path plan computed above.
                     // `CountFromIndex` emits a row-count batch and skips the decode;
-                    // `TimestampStripped` adjusts the decode inputs below; `Full` is
-                    // unchanged. A `CountFromIndex` RG that isn't provably exact
-                    // degrades to Full (bumps `rg_full`).
-                    self.log_plan_summary_once();
-                    let plan = self.plan_for(self.writer_generation, rg.index);
+                    // `TimestampStripped` adjusts the decode inputs below; `TopKTruncated`
+                    // already truncated its candidates and decodes on the Full path;
+                    // `Full` is unchanged. A `CountFromIndex` RG that isn't provably
+                    // exact degrades to Full (bumps `rg_full`).
                     match plan {
                         super::row_group_plan::RowGroupPlan::CountFromIndex => {
                             if let Some(count) = self.count_from_index(
@@ -1403,6 +1557,25 @@ impl IndexedStream {
                         }
                         super::row_group_plan::RowGroupPlan::TimestampStripped => {
                             if let Some(ref c) = self.metrics.rg_timestamp_stripped {
+                                c.add(1);
+                            }
+                        }
+                        super::row_group_plan::RowGroupPlan::TopKTruncated { .. } => {
+                            // Metrics already recorded above; decode proceeds on the
+                            // Full path with the truncated candidate set.
+                        }
+                        super::row_group_plan::RowGroupPlan::HistogramBucket(_) => {
+                            // Interior RGs are intercepted on the counted path
+                            // (routed into the sink) BEFORE reaching here. If we
+                            // see one on the decode path it means either the
+                            // rewrite was not installed (no sink → decode fully,
+                            // correct but unaccelerated) or `count_rg` declined
+                            // for an installed sink (fall back to Full decode).
+                            if self.histogram_sink.is_some() {
+                                if let Some(ref c) = self.metrics.rg_histogram_declined {
+                                    c.add(1);
+                                }
+                            } else if let Some(ref c) = self.metrics.rg_full {
                                 c.add(1);
                             }
                         }
@@ -1596,6 +1769,57 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    // ── truncate_candidates (PR3 Fix 4/14) ──────────────────────────
+
+    fn bitmap(vals: &[u32]) -> RoaringBitmap {
+        vals.iter().copied().collect()
+    }
+
+    #[test]
+    fn truncate_keep_last_drops_leading() {
+        // positions 2,5,7,9,12 — keep last 2 => {9, 12}.
+        let mut bm = bitmap(&[2, 5, 7, 9, 12]);
+        assert!(truncate_candidates(&mut bm, true, 2));
+        assert_eq!(bm.iter().collect::<Vec<_>>(), vec![9, 12]);
+    }
+
+    #[test]
+    fn truncate_keep_first_drops_trailing() {
+        // positions 2,5,7,9,12 — keep first 3 => {2, 5, 7}.
+        let mut bm = bitmap(&[2, 5, 7, 9, 12]);
+        assert!(truncate_candidates(&mut bm, false, 3));
+        assert_eq!(bm.iter().collect::<Vec<_>>(), vec![2, 5, 7]);
+    }
+
+    #[test]
+    fn truncate_budget_ge_len_is_noop() {
+        let mut bm = bitmap(&[2, 5, 7]);
+        assert!(
+            !truncate_candidates(&mut bm, true, 3),
+            "budget == len: no-op"
+        );
+        assert_eq!(bm.iter().collect::<Vec<_>>(), vec![2, 5, 7]);
+        assert!(
+            !truncate_candidates(&mut bm, false, 9),
+            "budget > len: no-op"
+        );
+        assert_eq!(bm.iter().collect::<Vec<_>>(), vec![2, 5, 7]);
+    }
+
+    #[test]
+    fn truncate_zero_budget_is_noop() {
+        let mut bm = bitmap(&[2, 5, 7]);
+        assert!(!truncate_candidates(&mut bm, true, 0));
+        assert_eq!(bm.len(), 3);
+    }
+
+    #[test]
+    fn truncate_keep_last_one() {
+        let mut bm = bitmap(&[0, 1, 2, 3]);
+        assert!(truncate_candidates(&mut bm, true, 1));
+        assert_eq!(bm.iter().collect::<Vec<_>>(), vec![3]);
+    }
+
     /// A mock evaluator that panics on prefetch_rg, simulating the
     /// `subtree_cost` panic when DelegationPossible reaches the Tree evaluator.
     struct PanickingEvaluator {
@@ -1657,6 +1881,7 @@ mod tests {
             None,
             None,
             None,
+            Arc::new(std::collections::HashSet::new()),
             Arc::new(std::collections::HashSet::new()),
         );
 
@@ -1781,6 +2006,7 @@ mod tests {
             None,
             None,
             Some(token.clone()),
+            Arc::new(std::collections::HashSet::new()),
             Arc::new(std::collections::HashSet::new()),
         );
 

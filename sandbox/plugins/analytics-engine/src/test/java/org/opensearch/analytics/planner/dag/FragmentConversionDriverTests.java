@@ -207,7 +207,7 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
      * SETUP_PARTIAL_AGGREGATE — the data node stamps the spec onto the execution context.
      */
     public void testFastPathHintsInstructionEmittedOnlyWhenHintsPresent() {
-        QueryDAG withHints = buildRangeFilterDagWithResolver(name -> "ts");
+        QueryDAG withHints = buildRangeFilterDagWithResolver(name -> new LeadingSortInfo("ts", false));
         StagePlan leafPlan = dataNodeStage(withHints).getPlanAlternatives().getFirst();
         assertEquals("shard scan stays first", InstructionType.SETUP_SHARD_SCAN, leafPlan.instructions().getFirst().type());
         assertTrue(
@@ -223,7 +223,7 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         );
     }
 
-    private QueryDAG buildRangeFilterDagWithResolver(java.util.function.Function<String, String> resolver) {
+    private QueryDAG buildRangeFilterDagWithResolver(java.util.function.Function<String, LeadingSortInfo> resolver) {
         RecordingConvertor convertor = new RecordingConvertor();
         var df = dfWithConvertor(convertor);
         Map<String, Map<String, Object>> fields = Map.of("ts", Map.of("type", "long"), "host", Map.of("type", "keyword"));

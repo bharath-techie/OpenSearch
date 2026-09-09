@@ -15,7 +15,7 @@ import org.opensearch.test.OpenSearchTestCase;
 public class FastPathHintsInstructionNodeTests extends OpenSearchTestCase {
 
     private static FastPathHintSpec countOnly() {
-        return new FastPathHintSpec(FastPathHintSpec.Shape.COUNT_ONLY, true, true, FastPathHintSpec.RangeUnit.MILLIS, 1000L, 2000L);
+        return FastPathHintSpec.countOnly(true, FastPathHintSpec.RangeUnit.MILLIS, 1000L, 2000L);
     }
 
     public void testWireRoundtrip() throws Exception {

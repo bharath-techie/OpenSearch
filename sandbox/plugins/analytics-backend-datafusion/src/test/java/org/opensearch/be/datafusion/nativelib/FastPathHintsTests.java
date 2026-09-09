@@ -84,4 +84,76 @@ public class FastPathHintsTests extends OpenSearchTestCase {
             assertEquals(Long.MAX_VALUE, segment.get(ValueLayout.JAVA_LONG, 16));
         }
     }
+
+    public void testTopKSpecMapsBudgetAndFlags() {
+        FastPathHints hints = FastPathHints.fromSpec(
+            org.opensearch.analytics.spi.FastPathHintSpec.topK(
+                42,
+                true,  // keepLast
+                true,  // pathSafe
+                true,  // strippable
+                org.opensearch.analytics.spi.FastPathHintSpec.RangeUnit.MILLIS,
+                100L,
+                200L
+            )
+        );
+
+        assertEquals(FastPathHints.SHAPE_TOPK, hints.shape());
+        assertEquals(42, hints.topkBudget());
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(FastPathHints.BYTE_SIZE);
+            hints.writeTo(segment);
+            assertEquals((byte) 2, segment.get(ValueLayout.JAVA_BYTE, 1)); // shape = TOPK
+            int flags = segment.get(ValueLayout.JAVA_BYTE, 2) & 0xFF;
+            assertTrue((flags & FastPathHints.FLAG_TOPK_KEEP_LAST) != 0);
+            assertTrue((flags & FastPathHints.FLAG_TOPK_PATH_SAFE) != 0);
+            assertEquals(42, segment.get(ValueLayout.JAVA_INT, 4)); // topk_budget
+        }
+    }
+
+    public void testHistogramSpecMapsBucketOpAndOperand() {
+        FastPathHints hints = FastPathHints.fromSpec(
+            org.opensearch.analytics.spi.FastPathHintSpec.histogram(
+                org.opensearch.analytics.spi.FastPathHintSpec.BucketOp.DIV,
+                3600000L,
+                true,
+                org.opensearch.analytics.spi.FastPathHintSpec.RangeUnit.MILLIS,
+                100L,
+                200L
+            )
+        );
+
+        assertEquals(FastPathHints.SHAPE_HISTOGRAM, hints.shape());
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(FastPathHints.BYTE_SIZE);
+            hints.writeTo(segment);
+            assertEquals((byte) 3, segment.get(ValueLayout.JAVA_BYTE, 1));             // shape = HISTOGRAM
+            assertEquals((byte) FastPathHints.BUCKET_OP_DIV, segment.get(ValueLayout.JAVA_BYTE, 24)); // bucket op
+            assertEquals(3600000L, segment.get(ValueLayout.JAVA_LONG, 32));            // bucket operand
+        }
+    }
+
+    public void testHistogramFloorToMultipleMapsToWireOpFive() {
+        assertEquals(5, FastPathHints.BUCKET_OP_FLOOR_TO_MULTIPLE);
+        FastPathHints hints = FastPathHints.fromSpec(
+            org.opensearch.analytics.spi.FastPathHintSpec.histogram(
+                org.opensearch.analytics.spi.FastPathHintSpec.BucketOp.FLOOR_TO_MULTIPLE,
+                3_600_000L,
+                true,
+                org.opensearch.analytics.spi.FastPathHintSpec.RangeUnit.MILLIS,
+                100L,
+                200L
+            )
+        );
+
+        assertEquals(FastPathHints.SHAPE_HISTOGRAM, hints.shape());
+        assertEquals(FastPathHints.BUCKET_OP_FLOOR_TO_MULTIPLE, hints.histogramBucketOp());
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(FastPathHints.BYTE_SIZE);
+            hints.writeTo(segment);
+            // ordinal of FastPathHintSpec.BucketOp.FLOOR_TO_MULTIPLE must equal the wire discriminant 5.
+            assertEquals((byte) 5, segment.get(ValueLayout.JAVA_BYTE, 24));
+            assertEquals(3_600_000L, segment.get(ValueLayout.JAVA_LONG, 32));
+        }
+    }
 }

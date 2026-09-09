@@ -31,7 +31,7 @@ public class ShardScanInstructionHandlerRouteTests extends OpenSearchTestCase {
     }
 
     private static FastPathHintSpec countOnly() {
-        return new FastPathHintSpec(FastPathHintSpec.Shape.COUNT_ONLY, true, true, FastPathHintSpec.RangeUnit.MILLIS, 1000L, 2000L);
+        return FastPathHintSpec.countOnly(true, FastPathHintSpec.RangeUnit.MILLIS, 1000L, 2000L);
     }
 
     public void testPlainScanRoutesListing() {
@@ -61,14 +61,7 @@ public class ShardScanInstructionHandlerRouteTests extends OpenSearchTestCase {
 
     /** A range-only hint with no recognised shape does NOT by itself force the indexed path. */
     public void testRangeOnlyHintDoesNotRouteIndexed() {
-        FastPathHintSpec rangeOnly = new FastPathHintSpec(
-            FastPathHintSpec.Shape.NONE,
-            true,
-            true,
-            FastPathHintSpec.RangeUnit.MILLIS,
-            1000L,
-            2000L
-        );
+        FastPathHintSpec rangeOnly = FastPathHintSpec.rangeOnly(true, FastPathHintSpec.RangeUnit.MILLIS, 1000L, 2000L);
         assertEquals(ShardScanInstructionHandler.ScanRoute.LISTING, ShardScanInstructionHandler.route(context(false, rangeOnly), false));
     }
 }

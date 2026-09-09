@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 
+use datafusion::arrow::datatypes::TimeUnit;
 use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
 use datafusion::parquet::file::metadata::{ParquetMetaData, RowGroupMetaData};
@@ -30,8 +31,8 @@ use datafusion::physical_expr::PhysicalExpr;
 
 use crate::fast_path_hints::{FastPathHints, FastPathShape, SortRange};
 
-/// The plan Rust follows for a single row group. `TopKTruncated` /
-/// `HistogramBucket` arrive in PR3.
+/// The plan Rust follows for a single row group. `HistogramBucket` arrives in
+/// PR3 Stage C.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowGroupPlan {
     /// The whole RG is inside the sort range and the shape is `count(*)` over a
@@ -41,8 +42,83 @@ pub enum RowGroupPlan {
     /// The whole RG is inside the sort range and the residual is strippable:
     /// drop the sort-range conjunct + the sort column from this RG's decode.
     TimestampStripped,
+    /// The whole RG is inside the sort range and the fragment is a path-safe
+    /// Sort+Limit: keep only the `budget` candidate rows that a global top-K
+    /// could retain from this RG — the LAST `budget` when `keep_last` (query
+    /// sort opposes the index order), else the FIRST `budget`. Decodes on the
+    /// Full path with the truncated candidate set.
+    TopKTruncated { keep_last: bool, budget: u32 },
+    /// The whole RG is inside the sort range and the shape is a `span()`
+    /// histogram whose bucket function maps this RG's footer min and max to the
+    /// SAME bucket value `b` — every row in the RG lands in bucket `b`. Emit
+    /// `(b, count)` from the index, no Parquet decode. A boundary RG (min and
+    /// max in different buckets) fails closed to [`RowGroupPlan::Full`].
+    HistogramBucket(i64),
     /// Decode as usual.
     Full,
+}
+
+/// The histogram bucket function reconstructed from the planner's hints — the
+/// SAME arithmetic DataFusion runs for `span()`/`date_trunc`, so evaluating it
+/// on a WITHIN RG's footer min/max decides interior vs boundary exactly.
+///
+/// `op` is the wire-stable u8 mirroring Java `FastPathHintSpec.BucketOp`
+/// (0 NONE, 1 DIV, 2 ADD, 3 SUB, 4 MUL, 5 FLOOR_TO_MULTIPLE). `operand` is the
+/// literal `N`, already coerced from the declared unit into the column's
+/// PHYSICAL unit (via [`crate::fast_path_hints::coerce_ticks_to_physical`]).
+///
+/// Division mirrors DataFusion's Int64 `/` EXACTLY: arrow-array 59.2
+/// `NativeArithmeticOp::div_checked` calls `i64::checked_div`, i.e. native
+/// integer division that truncates TOWARD ZERO (verified in the cargo
+/// registry). PPL `span(ts, N)` lowers to `(col / N) * N`, so
+/// FLOOR_TO_MULTIPLE is `checked_div(N)` then `checked_mul(N)` with the same
+/// toward-zero truncation — NOT floor-toward-negative-infinity. For negative
+/// `v` these differ (e.g. `-5 / 3 * 3 == -3`, not `-6`), so we must match the
+/// engine, not intuition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BucketFn {
+    op: u8,
+    operand: i64,
+}
+
+impl BucketFn {
+    /// Build the bucket function from the planner hints and the sort column's
+    /// PHYSICAL unit. `None` when the op is NONE/unknown, when a DIV/FLOOR/MUL
+    /// operand is not strictly positive (a non-monotone or degenerate bucket),
+    /// or when the operand cannot be represented in the physical unit.
+    pub fn from_hints(hints: &FastPathHints, physical_unit: TimeUnit) -> Option<BucketFn> {
+        let op = hints.histogram_bucket_op;
+        if op == 0 || op > 5 {
+            return None;
+        }
+        let operand = crate::fast_path_hints::coerce_ticks_to_physical(
+            hints,
+            physical_unit,
+            hints.histogram_bucket_operand,
+        )?;
+        // DIV / MUL / FLOOR_TO_MULTIPLE require a strictly positive operand:
+        // zero divides-by-zero or collapses every value, negative flips
+        // monotonicity — none form a valid histogram bucketing. ADD/SUB are a
+        // pure shift and accept any operand.
+        if matches!(op, 1 | 4 | 5) && operand <= 0 {
+            return None;
+        }
+        Some(BucketFn { op, operand })
+    }
+
+    /// Evaluate the bucket for a single physical-unit value, matching
+    /// DataFusion's arithmetic (checked, truncating toward zero). `None` on
+    /// overflow.
+    pub fn eval(&self, v: i64) -> Option<i64> {
+        match self.op {
+            1 => v.checked_div(self.operand),
+            2 => v.checked_add(self.operand),
+            3 => v.checked_sub(self.operand),
+            4 => v.checked_mul(self.operand),
+            5 => v.checked_div(self.operand)?.checked_mul(self.operand),
+            _ => None,
+        }
+    }
 }
 
 /// Footer statistics for a single row group's SORT column, already normalized
@@ -78,13 +154,21 @@ impl RowGroupFooter {
 ///    unsound on shards with deletions (footer counts include deleted docs).
 /// 2. no `range`, or the footer is not WITHIN it => `Full`.
 /// 3. WITHIN && `shape == COUNT_ONLY` => `CountFromIndex`.
-/// 4. WITHIN && `range_conjunct_strippable` => `TimestampStripped`.
-/// 5. otherwise => `Full`.
+/// 4. WITHIN && `shape == TOPK` && `topk_path_safe` && `topk_budget > 0`
+///    => `TopKTruncated` (per-RG candidate truncation is sound only inside the
+///    sort range, and only when the Sort→Scan path can't reorder/fan out rows).
+/// 5. WITHIN && `shape == HISTOGRAM` && a `bucket` fn was reconstructed &&
+///    `bucket(min) == bucket(max)` => `HistogramBucket(b)` (interior RG — every
+///    row shares bucket `b`). A boundary RG (endpoints in different buckets, or
+///    an overflow) => `Full`.
+/// 6. WITHIN && `range_conjunct_strippable` => `TimestampStripped`.
+/// 7. otherwise => `Full`.
 pub fn classify_row_group(
     footer: &RowGroupFooter,
     range: Option<&SortRange>,
     hints: &FastPathHints,
     has_deletes: bool,
+    bucket: Option<&BucketFn>,
 ) -> RowGroupPlan {
     if has_deletes {
         return RowGroupPlan::Full;
@@ -97,6 +181,26 @@ pub fn classify_row_group(
     }
     match hints.shape {
         FastPathShape::CountOnly => RowGroupPlan::CountFromIndex,
+        FastPathShape::TopK if hints.topk_path_safe() && hints.topk_budget > 0 => {
+            RowGroupPlan::TopKTruncated {
+                keep_last: hints.topk_keep_last(),
+                budget: hints.topk_budget,
+            }
+        }
+        // A WITHIN RG guarantees min/max are Some. Interior iff both endpoints
+        // bucket-equal; otherwise it straddles a bucket boundary => decode.
+        // Negative domain fails closed: `date_trunc` floors toward -inf while
+        // `(col/N)*N` truncates toward zero, so the two lowerings only agree for
+        // min >= 0 (always true for real epoch timestamps).
+        FastPathShape::Histogram => match (bucket, footer.min, footer.max) {
+            (Some(b), Some(min), Some(max)) if min >= 0 => match (b.eval(min), b.eval(max)) {
+                (Some(b_min), Some(b_max)) if b_min == b_max => {
+                    RowGroupPlan::HistogramBucket(b_min)
+                }
+                _ => RowGroupPlan::Full,
+            },
+            _ => RowGroupPlan::Full,
+        },
         _ if hints.range_conjunct_strippable() => RowGroupPlan::TimestampStripped,
         _ => RowGroupPlan::Full,
     }
@@ -150,12 +254,15 @@ pub fn plan_row_groups(
     hints: &FastPathHints,
     range: Option<&SortRange>,
     has_deletes: bool,
+    bucket: Option<&BucketFn>,
 ) -> Vec<RowGroupPlan> {
     let n = metadata.num_row_groups();
     let nothing_to_gain = has_deletes
         || range.is_none()
         || sort_col_idx.is_none()
-        || (hints.shape == FastPathShape::None && !hints.range_conjunct_strippable());
+        || (hints.shape == FastPathShape::None && !hints.range_conjunct_strippable())
+        // Histogram shape gains nothing when the bucket fn could not be built.
+        || (hints.shape == FastPathShape::Histogram && bucket.is_none());
     if nothing_to_gain {
         return vec![RowGroupPlan::Full; n];
     }
@@ -163,7 +270,7 @@ pub fn plan_row_groups(
     (0..n)
         .map(|rg| {
             let footer = row_group_footer(metadata.row_group(rg), sort_col_idx);
-            classify_row_group(&footer, range, hints, has_deletes)
+            classify_row_group(&footer, range, hints, has_deletes, bucket)
         })
         .collect()
 }
@@ -301,7 +408,13 @@ mod tests {
         let f = footer(10, 20, 0, 100);
         let r = range(0, 100);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::CountOnly, true), true),
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hints(FastPathShape::CountOnly, true),
+                true,
+                None
+            ),
             RowGroupPlan::Full
         );
     }
@@ -310,7 +423,13 @@ mod tests {
     fn no_range_is_full() {
         let f = footer(10, 20, 0, 100);
         assert_eq!(
-            classify_row_group(&f, None, &hints(FastPathShape::CountOnly, true), false),
+            classify_row_group(
+                &f,
+                None,
+                &hints(FastPathShape::CountOnly, true),
+                false,
+                None
+            ),
             RowGroupPlan::Full
         );
     }
@@ -321,7 +440,13 @@ mod tests {
         let f = footer(10, 20, 0, 100);
         let r = range(0, 15);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::CountOnly, true), false),
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hints(FastPathShape::CountOnly, true),
+                false,
+                None
+            ),
             RowGroupPlan::Full
         );
     }
@@ -331,7 +456,13 @@ mod tests {
         let f = footer(10, 20, 3, 100);
         let r = range(0, 100);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::CountOnly, true), false),
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hints(FastPathShape::CountOnly, true),
+                false,
+                None
+            ),
             RowGroupPlan::Full
         );
     }
@@ -346,7 +477,13 @@ mod tests {
         };
         let r = range(0, 100);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::CountOnly, true), false),
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hints(FastPathShape::CountOnly, true),
+                false,
+                None
+            ),
             RowGroupPlan::Full
         );
     }
@@ -356,7 +493,13 @@ mod tests {
         let f = footer(10, 20, 0, 100);
         let r = range(0, 100);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::CountOnly, false), false),
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hints(FastPathShape::CountOnly, false),
+                false,
+                None
+            ),
             RowGroupPlan::CountFromIndex
         );
     }
@@ -366,7 +509,7 @@ mod tests {
         let f = footer(10, 20, 0, 100);
         let r = range(0, 100);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::None, true), false),
+            classify_row_group(&f, Some(&r), &hints(FastPathShape::None, true), false, None),
             RowGroupPlan::TimestampStripped
         );
     }
@@ -376,7 +519,13 @@ mod tests {
         let f = footer(10, 20, 0, 100);
         let r = range(0, 100);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::None, false), false),
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hints(FastPathShape::None, false),
+                false,
+                None
+            ),
             RowGroupPlan::Full
         );
     }
@@ -386,8 +535,243 @@ mod tests {
         let f = footer(10, 20, 0, 100);
         let r = range(0, 100);
         assert_eq!(
-            classify_row_group(&f, Some(&r), &hints(FastPathShape::CountOnly, true), false),
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hints(FastPathShape::CountOnly, true),
+                false,
+                None
+            ),
             RowGroupPlan::CountFromIndex
+        );
+    }
+
+    // ── TopK classification ─────────────────────────────────────────
+
+    /// TOPK hints with explicit path_safe / budget / keep_last, built through
+    /// the wire round-trip so the private flags map exactly like production
+    /// (bit0 range_on_leading_sort_field, bit2 topk_keep_last, bit3 path_safe).
+    fn topk_hints(path_safe: bool, budget: u32, keep_last: bool) -> FastPathHints {
+        let mut flags = 0b01u8; // range_on_leading_sort_field
+        if keep_last {
+            flags |= 0b0100;
+        }
+        if path_safe {
+            flags |= 0b1000;
+        }
+        let mut b = [0u8; crate::fast_path_hints::FASTPATHHINTS_BYTE_SIZE];
+        b[0] = 1;
+        b[1] = 2; // TOPK
+        b[2] = flags;
+        b[3] = 2; // millis
+        b[4..8].copy_from_slice(&budget.to_le_bytes());
+        b[8..16].copy_from_slice(&i64::MIN.to_le_bytes());
+        b[16..24].copy_from_slice(&i64::MAX.to_le_bytes());
+        // SAFETY: fixed 40-byte buffer written per the documented layout.
+        unsafe { FastPathHints::from_ffm_ptr(b.as_ptr() as i64) }
+    }
+
+    #[test]
+    fn within_topk_path_safe_is_truncated() {
+        let f = footer(10, 20, 0, 100);
+        let r = range(0, 100);
+        assert_eq!(
+            classify_row_group(&f, Some(&r), &topk_hints(true, 5, true), false, None),
+            RowGroupPlan::TopKTruncated {
+                keep_last: true,
+                budget: 5
+            }
+        );
+    }
+
+    #[test]
+    fn within_topk_keep_first_variant() {
+        let f = footer(10, 20, 0, 100);
+        let r = range(0, 100);
+        assert_eq!(
+            classify_row_group(&f, Some(&r), &topk_hints(true, 3, false), false, None),
+            RowGroupPlan::TopKTruncated {
+                keep_last: false,
+                budget: 3
+            }
+        );
+    }
+
+    #[test]
+    fn topk_not_path_safe_is_full() {
+        let f = footer(10, 20, 0, 100);
+        let r = range(0, 100);
+        assert_eq!(
+            classify_row_group(&f, Some(&r), &topk_hints(false, 5, true), false, None),
+            RowGroupPlan::Full
+        );
+    }
+
+    #[test]
+    fn topk_zero_budget_is_full() {
+        let f = footer(10, 20, 0, 100);
+        let r = range(0, 100);
+        assert_eq!(
+            classify_row_group(&f, Some(&r), &topk_hints(true, 0, true), false, None),
+            RowGroupPlan::Full
+        );
+    }
+
+    #[test]
+    fn topk_deletes_force_full() {
+        let f = footer(10, 20, 0, 100);
+        let r = range(0, 100);
+        assert_eq!(
+            classify_row_group(&f, Some(&r), &topk_hints(true, 5, true), true, None),
+            RowGroupPlan::Full
+        );
+    }
+
+    #[test]
+    fn topk_not_within_is_full() {
+        // max 20 > upper 15 => not within, so no truncation even when path-safe.
+        let f = footer(10, 20, 0, 100);
+        let r = range(0, 15);
+        assert_eq!(
+            classify_row_group(&f, Some(&r), &topk_hints(true, 5, true), false, None),
+            RowGroupPlan::Full
+        );
+    }
+
+    // ── Histogram BucketFn + classification ─────────────────────────
+
+    /// HISTOGRAM hints carrying a bucket op/operand in the DECLARED unit, built
+    /// through the wire layout (offset 24 = op, offset 32 = operand). Range unit
+    /// = millis so identity-coerces against an Int64/millis physical column.
+    fn hist_hints(op: u8, operand: i64) -> FastPathHints {
+        let mut b = [0u8; crate::fast_path_hints::FASTPATHHINTS_BYTE_SIZE];
+        b[0] = 1;
+        b[1] = 3; // HISTOGRAM
+        b[2] = 0b01; // range_on_leading_sort_field
+        b[3] = 2; // millis
+        b[8..16].copy_from_slice(&i64::MIN.to_le_bytes());
+        b[16..24].copy_from_slice(&i64::MAX.to_le_bytes());
+        b[24] = op;
+        b[32..40].copy_from_slice(&operand.to_le_bytes());
+        // SAFETY: fixed 40-byte buffer written per the documented layout.
+        unsafe { FastPathHints::from_ffm_ptr(b.as_ptr() as i64) }
+    }
+
+    fn bucket(op: u8, operand: i64) -> BucketFn {
+        BucketFn::from_hints(&hist_hints(op, operand), TimeUnit::Millisecond)
+            .expect("bucket fn builds")
+    }
+
+    #[test]
+    fn bucketfn_ops_match_datafusion_toward_zero() {
+        // DIV truncates toward zero (arrow div_checked == i64::checked_div).
+        assert_eq!(bucket(1, 3).eval(7), Some(2));
+        assert_eq!(bucket(1, 3).eval(-5), Some(-1)); // -1, NOT floor -2
+                                                     // FLOOR_TO_MULTIPLE = (v/N)*N with toward-zero division (PPL span()).
+        assert_eq!(bucket(5, 100).eval(150), Some(100));
+        assert_eq!(bucket(5, 100).eval(199), Some(100));
+        assert_eq!(bucket(5, 100).eval(-50), Some(0)); // -50/100 = 0 => 0
+        assert_eq!(bucket(5, 100).eval(-150), Some(-100)); // NOT floor -200
+                                                           // ADD / SUB / MUL.
+        assert_eq!(bucket(2, 10).eval(5), Some(15));
+        assert_eq!(bucket(3, 10).eval(5), Some(-5));
+        assert_eq!(bucket(4, 4).eval(-3), Some(-12));
+    }
+
+    #[test]
+    fn bucketfn_from_hints_fail_closed() {
+        // op NONE / unknown => no bucket.
+        assert!(BucketFn::from_hints(&hist_hints(0, 100), TimeUnit::Millisecond).is_none());
+        assert!(BucketFn::from_hints(&hist_hints(9, 100), TimeUnit::Millisecond).is_none());
+        // DIV/MUL/FLOOR require strictly positive operand.
+        assert!(BucketFn::from_hints(&hist_hints(1, 0), TimeUnit::Millisecond).is_none());
+        assert!(BucketFn::from_hints(&hist_hints(5, -100), TimeUnit::Millisecond).is_none());
+        assert!(BucketFn::from_hints(&hist_hints(4, 0), TimeUnit::Millisecond).is_none());
+    }
+
+    #[test]
+    fn bucketfn_operand_coerced_to_physical_unit() {
+        // declared millis, physical nanos: operand 1 ms => 1_000_000 ns, so
+        // eval matches DataFusion running on the nanos column.
+        let b = BucketFn::from_hints(&hist_hints(5, 1), TimeUnit::Nanosecond).unwrap();
+        assert_eq!(b.eval(2_500_000), Some(2_000_000));
+    }
+
+    #[test]
+    fn within_histogram_interior_is_bucket() {
+        // RG [150..199] all floor-to-100 => bucket 100.
+        let f = footer(150, 199, 0, 100);
+        let r = range(0, 1000);
+        assert_eq!(
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hist_hints(5, 100),
+                false,
+                Some(&bucket(5, 100))
+            ),
+            RowGroupPlan::HistogramBucket(100)
+        );
+    }
+
+    #[test]
+    fn within_histogram_boundary_is_full() {
+        // RG [190..210] straddles the 100/200 boundary => decode.
+        let f = footer(190, 210, 0, 100);
+        let r = range(0, 1000);
+        assert_eq!(
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hist_hints(5, 100),
+                false,
+                Some(&bucket(5, 100))
+            ),
+            RowGroupPlan::Full
+        );
+    }
+
+    #[test]
+    fn within_histogram_negative_domain_fails_closed() {
+        // RG [-80..-10]: toward-zero div buckets to 0, date_trunc-style floor to -100.
+        // The two span lowerings disagree below zero, so the RG must decode.
+        let f = footer(-80, -10, 0, 100);
+        let r = range(-1000, 1000);
+        assert_eq!(
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hist_hints(5, 100),
+                false,
+                Some(&bucket(5, 100))
+            ),
+            RowGroupPlan::Full
+        );
+    }
+
+    #[test]
+    fn histogram_without_bucket_is_full() {
+        let f = footer(150, 199, 0, 100);
+        let r = range(0, 1000);
+        assert_eq!(
+            classify_row_group(&f, Some(&r), &hist_hints(5, 100), false, None),
+            RowGroupPlan::Full
+        );
+    }
+
+    #[test]
+    fn histogram_deletes_force_full() {
+        let f = footer(150, 199, 0, 100);
+        let r = range(0, 1000);
+        assert_eq!(
+            classify_row_group(
+                &f,
+                Some(&r),
+                &hist_hints(5, 100),
+                true,
+                Some(&bucket(5, 100))
+            ),
+            RowGroupPlan::Full
         );
     }
 
@@ -523,6 +907,7 @@ mod tests {
             &hints(FastPathShape::CountOnly, false),
             Some(&r),
             false,
+            None,
         );
         // RG0 WITHIN => CountFromIndex; RG1 outside => Full.
         assert_eq!(
@@ -541,6 +926,7 @@ mod tests {
             &hints(FastPathShape::CountOnly, false),
             Some(&r),
             true, // has_deletes
+            None,
         );
         assert_eq!(plans, vec![RowGroupPlan::Full, RowGroupPlan::Full]);
     }
@@ -554,7 +940,80 @@ mod tests {
             &hints(FastPathShape::CountOnly, false),
             None,
             false,
+            None,
         );
         assert_eq!(plans, vec![RowGroupPlan::Full, RowGroupPlan::Full]);
+    }
+
+    /// Three RGs over a single Int64 `ts` column: RG0 [10..40], RG1 [110..140]
+    /// (each single-bucket under floor-to-100), RG2 [190..210] (straddles the
+    /// 100/200 boundary).
+    fn three_rg_metadata() -> std::sync::Arc<ParquetMetaData> {
+        use datafusion::arrow::array::Int64Array;
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use datafusion::parquet::arrow::ArrowWriter;
+        use datafusion::parquet::file::properties::WriterProperties;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("ts", DataType::Int64, false)]));
+        let batches = [
+            vec![10i64, 20, 30, 40],
+            vec![110i64, 120, 130, 140],
+            vec![190i64, 200, 205, 210],
+        ];
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_size(4)
+            .build();
+        let mut w =
+            ArrowWriter::try_new(tmp.reopen().unwrap(), schema.clone(), Some(props)).unwrap();
+        for vals in batches {
+            w.write(
+                &RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vals))])
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        w.close().unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(tmp.reopen().unwrap()).unwrap();
+        assert_eq!(builder.metadata().num_row_groups(), 3);
+        builder.metadata().clone()
+    }
+
+    #[test]
+    fn plan_row_groups_histogram_interior_interior_boundary() {
+        let meta = three_rg_metadata();
+        let r = range(0, 1000);
+        let plans = plan_row_groups(
+            &meta,
+            Some(0),
+            &hist_hints(5, 100),
+            Some(&r),
+            false,
+            Some(&bucket(5, 100)),
+        );
+        assert_eq!(
+            plans,
+            vec![
+                RowGroupPlan::HistogramBucket(0),
+                RowGroupPlan::HistogramBucket(100),
+                RowGroupPlan::Full,
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_row_groups_histogram_deletes_all_full() {
+        let meta = three_rg_metadata();
+        let r = range(0, 1000);
+        let plans = plan_row_groups(
+            &meta,
+            Some(0),
+            &hist_hints(5, 100),
+            Some(&r),
+            true,
+            Some(&bucket(5, 100)),
+        );
+        assert_eq!(plans, vec![RowGroupPlan::Full; 3]);
     }
 }

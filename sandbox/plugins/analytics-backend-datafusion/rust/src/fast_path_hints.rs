@@ -97,10 +97,12 @@ fn physical_ticks_per_second(unit: TimeUnit) -> i64 {
     }
 }
 
-// Flag bits (see the Java `writeTo` doc). Reserved bits are written as zero by PR2.
+// Flag bits (see the Java `writeTo` doc).
 const FLAG_RANGE_ON_LEADING_SORT_FIELD: u8 = 1 << 0;
 const FLAG_RANGE_CONJUNCT_STRIPPABLE: u8 = 1 << 1;
-// bit2 topk_keep_last, bit3 topk_path_safe — reserved for PR3.
+// bit2 topk_keep_last, bit3 topk_path_safe — populated by PR3 (top-K).
+const FLAG_TOPK_KEEP_LAST: u8 = 1 << 2;
+const FLAG_TOPK_PATH_SAFE: u8 = 1 << 3;
 
 /// Decoded planner hints. All fields are plain values; the only logic here is
 /// [`sort_range_in_physical_unit`], the single place unit coercion lives.
@@ -150,6 +152,22 @@ impl FastPathHints {
     /// AND of the remaining conjuncts (Fix 10 strip rule).
     pub fn range_conjunct_strippable(&self) -> bool {
         self.flags & FLAG_RANGE_CONJUNCT_STRIPPABLE != 0
+    }
+
+    /// True when the top-K query sorts in the opposite direction to the index
+    /// sort order, so the surviving `topk_budget` rows are the LAST ones of each
+    /// WITHIN row group (rows are stored in index-sort order). `false` keeps the
+    /// FIRST `topk_budget`. Only meaningful when `shape == TopK`.
+    pub fn topk_keep_last(&self) -> bool {
+        self.flags & FLAG_TOPK_KEEP_LAST != 0
+    }
+
+    /// True when the Sort→Scan path is truncation-safe (identity
+    /// projection/filter/limit only — no window/agg/join/distinct/unnest that
+    /// could reorder or fan out rows). The planner fails this closed; Rust only
+    /// truncates when it is set. Only meaningful when `shape == TopK`.
+    pub fn topk_path_safe(&self) -> bool {
+        self.flags & FLAG_TOPK_PATH_SAFE != 0
     }
 
     /// Decode from a raw FFM pointer. A null (0) pointer => [`FastPathHints::default`]
@@ -260,6 +278,34 @@ pub fn sort_range_in_physical_unit(
     })
 }
 
+/// Coerce a tick count expressed in the DECLARED range unit into the PHYSICAL
+/// unit, using the SAME ticks ratio as the range bounds. This is how the
+/// histogram bucket operand (shipped in the declared unit) is translated so
+/// that `BucketFn::eval` on physical footer min/max reproduces DataFusion's own
+/// bucket arithmetic (which runs on the physical-unit column). Fail-closed:
+/// `None` when the declared unit is absent, when a coarser physical unit does
+/// not divide the operand evenly (would change bucket semantics), or on
+/// multiply overflow. A plain-Int64 column uses identity coercion (declared ==
+/// physical), so the operand passes through unchanged.
+pub fn coerce_ticks_to_physical(
+    hints: &FastPathHints,
+    physical_unit: TimeUnit,
+    ticks: i64,
+) -> Option<i64> {
+    let declared_tps = hints.range_unit.ticks_per_second()?;
+    let physical_tps = physical_ticks_per_second(physical_unit);
+    if physical_tps >= declared_tps {
+        let factor = physical_tps / declared_tps;
+        ticks.checked_mul(factor)
+    } else {
+        let factor = declared_tps / physical_tps;
+        if ticks % factor != 0 {
+            return None;
+        }
+        Some(ticks / factor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +377,38 @@ mod tests {
         let h = write_and_decode(&b);
         assert_eq!(h.shape, FastPathShape::None);
         assert_eq!(h.range_unit, RangeUnit::None);
+    }
+
+    #[test]
+    fn topk_flags_and_budget_decode() {
+        // shape = TOPK (2); flags bit2 keep_last + bit3 path_safe; budget = 50.
+        let mut b = [0u8; FASTPATHHINTS_BYTE_SIZE];
+        b[0] = 1;
+        b[1] = 2; // TOPK
+        b[2] = 0b0000_1100; // topk_keep_last | topk_path_safe
+        b[4..8].copy_from_slice(&50u32.to_le_bytes());
+        let h = write_and_decode(&b);
+        assert_eq!(h.shape, FastPathShape::TopK);
+        assert!(h.topk_keep_last());
+        assert!(h.topk_path_safe());
+        assert_eq!(h.topk_budget, 50);
+        // The lower flag bits are independent of the top-K bits.
+        assert!(!h.range_on_leading_sort_field());
+        assert!(!h.range_conjunct_strippable());
+    }
+
+    #[test]
+    fn topk_flags_default_off() {
+        // path_safe only (bit3), keep_last off (bit2 clear) — the keep-first case.
+        let mut b = [0u8; FASTPATHHINTS_BYTE_SIZE];
+        b[0] = 1;
+        b[1] = 2; // TOPK
+        b[2] = 0b0000_1000; // topk_path_safe only
+        b[4..8].copy_from_slice(&8u32.to_le_bytes());
+        let h = write_and_decode(&b);
+        assert!(!h.topk_keep_last());
+        assert!(h.topk_path_safe());
+        assert_eq!(h.topk_budget, 8);
     }
 
     #[test]

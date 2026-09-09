@@ -94,7 +94,7 @@ public class FragmentConversionDriver {
      * no sort / is ambiguous across an alias). Used by {@link FastPathHintExtractor} to decide the
      * per-fragment fast-path shape. The no-resolver overload disables the fast path (fails closed).
      */
-    public static void convertAll(QueryDAG dag, CapabilityRegistry registry, Function<String, String> leadingSortFieldResolver) {
+    public static void convertAll(QueryDAG dag, CapabilityRegistry registry, Function<String, LeadingSortInfo> leadingSortFieldResolver) {
         convertStage(dag.rootStage(), registry, leadingSortFieldResolver);
         // Root stage executes locally at coordinator — store factory for instruction dispatch.
         Stage root = dag.rootStage();
@@ -104,7 +104,7 @@ public class FragmentConversionDriver {
         }
     }
 
-    private static void convertStage(Stage stage, CapabilityRegistry registry, Function<String, String> leadingSortFieldResolver) {
+    private static void convertStage(Stage stage, CapabilityRegistry registry, Function<String, LeadingSortInfo> leadingSortFieldResolver) {
         for (Stage child : stage.getChildStages()) {
             convertStage(child, registry, leadingSortFieldResolver);
         }
@@ -251,7 +251,7 @@ public class FragmentConversionDriver {
         StagePlan plan,
         FilterTreeShape treeShape,
         IntraOperatorDelegationBytes delegationBytes,
-        Function<String, String> leadingSortFieldResolver
+        Function<String, LeadingSortInfo> leadingSortFieldResolver
     ) {
         FragmentInstructionHandlerFactory factory = backend.getInstructionHandlerFactory();
         LinkedList<InstructionNode> instructions = new LinkedList<>();
@@ -302,13 +302,14 @@ public class FragmentConversionDriver {
         RelNode resolvedFragment,
         OpenSearchTableScan tableScan,
         String drivingBackend,
-        Function<String, String> leadingSortFieldResolver
+        Function<String, LeadingSortInfo> leadingSortFieldResolver
     ) {
         String logicalTableName = tableScan.getTable().getQualifiedName().getLast();
-        String leadingSortField = leadingSortFieldResolver.apply(logicalTableName);
-        if (leadingSortField == null) {
+        LeadingSortInfo leadingSort = leadingSortFieldResolver.apply(logicalTableName);
+        if (leadingSort == null || leadingSort.field() == null) {
             return FastPathHintSpec.NONE;
         }
+        String leadingSortField = leadingSort.field();
         String mappingType = null;
         for (FieldStorageInfo info : tableScan.getOutputFieldStorage()) {
             if (leadingSortField.equals(info.getFieldName())) {
@@ -316,7 +317,7 @@ public class FragmentConversionDriver {
                 break;
             }
         }
-        return FastPathHintExtractor.extract(resolvedFragment, leadingSortField, mappingType, drivingBackend);
+        return FastPathHintExtractor.extract(resolvedFragment, leadingSortField, mappingType, drivingBackend, leadingSort.descending());
     }
 
     // TODO: consolidate with isAggregatePath / findBuriedPartialAggregate into a shared utility

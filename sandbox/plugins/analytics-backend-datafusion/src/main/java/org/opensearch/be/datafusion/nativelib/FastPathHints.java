@@ -77,10 +77,17 @@ public record FastPathHints(int version, int shape, int flags, int rangeUnit, in
     // ── flag bits ─────────────────────────────────────────────────────
     public static final int FLAG_RANGE_ON_LEADING_SORT_FIELD = 1 << 0;
     public static final int FLAG_RANGE_CONJUNCT_STRIPPABLE = 1 << 1;
-    /** Reserved (PR3). */
     public static final int FLAG_TOPK_KEEP_LAST = 1 << 2;
-    /** Reserved (PR3). */
     public static final int FLAG_TOPK_PATH_SAFE = 1 << 3;
+
+    // ── histogram bucket-op discriminants (mirror FastPathHintSpec.BucketOp ordinals) ──
+    public static final int BUCKET_OP_NONE = 0;
+    public static final int BUCKET_OP_DIV = 1;
+    public static final int BUCKET_OP_ADD = 2;
+    public static final int BUCKET_OP_SUB = 3;
+    public static final int BUCKET_OP_MUL = 4;
+    /** {@code bucket = floor(col / operand) * operand} — PPL span composite (numeric {@code (col/N)*N} / time {@code date_trunc}). */
+    public static final int BUCKET_OP_FLOOR_TO_MULTIPLE = 5;
 
     /**
      * The all-NONE hint every non-fast-path fragment ships: shape NONE, no flags,
@@ -91,23 +98,37 @@ public record FastPathHints(int version, int shape, int flags, int rangeUnit, in
 
     /**
      * Maps the planner's framework-level {@link FastPathHintSpec} to this fixed-layout wire struct.
-     * Reserved fields (topk / histogram) are zero — PR3 populates them. Returns {@link #NONE} for a
-     * null spec so callers can pass through unconditionally.
+     * The COUNT_ONLY range fields, the TOPK budget/flags, and the HISTOGRAM bucket op/operand all
+     * land in their reserved slots. Returns {@link #NONE} for a null spec so callers can pass through
+     * unconditionally.
      */
     public static FastPathHints fromSpec(FastPathHintSpec spec) {
         if (spec == null) {
             return NONE;
         }
         int shape = switch (spec.shape()) {
-            case COUNT_ONLY -> SHAPE_COUNT_ONLY;
             case NONE -> SHAPE_NONE;
+            case COUNT_ONLY -> SHAPE_COUNT_ONLY;
+            case TOPK -> SHAPE_TOPK;
+            case HISTOGRAM -> SHAPE_HISTOGRAM;
         };
         int flags = (spec.rangeOnLeadingSortField() ? FLAG_RANGE_ON_LEADING_SORT_FIELD : 0) | (spec.rangeConjunctStrippable()
             ? FLAG_RANGE_CONJUNCT_STRIPPABLE
-            : 0);
-        // RangeUnit ordinals mirror the UNIT_* discriminants (none=0 … nanos=4).
+            : 0) | (spec.topKKeepLast() ? FLAG_TOPK_KEEP_LAST : 0) | (spec.topKPathSafe() ? FLAG_TOPK_PATH_SAFE : 0);
+        // RangeUnit and BucketOp ordinals mirror the wire discriminants (defined in lockstep on both sides).
         int rangeUnit = spec.rangeUnit().ordinal();
-        return new FastPathHints(VERSION, shape, flags, rangeUnit, 0, spec.rangeLowerInclusive(), spec.rangeUpperInclusive(), 0, 0L);
+        int bucketOp = spec.histogramBucketOp().ordinal();
+        return new FastPathHints(
+            VERSION,
+            shape,
+            flags,
+            rangeUnit,
+            spec.topKBudget(),
+            spec.rangeLowerInclusive(),
+            spec.rangeUpperInclusive(),
+            bucketOp,
+            spec.histogramBucketOperand()
+        );
     }
 
     /**

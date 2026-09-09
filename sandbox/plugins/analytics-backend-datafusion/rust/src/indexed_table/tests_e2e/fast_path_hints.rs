@@ -166,7 +166,7 @@ fn plans_for(
     range: Option<&SortRange>,
     has_deletes: bool,
 ) -> Arc<HashMap<i64, Vec<RowGroupPlan>>> {
-    let plans = plan_row_groups(&segment.metadata, Some(0), hints, range, has_deletes);
+    let plans = plan_row_groups(&segment.metadata, Some(0), hints, range, has_deletes, None);
     Arc::new(HashMap::from([(0i64, plans)]))
 }
 
@@ -660,4 +660,481 @@ async fn no_collector_zero_leaf_universe_count() {
     assert_eq!(docfreq, 1, "answered by the docFreq/universe short-circuit");
     assert_eq!(from_index, 1);
     assert_eq!(full, 0);
+}
+
+// ── PR3 Stage B: top-K candidate truncation (Fix 4 + 14) ────────────────────
+
+/// TOPK hints spanning the whole range (both RGs WITHIN), built via the wire
+/// round-trip. `path_safe` gates truncation; `keep_last` picks first vs last
+/// `budget`; declared unit = millis (1:1 with a millis physical column).
+fn make_topk_hints(keep_last: bool, path_safe: bool, budget: u32) -> FastPathHints {
+    let mut flags = 0b01u8; // range_on_leading_sort_field
+    if keep_last {
+        flags |= 0b0100; // topk_keep_last
+    }
+    if path_safe {
+        flags |= 0b1000; // topk_path_safe
+    }
+    let mut b = [0u8; FASTPATHHINTS_BYTE_SIZE];
+    b[0] = 1; // version
+    b[1] = 2; // TOPK
+    b[2] = flags;
+    b[3] = 2; // millis
+    b[4..8].copy_from_slice(&budget.to_le_bytes());
+    b[8..16].copy_from_slice(&i64::MIN.to_le_bytes());
+    b[16..24].copy_from_slice(&i64::MAX.to_le_bytes());
+    // SAFETY: fixed 40-byte buffer written per the documented wire layout.
+    unsafe { FastPathHints::from_ffm_ptr(b.as_ptr() as i64) }
+}
+
+/// Full-range plans over the two-RG `ts` fixture (both RGs WITHIN) for the
+/// given TOPK hints.
+fn topk_plans(hints: &FastPathHints, has_deletes: bool) -> Arc<HashMap<i64, Vec<RowGroupPlan>>> {
+    let (tmp, schema) = write_ts_fixture();
+    let segment = load_segment(tmp.path(), &schema);
+    let range = SortRange {
+        lower_inclusive: i64::MIN,
+        upper_inclusive: i64::MAX,
+    };
+    plans_for(&segment, hints, Some(&range), has_deletes)
+}
+
+/// Run `SELECT ts FROM t ORDER BY ts {dir} LIMIT {limit}` with a no-residual
+/// `PredicateOnlyEvaluator` (candidates = the whole RG), so a `TopKTruncated`
+/// RG keeps only `budget` rows before decode. The outer blocking Sort fully
+/// drains the scan. Returns `(ts values in output order, rg_topk_truncated,
+/// rows_matched)`.
+async fn run_topk_ordered(
+    row_group_plans: Arc<HashMap<i64, Vec<RowGroupPlan>>>,
+    descending: bool,
+    limit: usize,
+) -> (Vec<i64>, usize, usize) {
+    let (tmp, schema) = write_ts_fixture();
+    let segment = load_segment(tmp.path(), &schema);
+
+    let factory: EvaluatorFactory = {
+        let schema = schema.clone();
+        Arc::new(
+            move |segment: &SegmentFileInfo, _chunk, stream_metrics, _spt| {
+                let pruner = Arc::new(PagePruner::new(
+                    &schema,
+                    Arc::clone(&segment.metadata),
+                    schema.clone(),
+                ));
+                // No residual, no pushdown: candidates = every row in the RG.
+                let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(PredicateOnlyEvaluator::new(
+                    pruner,
+                    None,
+                    None,
+                    Some(PagePruneMetrics::from_stream_metrics(stream_metrics)),
+                    None,
+                    HashMap::new(),
+                ));
+                Ok(eval)
+            },
+        )
+    };
+
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_strategy(Some(FilterStrategy::RowSelection))
+        .indexed_pushdown_filters(false)
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: schema.clone(),
+        segments: vec![segment],
+        store: Arc::new(object_store::local::LocalFileSystem::new()),
+        store_url: ObjectStoreUrl::local_filesystem(),
+        evaluator_factory: factory,
+        pushdown_predicate: None,
+        query_config: std::sync::Arc::new(qc),
+        predicate_columns: vec![0],
+        emit_row_ids: false,
+        prune_tree_config: None,
+        sort_fields: vec![],
+        sort_orders: vec![],
+        cancellation_token: None,
+        row_group_plans,
+        sort_column: Some("ts".to_string()),
+    }));
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    let dir = if descending { "DESC" } else { "ASC" };
+    let df = ctx
+        .sql(&format!("SELECT ts FROM t ORDER BY ts {dir} LIMIT {limit}"))
+        .await
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let mut stream =
+        datafusion::physical_plan::execute_stream(Arc::clone(&plan), ctx.task_ctx()).unwrap();
+    let mut out: Vec<i64> = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let b = batch.unwrap();
+        let col = b.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        for i in 0..b.num_rows() {
+            out.push(col.value(i));
+        }
+    }
+    (
+        out,
+        sum_counter(&plan, "rg_topk_truncated"),
+        sum_counter(&plan, "rows_matched"),
+    )
+}
+
+/// Run `SELECT ts FROM t` with `emit_row_ids=true` and a no-residual evaluator.
+/// The `emit_row_ids` projection branch is exercised, and a `TopKTruncated` RG
+/// still decodes only the truncated survivors (Fix 14: the QTF query phase must
+/// truncate too). Returns `(sorted ts values, rg_topk_truncated)`.
+async fn run_topk_row_ids(
+    row_group_plans: Arc<HashMap<i64, Vec<RowGroupPlan>>>,
+) -> (Vec<i64>, usize) {
+    let (tmp, schema) = write_ts_fixture();
+    let segment = load_segment(tmp.path(), &schema);
+
+    let factory: EvaluatorFactory = {
+        let schema = schema.clone();
+        Arc::new(
+            move |segment: &SegmentFileInfo, _chunk, stream_metrics, _spt| {
+                let pruner = Arc::new(PagePruner::new(
+                    &schema,
+                    Arc::clone(&segment.metadata),
+                    schema.clone(),
+                ));
+                let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(PredicateOnlyEvaluator::new(
+                    pruner,
+                    None,
+                    None,
+                    Some(PagePruneMetrics::from_stream_metrics(stream_metrics)),
+                    None,
+                    HashMap::new(),
+                ));
+                Ok(eval)
+            },
+        )
+    };
+
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_strategy(Some(FilterStrategy::RowSelection))
+        .indexed_pushdown_filters(false)
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: schema.clone(),
+        segments: vec![segment],
+        store: Arc::new(object_store::local::LocalFileSystem::new()),
+        store_url: ObjectStoreUrl::local_filesystem(),
+        evaluator_factory: factory,
+        pushdown_predicate: None,
+        query_config: std::sync::Arc::new(qc),
+        predicate_columns: vec![0],
+        emit_row_ids: true,
+        prune_tree_config: None,
+        sort_fields: vec![],
+        sort_orders: vec![],
+        cancellation_token: None,
+        row_group_plans,
+        sort_column: Some("ts".to_string()),
+    }));
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    let df = ctx.sql("SELECT ts FROM t").await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let mut stream =
+        datafusion::physical_plan::execute_stream(Arc::clone(&plan), ctx.task_ctx()).unwrap();
+    let mut ts: Vec<i64> = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let b = batch.unwrap();
+        let col = b.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        for i in 0..b.num_rows() {
+            ts.push(col.value(i));
+        }
+    }
+    ts.sort_unstable();
+    (ts, sum_counter(&plan, "rg_topk_truncated"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topk_keep_last_matches_full_path() {
+    // Baseline: no plans → every RG Full, decode all 16 rows.
+    let (baseline, base_trunc, base_matched) =
+        run_topk_ordered(Arc::new(HashMap::new()), true, 3).await;
+    assert_eq!(baseline, vec![15, 14, 13], "top-3 by ts desc");
+    assert_eq!(base_trunc, 0, "baseline truncates nothing");
+    assert_eq!(base_matched, 16, "baseline decodes every row");
+
+    // TOPK keep_last budget 3: each WITHIN RG keeps its last 3 rows → 6 decoded.
+    let hints = make_topk_hints(true, true, 3);
+    let (out, trunc, matched) = run_topk_ordered(topk_plans(&hints, false), true, 3).await;
+    assert_eq!(out, baseline, "truncated top-K equals the full-path result");
+    assert_eq!(trunc, 2, "both RGs truncated");
+    assert!(matched <= 6, "decoded rows <= 2*budget (got {matched})");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topk_keep_first_matches_full_path() {
+    let (baseline, _, _) = run_topk_ordered(Arc::new(HashMap::new()), false, 3).await;
+    assert_eq!(baseline, vec![0, 1, 2], "bottom-3 by ts asc");
+
+    // keep_first (query ASC == index ASC): each RG keeps its first 3 rows.
+    let hints = make_topk_hints(false, true, 3);
+    let (out, trunc, matched) = run_topk_ordered(topk_plans(&hints, false), false, 3).await;
+    assert_eq!(out, baseline, "truncated top-K equals the full-path result");
+    assert_eq!(trunc, 2, "both RGs truncated");
+    assert!(matched <= 6, "decoded rows <= 2*budget (got {matched})");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topk_not_path_safe_no_truncation() {
+    // path_safe=false => every RG classified Full: no truncation, identical result.
+    let hints = make_topk_hints(true, false, 3);
+    let (out, trunc, matched) = run_topk_ordered(topk_plans(&hints, false), true, 3).await;
+    assert_eq!(out, vec![15, 14, 13], "result identical to full path");
+    assert_eq!(trunc, 0, "no RG truncated when path is not safe");
+    assert_eq!(matched, 16, "every row decoded");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topk_deletes_no_truncation() {
+    // deleted_doc_filtering_required => Full everywhere; footer counts include
+    // deleted docs, so per-RG truncation would be unsound.
+    let hints = make_topk_hints(true, true, 3);
+    let (out, trunc, matched) = run_topk_ordered(topk_plans(&hints, true), true, 3).await;
+    assert_eq!(out, vec![15, 14, 13], "result identical to full path");
+    assert_eq!(trunc, 0, "no truncation under deletions");
+    assert_eq!(matched, 16, "every row decoded");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn topk_truncation_applies_with_emit_row_ids() {
+    // Fix 14: the QTF query phase (emit_row_ids) must truncate too. keep_last
+    // budget 3 → RG0 keeps ts {5,6,7}, RG1 keeps ts {13,14,15}.
+    let hints = make_topk_hints(true, true, 3);
+    let (ts, trunc) = run_topk_row_ids(topk_plans(&hints, false)).await;
+    assert_eq!(
+        ts,
+        vec![5, 6, 7, 13, 14, 15],
+        "last 3 rows of each RG survive"
+    );
+    assert_eq!(trunc, 2, "both RGs truncated on the emit_row_ids path");
+}
+
+// ── PR3 Stage C2: histogram interior-RG counts (Fix 5) ──────────────────────
+
+use std::collections::BTreeMap;
+
+use crate::indexed_table::histogram::install_histogram_rewrite;
+
+/// HISTOGRAM hints carrying a bucket op/operand in the DECLARED (millis) unit
+/// over the full range (every RG WITHIN), built via the wire round-trip.
+fn make_hist_hints(op: u8, operand: i64) -> FastPathHints {
+    let mut b = [0u8; FASTPATHHINTS_BYTE_SIZE];
+    b[0] = 1; // version
+    b[1] = 3; // HISTOGRAM
+    b[2] = 0b01; // range_on_leading_sort_field
+    b[3] = 2; // millis (1:1 with a millis physical column)
+    b[8..16].copy_from_slice(&i64::MIN.to_le_bytes());
+    b[16..24].copy_from_slice(&i64::MAX.to_le_bytes());
+    b[24] = op;
+    b[32..40].copy_from_slice(&operand.to_le_bytes());
+    // SAFETY: fixed 40-byte buffer written per the documented wire layout.
+    unsafe { FastPathHints::from_ffm_ptr(b.as_ptr() as i64) }
+}
+
+/// 12 rows in three row groups of 4 (floor-to-5 buckets):
+///   RG0 ts=[0,1,2,3]     → all bucket 0        (interior)
+///   RG1 ts=[10,11,12,13] → all bucket 10       (interior)
+///   RG2 ts=[8,9,10,11]   → buckets {5,5,10,10} (boundary → decode)
+/// Full-path histogram: bucket 0=4, bucket 5=2, bucket 10=6.
+fn write_ts_fixture_hist() -> (NamedTempFile, SchemaRef) {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("ts", DataType::Int64, false)]));
+    let batches = [
+        vec![0i64, 1, 2, 3],
+        vec![10i64, 11, 12, 13],
+        vec![8i64, 9, 10, 11],
+    ];
+    let props = WriterProperties::builder()
+        .set_max_row_group_size(4)
+        .set_statistics_enabled(EnabledStatistics::Page)
+        .build();
+    let tmp = NamedTempFile::new().unwrap();
+    let mut w = ArrowWriter::try_new(tmp.reopen().unwrap(), schema.clone(), Some(props)).unwrap();
+    for vals in batches {
+        w.write(
+            &RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vals))]).unwrap(),
+        )
+        .unwrap();
+    }
+    w.close().unwrap();
+    (tmp, schema)
+}
+
+/// Like [`load_segment`] but for the 3-RG histogram fixture (`max_doc = 12`).
+fn load_segment_hist(path: &std::path::Path, schema: &SchemaRef) -> SegmentFileInfo {
+    let mut seg = load_segment(path, schema);
+    seg.max_doc = 12;
+    seg
+}
+
+/// Run `SELECT (ts/5)*5 AS b, count(*) FROM t GROUP BY (ts/5)*5` through the full
+/// indexed path with a no-collector `SingleCollectorEvaluator` (so an interior
+/// `HistogramBucket` RG is answered by `count_rg` == RG span). When
+/// `install_rewrite` is set, [`install_histogram_rewrite`] wraps the partial
+/// aggregate and installs the sink. Returns `(bucket -> count, rg_histogram_interior)`.
+async fn run_histogram(
+    hints: &FastPathHints,
+    has_deletes: bool,
+    install_rewrite: bool,
+) -> (BTreeMap<i64, i64>, usize) {
+    let (tmp, schema) = write_ts_fixture_hist();
+    let segment = load_segment_hist(tmp.path(), &schema);
+    let range = SortRange {
+        lower_inclusive: i64::MIN,
+        upper_inclusive: i64::MAX,
+    };
+    // Histogram classification needs the reconstructed bucket fn (physical unit
+    // = millis for an Int64/millis column); `plans_for` passes `None`.
+    let bucket = crate::indexed_table::row_group_plan::BucketFn::from_hints(
+        hints,
+        datafusion::arrow::datatypes::TimeUnit::Millisecond,
+    );
+    let plans = plan_row_groups(
+        &segment.metadata,
+        Some(0),
+        hints,
+        Some(&range),
+        has_deletes,
+        bucket.as_ref(),
+    );
+    let row_group_plans = Arc::new(HashMap::from([(0i64, plans)]));
+
+    let factory: EvaluatorFactory = {
+        let schema = schema.clone();
+        Arc::new(
+            move |segment: &SegmentFileInfo, _chunk, stream_metrics, _spt| {
+                let pruner = Arc::new(PagePruner::new(
+                    &schema,
+                    Arc::clone(&segment.metadata),
+                    schema.clone(),
+                ));
+                let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(SingleCollectorEvaluator::new(
+                    None, // no correctness collector → count_rg = RG span
+                    pruner,
+                    None,
+                    None,
+                    Some(PagePruneMetrics::from_stream_metrics(stream_metrics)),
+                    None,
+                    CollectorCallStrategy::FullRange,
+                    Arc::new(HashMap::new()),
+                    segment.writer_generation,
+                    Arc::new(FfmDelegatedBackendCollectorFactory),
+                    0,
+                    None,
+                    None,
+                    HashMap::new(),
+                    Vec::new(),
+                ));
+                Ok(eval)
+            },
+        )
+    };
+
+    let qc = crate::datafusion_query_config::DatafusionQueryConfig::builder()
+        .target_partitions(1)
+        .force_strategy(Some(FilterStrategy::BooleanMask))
+        .indexed_pushdown_filters(false)
+        .build();
+    let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
+        schema: schema.clone(),
+        segments: vec![segment],
+        store: Arc::new(object_store::local::LocalFileSystem::new()),
+        store_url: ObjectStoreUrl::local_filesystem(),
+        evaluator_factory: factory,
+        pushdown_predicate: None,
+        query_config: std::sync::Arc::new(qc),
+        predicate_columns: vec![0],
+        emit_row_ids: false,
+        prune_tree_config: None,
+        sort_fields: vec![],
+        sort_orders: vec![],
+        cancellation_token: None,
+        row_group_plans,
+        sort_column: Some("ts".to_string()),
+    }));
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider).unwrap();
+    let df = ctx
+        .sql("SELECT (ts / 5) * 5 AS b, count(*) AS c FROM t GROUP BY (ts / 5) * 5")
+        .await
+        .unwrap();
+    let mut plan = df.create_physical_plan().await.unwrap();
+    if install_rewrite {
+        plan = install_histogram_rewrite(plan, hints).unwrap();
+    }
+    let mut stream =
+        datafusion::physical_plan::execute_stream(Arc::clone(&plan), ctx.task_ctx()).unwrap();
+    let mut out: BTreeMap<i64, i64> = BTreeMap::new();
+    while let Some(batch) = stream.next().await {
+        let b = batch.unwrap();
+        let bucket = b.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let count = b.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+        for i in 0..b.num_rows() {
+            *out.entry(bucket.value(i)).or_insert(0) += count.value(i);
+        }
+    }
+    let interior = sum_counter(&plan, "rg_histogram_interior");
+    (out, interior)
+}
+
+fn expected_histogram() -> BTreeMap<i64, i64> {
+    BTreeMap::from([(0, 4), (5, 2), (10, 6)])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn histogram_interior_counts_from_index() {
+    // Rewrite installed: RG0 & RG1 interior → counted from the index into the
+    // sink (interior=2); RG2 boundary → decoded. Result equals the full-path
+    // aggregate.
+    let hints = make_hist_hints(5 /* FLOOR_TO_MULTIPLE */, 5);
+    let (out, interior) = run_histogram(&hints, false, true).await;
+    assert_eq!(
+        out,
+        expected_histogram(),
+        "fast-path histogram matches full path"
+    );
+    assert_eq!(interior, 2, "both interior RGs answered from the index");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn histogram_deletes_no_interior_same_result() {
+    // deleted_doc_filtering_required → every RG classified Full; no interior
+    // shortcut, but the decoded aggregate is identical.
+    let hints = make_hist_hints(5, 5);
+    let (out, interior) = run_histogram(&hints, true, true).await;
+    assert_eq!(
+        out,
+        expected_histogram(),
+        "delete-safe decode matches full path"
+    );
+    assert_eq!(interior, 0, "no interior count under deletions");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn histogram_no_rewrite_no_interior_same_result() {
+    // Rewrite NOT installed: interior RGs decode fully (no sink), interior=0,
+    // and the result is still the full-path aggregate.
+    let hints = make_hist_hints(5, 5);
+    let (out, interior) = run_histogram(&hints, false, false).await;
+    assert_eq!(
+        out,
+        expected_histogram(),
+        "uninstalled path matches full path"
+    );
+    assert_eq!(
+        interior, 0,
+        "no interior count when the rewrite is not installed"
+    );
 }

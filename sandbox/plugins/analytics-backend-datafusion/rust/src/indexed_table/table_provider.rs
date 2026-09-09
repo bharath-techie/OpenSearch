@@ -453,6 +453,7 @@ impl TableProvider for IndexedTableProvider {
             row_id_output_index,
             dynamic_filters: Vec::new(),
             advertised_ordering,
+            histogram_sink: None,
         }))
     }
 
@@ -498,6 +499,12 @@ pub struct QueryShardExec {
     /// the same ordering so DataFusion's `EnforceSorting` can substitute
     /// `SortPreservingMergeExec` for the outer `SortExec(TopK)`.
     advertised_ordering: Option<LexOrdering>,
+    /// Per-partition histogram sink (PR3 Fix 5). `Some` only after
+    /// [`super::histogram::install_histogram_rewrite`] rewrote this leaf; it is
+    /// threaded into each `IndexedExec` this shard spawns (keyed by the executing
+    /// partition) so interior `HistogramBucket` RGs accumulate their index-only
+    /// counts there. `None` on the normal path.
+    histogram_sink: Option<super::histogram::HistogramSink>,
 }
 
 impl fmt::Debug for QueryShardExec {
@@ -772,6 +779,8 @@ impl ExecutionPlan for QueryShardExec {
                 writer_generation: segment.writer_generation,
                 row_group_plans: Arc::clone(&self.config.row_group_plans),
                 sort_column: self.config.sort_column.clone(),
+                histogram_sink: self.histogram_sink.clone(),
+                histogram_partition: partition,
             };
             streams.push(exec.execute(0, Arc::clone(&context))?);
         }
@@ -853,6 +862,30 @@ impl QueryShardExec {
             row_id_output_index: self.row_id_output_index,
             dynamic_filters,
             advertised_ordering: self.advertised_ordering.clone(),
+            histogram_sink: self.histogram_sink.clone(),
+        }
+    }
+
+    /// Rebuild this exec with a histogram sink attached (PR3 Fix 5). Mints a
+    /// fresh `ExecutionPlanMetricsSet` (the rewrite runs before execution, so no
+    /// metrics are lost) and reuses the shared `Arc` fields verbatim. Called by
+    /// [`super::histogram::install_histogram_rewrite`].
+    pub(crate) fn clone_with_histogram_sink(&self, sink: super::histogram::HistogramSink) -> Self {
+        QueryShardExec {
+            config: Arc::clone(&self.config),
+            full_schema: self.full_schema.clone(),
+            projected_schema: self.projected_schema.clone(),
+            projection: self.projection.clone(),
+            assignments: self.assignments.clone(),
+            properties: Arc::clone(&self.properties),
+            predicate: self.predicate.clone(),
+            metrics: ExecutionPlanMetricsSet::new(),
+            inner_parquet_metrics: Arc::clone(&self.inner_parquet_metrics),
+            io_stats: Arc::clone(&self.io_stats),
+            row_id_output_index: self.row_id_output_index,
+            dynamic_filters: self.dynamic_filters.clone(),
+            advertised_ordering: self.advertised_ordering.clone(),
+            histogram_sink: Some(sink),
         }
     }
 }

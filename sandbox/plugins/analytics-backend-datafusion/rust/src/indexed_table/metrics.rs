@@ -131,6 +131,20 @@ pub struct StreamMetrics {
     pub rg_timestamp_stripped: Option<Count>,
     /// RGs that took the full decode path (`Full` RowGroupPlan).
     pub rg_full: Option<Count>,
+    /// RGs whose candidate set was truncated to the sort-bounded top-K budget
+    /// (`TopKTruncated` RowGroupPlan): only the first/last `budget` candidates
+    /// were decoded.
+    pub rg_topk_truncated: Option<Count>,
+    /// `TopKTruncated` RGs whose candidate count was already `<= budget`, so
+    /// truncation was a no-op (the whole WITHIN RG is decoded).
+    pub rg_topk_skip_below_budget: Option<Count>,
+    /// Interior `HistogramBucket` RGs whose exact `(bucket, count)` was emitted
+    /// from the index into the `HistogramSink`, no Parquet decode (PR3 Fix 5).
+    pub rg_histogram_interior: Option<Count>,
+    /// `HistogramBucket` RGs that could NOT be counted from the index
+    /// (`count_rg` declined) even though a sink was installed, so they fell back
+    /// to the Full decode path (PR3 Fix 5).
+    pub rg_histogram_declined: Option<Count>,
     /// Object-store read wall-time accumulator, shared across all RG readers
     /// within this partition.
     pub io_stats: Option<Arc<ReadIoStats>>,
@@ -183,6 +197,10 @@ impl StreamMetrics {
             rg_count_from_docfreq: None,
             rg_timestamp_stripped: None,
             rg_full: None,
+            rg_topk_truncated: None,
+            rg_topk_skip_below_budget: None,
+            rg_histogram_interior: None,
+            rg_histogram_declined: None,
             io_stats: None,
             inner_parquet_metrics: None,
         }
@@ -231,6 +249,10 @@ pub struct PartitionMetrics {
     pub rg_count_from_docfreq: Count,
     pub rg_timestamp_stripped: Count,
     pub rg_full: Count,
+    pub rg_topk_truncated: Count,
+    pub rg_topk_skip_below_budget: Count,
+    pub rg_histogram_interior: Count,
+    pub rg_histogram_declined: Count,
 }
 
 impl PartitionMetrics {
@@ -284,6 +306,10 @@ impl PartitionMetrics {
             rg_count_from_docfreq: counter("rg_count_from_docfreq"),
             rg_timestamp_stripped: counter("rg_timestamp_stripped"),
             rg_full: counter("rg_full"),
+            rg_topk_truncated: counter("rg_topk_truncated"),
+            rg_topk_skip_below_budget: counter("rg_topk_skip_below_budget"),
+            rg_histogram_interior: counter("rg_histogram_interior"),
+            rg_histogram_declined: counter("rg_histogram_declined"),
         }
     }
 
@@ -333,6 +359,10 @@ impl PartitionMetrics {
             rg_count_from_docfreq: Some(self.rg_count_from_docfreq),
             rg_timestamp_stripped: Some(self.rg_timestamp_stripped),
             rg_full: Some(self.rg_full),
+            rg_topk_truncated: Some(self.rg_topk_truncated),
+            rg_topk_skip_below_budget: Some(self.rg_topk_skip_below_budget),
+            rg_histogram_interior: Some(self.rg_histogram_interior),
+            rg_histogram_declined: Some(self.rg_histogram_declined),
             io_stats: Some(Arc::new(ReadIoStats::default())),
             inner_parquet_metrics,
         }
