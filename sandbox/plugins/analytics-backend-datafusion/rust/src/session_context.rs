@@ -60,6 +60,10 @@ pub struct SessionContextHandle {
     /// excluded via the ordinary Lucene collector machinery. Sourced from the Java per-shard
     /// hasDeletions probe; false on shards without deletions (zero overhead).
     pub deleted_doc_filtering_required: bool,
+    /// Planner fast-path hints for this fragment (fixed-layout wire struct from Java).
+    /// `FastPathHints::default()` (NONE) for every non-fast-path fragment; the indexed
+    /// path reads it once per query to classify each row group. See `fast_path_hints`.
+    pub fast_path_hints: crate::fast_path_hints::FastPathHints,
     /// When set, indicates this session uses the indexed execution path with filter delegation.
     pub indexed_config: Option<IndexedExecutionConfig>,
     /// Per-query tuning knobs (batch size, partitions, filter strategies, etc.)
@@ -444,6 +448,7 @@ pub async unsafe fn create_session_context(
         query_context,
         table_name: table_name.to_string(),
         deleted_doc_filtering_required,
+        fast_path_hints: crate::fast_path_hints::FastPathHints::default(),
         indexed_config: None,
         query_config,
         io_handle: tokio::runtime::Handle::current(),
@@ -535,6 +540,7 @@ pub async unsafe fn create_worker_session_context(
         sort_orders: Vec::new(),
         table_name: String::new(),
         deleted_doc_filtering_required: false,
+        fast_path_hints: crate::fast_path_hints::FastPathHints::default(),
         indexed_config: None,
         query_config,
         aggregate_mode: crate::agg_mode::Mode::Default,
@@ -573,6 +579,7 @@ pub async unsafe fn create_session_context_indexed(
     has_partial_aggregate: bool,
     query_config: DatafusionQueryConfig,
     plan_bytes: &[u8],
+    fast_path_hints: crate::fast_path_hints::FastPathHints,
 ) -> Result<i64, DataFusionError> {
     let ptr = create_session_context(
         runtime_ptr,
@@ -590,6 +597,7 @@ pub async unsafe fn create_session_context_indexed(
     // are now registered for every session by udf::register_all (via create_session_context above);
     // the indexed path additionally UNWRAPS them before execution.
     let handle = &mut *(ptr as *mut SessionContextHandle);
+    handle.fast_path_hints = fast_path_hints;
     handle.indexed_config = Some(IndexedExecutionConfig {
         tree_shape,
         delegated_predicate_count,
@@ -935,6 +943,7 @@ mod tests {
             query_context,
             table_name: "t".to_string(),
             deleted_doc_filtering_required: false,
+            fast_path_hints: crate::fast_path_hints::FastPathHints::default(),
             indexed_config: None,
             query_config: crate::datafusion_query_config::DatafusionQueryConfig::test_default(),
             io_handle: tokio::runtime::Handle::current(),

@@ -91,12 +91,25 @@ struct PrefetchedRowGroup {
 enum PrefetchOutcome {
     /// RG fetched with a non-empty candidate set.
     Fetched(PrefetchedRowGroup),
+    /// RG answered by the Weight#count / docFreq short-circuit (`count_rg`) —
+    /// exact count with no bitmap materialized (PR2 Fix 2/3). Only produced for
+    /// `RowGroupPlan::CountFromIndex` RGs.
+    Counted { rg: RowGroupInfo, count: u64 },
     /// RG had no candidates (empty bitmap) or fell outside the doc range —
     /// skipped without a parquet read. Attributed to `rg_skipped`.
     Empty,
     /// RG excluded by the dynamic filter at prefetch time, before the Lucene
     /// eval ran. Attributed to `dynamic_filter_rg_pruned_at_prefetch`.
     Pruned,
+}
+
+/// What `poll_next_row_group` hands back to `poll_inner`: either a row group to
+/// decode, or an exact index-only count to emit directly.
+enum NextRowGroup {
+    /// Decode this row group (candidate bitmap + refinement).
+    Decode(PrefetchedRowGroup),
+    /// Emit an exact row-count batch for this RG; no parquet decode.
+    Counted { rg: RowGroupInfo, count: u64 },
 }
 
 type PrefetchResult = std::result::Result<PrefetchOutcome, String>;
@@ -138,6 +151,10 @@ struct IndexReader {
     /// Per-query cancellation token. Checked before each row group is dispatched
     /// and before the evaluator runs in a queued blocking job. `None` disables cancellation.
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
+    /// RG indices (into `row_groups`) classified `RowGroupPlan::CountFromIndex`
+    /// for this segment. For these the prefetch task tries `evaluator.count_rg`
+    /// first; a `Some(n)` skips the bitmap materialization (Fix 2/3).
+    count_from_index_rgs: Arc<std::collections::HashSet<usize>>,
 }
 
 impl IndexReader {
@@ -152,6 +169,7 @@ impl IndexReader {
         metadata: Option<Arc<ParquetMetaData>>,
         dynamic_filter_rg_pruned_at_prefetch: Option<datafusion::physical_plan::metrics::Count>,
         cancellation_token: Option<tokio_util::sync::CancellationToken>,
+        count_from_index_rgs: Arc<std::collections::HashSet<usize>>,
     ) -> Self {
         Self {
             evaluator,
@@ -168,6 +186,7 @@ impl IndexReader {
             dynamic_prune_ctx: None,
             dynamic_filter_rg_pruned_at_prefetch,
             cancellation_token,
+            count_from_index_rgs,
         }
     }
 
@@ -194,6 +213,7 @@ impl IndexReader {
             Arc<ParquetMetaData>,
         )>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        count_from_index_rgs: &std::collections::HashSet<usize>,
     ) -> std::result::Result<PrefetchOutcome, String> {
         if rg_idx >= row_groups.len() {
             return Ok(PrefetchOutcome::Empty);
@@ -224,6 +244,16 @@ impl IndexReader {
                 return Ok(PrefetchOutcome::Empty);
             }
         }
+
+        // PR2 Fix 2/3: a CountFromIndex RG may be answered by the Weight#count /
+        // docFreq short-circuit, avoiding the bitmap materialization. `Some(n)`
+        // ends the prefetch; `None` declines and falls through to prefetch_rg.
+        if count_from_index_rgs.contains(&rg.index) {
+            if let Some(count) = evaluator.count_rg(&rg, min_doc, max_doc)? {
+                return Ok(PrefetchOutcome::Counted { rg, count });
+            }
+        }
+
         match evaluator.prefetch_rg(&rg, min_doc, max_doc)? {
             None => Ok(PrefetchOutcome::Empty),
             Some(prefetched) => Ok(PrefetchOutcome::Fetched(PrefetchedRowGroup {
@@ -247,6 +277,7 @@ impl IndexReader {
             _ => None,
         };
         let token = self.cancellation_token.clone();
+        let count_from_index_rgs = Arc::clone(&self.count_from_index_rgs);
         let handle = tokio::task::spawn_blocking(move || {
             Self::fetch_row_group(
                 &evaluator,
@@ -255,6 +286,7 @@ impl IndexReader {
                 doc_range,
                 prune,
                 token.as_ref(),
+                &count_from_index_rgs,
             )
         });
         self.pending_prefetch = Some(handle);
@@ -263,7 +295,7 @@ impl IndexReader {
     fn poll_next_row_group(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<Option<PrefetchedRowGroup>, DataFusionError>> {
+    ) -> Poll<std::result::Result<Option<NextRowGroup>, DataFusionError>> {
         loop {
             // Bail before dispatching the next row group if the query is cancelled.
             if self.is_cancelled() {
@@ -278,7 +310,12 @@ impl IndexReader {
                 self.current_rg_idx += 1;
                 self.start_prefetch(self.current_rg_idx);
                 match result {
-                    Ok(PrefetchOutcome::Fetched(p)) => return Poll::Ready(Ok(Some(p))),
+                    Ok(PrefetchOutcome::Fetched(p)) => {
+                        return Poll::Ready(Ok(Some(NextRowGroup::Decode(p))))
+                    }
+                    Ok(PrefetchOutcome::Counted { rg, count }) => {
+                        return Poll::Ready(Ok(Some(NextRowGroup::Counted { rg, count })))
+                    }
                     Ok(PrefetchOutcome::Empty) => {
                         // RG had no candidates — skipped without a
                         // parquet read. Count for EXPLAIN ANALYZE.
@@ -403,6 +440,15 @@ pub struct IndexedExec {
     /// Cached per-segment arrow schema derived from parquet footer. Used by
     /// page pruning and dynamic filter to avoid repeated `parquet_to_arrow_schema`.
     pub(crate) seg_arrow_schema: SchemaRef,
+    /// Stable segment key for this exec (== `SegmentFileInfo::writer_generation`).
+    /// Used to look this segment's plan vector out of `row_group_plans`.
+    pub(crate) writer_generation: i64,
+    /// Per-segment fast-path plans keyed by `writer_generation` (see
+    /// `IndexedTableConfig::row_group_plans`). Shared across sibling execs.
+    pub(crate) row_group_plans:
+        Arc<std::collections::HashMap<i64, Vec<super::row_group_plan::RowGroupPlan>>>,
+    /// Leading sort-field column name, or `None`. Carried for Stage C3's strip.
+    pub(crate) sort_column: Option<String>,
 }
 
 impl fmt::Debug for IndexedExec {
@@ -496,6 +542,24 @@ impl ExecutionPlan for IndexedExec {
                 .dynamic_filter_rg_pruned_at_prefetch
                 .clone(),
             self.cancellation_token.clone(),
+            {
+                // RGs this segment classified `CountFromIndex`: the prefetch task
+                // tries `count_rg` on them before materializing a bitmap.
+                use super::row_group_plan::RowGroupPlan;
+                let set: std::collections::HashSet<usize> = self
+                    .row_group_plans
+                    .get(&self.writer_generation)
+                    .map(|plans| {
+                        plans
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, p)| matches!(p, RowGroupPlan::CountFromIndex))
+                            .map(|(i, _)| i)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Arc::new(set)
+            },
         );
         Ok(Box::pin(IndexedStream::new(
             self.schema.clone(),
@@ -519,6 +583,9 @@ impl ExecutionPlan for IndexedExec {
             self.row_id_output_index,
             self.dynamic_filter.clone(),
             self.seg_arrow_schema.clone(),
+            self.writer_generation,
+            Arc::clone(&self.row_group_plans),
+            self.sort_column.clone(),
         )))
     }
 }
@@ -600,6 +667,18 @@ struct IndexedStream {
     /// was pushed. Owns its own snapshot generation tracking, so it must NOT be
     /// shared across sibling segment streams.
     dynamic_rg_pruner: Option<super::dynamic_filter::DynamicRgPruner>,
+    /// This segment's stable key into `row_group_plans`.
+    writer_generation: i64,
+    /// Per-segment fast-path plans keyed by `writer_generation`. Consulted per
+    /// RG via [`IndexedStream::plan_for`]; defaults to `Full` when absent.
+    row_group_plans: Arc<std::collections::HashMap<i64, Vec<super::row_group_plan::RowGroupPlan>>>,
+    /// Leading sort-field column name (Stage C3 will use it to strip the
+    /// sort-range conjunct for `TimestampStripped` RGs).
+    #[allow(dead_code)]
+    sort_column: Option<String>,
+    /// One-shot guard so the per-segment plan-variant debug summary is logged
+    /// only once, on the first RG this stream opens.
+    plan_summary_logged: bool,
 }
 
 impl IndexedStream {
@@ -626,6 +705,11 @@ impl IndexedStream {
         row_id_output_index: Option<usize>,
         dynamic_filter: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
         seg_arrow_schema: SchemaRef,
+        writer_generation: i64,
+        row_group_plans: Arc<
+            std::collections::HashMap<i64, Vec<super::row_group_plan::RowGroupPlan>>,
+        >,
+        sort_column: Option<String>,
     ) -> Self {
         let evaluator = Arc::clone(&index_reader.evaluator);
         let output_projection: Vec<usize> = schema
@@ -676,6 +760,47 @@ impl IndexedStream {
             emit_row_ids,
             row_id_output_index,
             dynamic_rg_pruner,
+            writer_generation,
+            row_group_plans,
+            sort_column,
+            plan_summary_logged: false,
+        }
+    }
+
+    /// The [`RowGroupPlan`] for `(segment_key, rg_index)`, defaulting to
+    /// [`RowGroupPlan::Full`] when the segment or RG has no entry (the safe,
+    /// behaviour-preserving default).
+    fn plan_for(&self, segment_key: i64, rg_index: usize) -> super::row_group_plan::RowGroupPlan {
+        self.row_group_plans
+            .get(&segment_key)
+            .and_then(|plans| plans.get(rg_index).copied())
+            .unwrap_or(super::row_group_plan::RowGroupPlan::Full)
+    }
+
+    /// Log this segment's per-variant plan counts once, on the first RG opened.
+    /// Diagnostic only — no behaviour depends on it.
+    fn log_plan_summary_once(&mut self) {
+        if self.plan_summary_logged {
+            return;
+        }
+        self.plan_summary_logged = true;
+        use super::row_group_plan::RowGroupPlan;
+        if let Some(plans) = self.row_group_plans.get(&self.writer_generation) {
+            let (mut count_idx, mut ts_strip, mut full) = (0usize, 0usize, 0usize);
+            for p in plans {
+                match p {
+                    RowGroupPlan::CountFromIndex => count_idx += 1,
+                    RowGroupPlan::TimestampStripped => ts_strip += 1,
+                    RowGroupPlan::Full => full += 1,
+                }
+            }
+            native_bridge_common::log_debug!(
+                "[fast-path-plan] segment writer_generation={} rgs: count_from_index={} timestamp_stripped={} full={}",
+                self.writer_generation,
+                count_idx,
+                ts_strip,
+                full
+            );
         }
     }
 
@@ -703,7 +828,10 @@ impl IndexedStream {
         }
     }
 
-    fn projection_for_rg(&self, required_predicate_columns: Option<&[usize]>) -> Option<Vec<usize>> {
+    fn projection_for_rg(
+        &self,
+        required_predicate_columns: Option<&[usize]>,
+    ) -> Option<Vec<usize>> {
         // Evaluators that don't expose per-RG ownership retain the conservative query-wide
         // projection. Row-id emission also stays on the existing path (its synthetic output column
         // has separate projection/injection semantics).
@@ -720,7 +848,11 @@ impl IndexedStream {
         Some(projection)
     }
 
-    fn bridge_config(&self, projection: Option<Vec<usize>>) -> RowGroupStreamConfig {
+    fn bridge_config(
+        &self,
+        projection: Option<Vec<usize>>,
+        predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    ) -> RowGroupStreamConfig {
         RowGroupStreamConfig {
             file_path: self.object_path.to_string(),
             file_size: self.file_size,
@@ -729,7 +861,7 @@ impl IndexedStream {
             full_schema: self.full_schema.clone(),
             metadata: Arc::clone(&self.metadata),
             projection,
-            predicate: self.predicate.clone(),
+            predicate,
             io_stats: self
                 .metrics
                 .io_stats
@@ -744,13 +876,107 @@ impl IndexedStream {
         selection: RowSelection,
         push_predicate: bool,
         projection: Option<Vec<usize>>,
+        predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
     ) -> Result<(SendableRecordBatchStream, Arc<dyn ExecutionPlan>)> {
         parquet_bridge::create_row_selection_stream(
-            &self.bridge_config(projection),
+            &self.bridge_config(projection, predicate),
             rg.index,
             selection,
             push_predicate,
         )
+    }
+
+    /// Count for a `CountFromIndex` row group, or `None` to decline (degrade to
+    /// the Full decode). Sound only when nothing is left for post-decode
+    /// filtering: zero output columns (count-only shape), no row-id emission,
+    /// and DataFusion owns no residual column for this RG (PR1 per-RG owner
+    /// election). Then the candidate cardinality is the exact answer on this
+    /// WITHIN, delete-free RG — and equals footer `num_rows` when there is no
+    /// Lucene leaf, since the candidate set is then the whole row group.
+    fn count_from_index(
+        &self,
+        candidates_len: usize,
+        required_predicate_columns: Option<&[usize]>,
+    ) -> Option<usize> {
+        let df_owns_residual = required_predicate_columns
+            .map(|c| !c.is_empty())
+            .unwrap_or(false);
+        if self.schema.fields().is_empty()
+            && !self.emit_row_ids
+            && self.row_id_output_index.is_none()
+            && !df_owns_residual
+        {
+            Some(candidates_len)
+        } else {
+            None
+        }
+    }
+
+    /// Push a zero-column row-count batch (row_count = `count`) into the
+    /// coalescer for a `CountFromIndex` row group and skip the parquet decode.
+    /// The downstream partial `count(*)` aggregate consumes only the row count,
+    /// so no columns are materialized.
+    fn emit_count_from_index(&mut self, count: usize) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let options =
+            datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(count));
+        let batch = RecordBatch::try_new_with_options(self.schema.clone(), vec![], &options)
+            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+        let t0 = Instant::now();
+        let status = self.batch_coalescer.push_batch(batch);
+        if let Some(ref t) = self.metrics.coalesce_time {
+            t.add_duration(t0.elapsed());
+        }
+        if let Some(ref c) = self.metrics.batches_pre_coalesce {
+            c.add(1);
+        }
+        match status {
+            Ok(PushBatchStatus::Continue) => {}
+            Ok(PushBatchStatus::LimitReached) => {
+                if !self.coalescer_finished {
+                    self.batch_coalescer.finish()?;
+                    self.coalescer_finished = true;
+                }
+                self.upstream_done = true;
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+
+    /// Decode inputs for a `TimestampStripped` row group: strip the tautological
+    /// sort-range conjunct from the residual pushed to parquet (sound on a
+    /// WITHIN RG — every row satisfies it), and drop the sort column from this
+    /// RG's projection unless it is an output column or still needed for a
+    /// DataFusion-owned residual. Composes with [`projection_for_rg`].
+    fn stripped_rg_inputs(
+        &self,
+        required_predicate_columns: Option<&[usize]>,
+    ) -> (
+        Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+        Option<Vec<usize>>,
+    ) {
+        let predicate = match (&self.predicate, &self.sort_column) {
+            (Some(p), Some(sort_col)) => {
+                super::row_group_plan::strip_sort_range_conjuncts(p, sort_col)
+            }
+            _ => self.predicate.clone(),
+        };
+        let mut projection = self.projection_for_rg(required_predicate_columns);
+        if let (Some(proj), Some(sort_col)) = (projection.as_mut(), self.sort_column.as_ref()) {
+            if let Ok(sort_idx) = self.full_schema.index_of(sort_col) {
+                let keep_for_output = self.output_projection.contains(&sort_idx);
+                let keep_for_residual = required_predicate_columns
+                    .map(|r| r.contains(&sort_idx))
+                    .unwrap_or(false);
+                if !keep_for_output && !keep_for_residual {
+                    proj.retain(|&c| c != sort_idx);
+                }
+            }
+        }
+        (predicate, projection)
     }
 
     /// Take one parquet-delivered batch, apply candidate + refinement
@@ -1082,7 +1308,28 @@ impl IndexedStream {
 
             // Poll for next row group
             match self.index_reader.poll_next_row_group(cx) {
-                Poll::Ready(Ok(Some(prefetched))) => {
+                Poll::Ready(Ok(Some(next))) => {
+                    // A `CountFromIndex` RG answered by the docFreq short-circuit
+                    // (Fix 2/3): emit the exact row-count batch and skip the decode.
+                    // The candidates-based gate below stays the fallback for RGs
+                    // that arrived as `Decode` (count_rg declined).
+                    let prefetched = match next {
+                        NextRowGroup::Counted { rg, count } => {
+                            self.current_rg_first_row = rg.first_row;
+                            self.log_plan_summary_once();
+                            if let Some(ref c) = self.metrics.rg_count_from_docfreq {
+                                c.add(1);
+                            }
+                            if let Some(ref c) = self.metrics.rg_count_from_index {
+                                c.add(1);
+                            }
+                            if let Err(e) = self.emit_count_from_index(count as usize) {
+                                return Poll::Ready(Some(Err(e)));
+                            }
+                            continue;
+                        }
+                        NextRowGroup::Decode(p) => p,
+                    };
                     let rg = prefetched.rg;
 
                     // Poll-phase dynamic-filter prune (backstop): the filter may
@@ -1127,6 +1374,44 @@ impl IndexedStream {
                     }
 
                     self.current_rg_first_row = rg.first_row;
+
+                    // PR2 (Stage C3): consult the per-RG fast-path plan and act on it.
+                    // `CountFromIndex` emits a row-count batch and skips the decode;
+                    // `TimestampStripped` adjusts the decode inputs below; `Full` is
+                    // unchanged. A `CountFromIndex` RG that isn't provably exact
+                    // degrades to Full (bumps `rg_full`).
+                    self.log_plan_summary_once();
+                    let plan = self.plan_for(self.writer_generation, rg.index);
+                    match plan {
+                        super::row_group_plan::RowGroupPlan::CountFromIndex => {
+                            if let Some(count) = self.count_from_index(
+                                candidates.len() as usize,
+                                required_predicate_columns.as_deref(),
+                            ) {
+                                if let Some(ref c) = self.metrics.rg_count_from_index {
+                                    c.add(1);
+                                }
+                                if let Err(e) = self.emit_count_from_index(count) {
+                                    return Poll::Ready(Some(Err(e)));
+                                }
+                                continue;
+                            }
+                            // Not provably exact — degrade this RG to the Full path.
+                            if let Some(ref c) = self.metrics.rg_full {
+                                c.add(1);
+                            }
+                        }
+                        super::row_group_plan::RowGroupPlan::TimestampStripped => {
+                            if let Some(ref c) = self.metrics.rg_timestamp_stripped {
+                                c.add(1);
+                            }
+                        }
+                        super::row_group_plan::RowGroupPlan::Full => {
+                            if let Some(ref c) = self.metrics.rg_full {
+                                c.add(1);
+                            }
+                        }
+                    }
                     // Carried through to finalize_batch so the multi-filter
                     // tree path's on_batch_mask can reach into candidate-stage
                     // per-RG state.
@@ -1216,9 +1501,26 @@ impl IndexedStream {
                         && !alignment_risk
                         && !self.evaluator.forbid_parquet_pushdown();
 
-                    let rg_projection =
-                        self.projection_for_rg(required_predicate_columns.as_deref());
-                    match self.create_row_selection_stream(&rg, selection, push, rg_projection) {
+                    // Per-RG decode inputs: `TimestampStripped` strips the
+                    // tautological sort-range from the residual + drops the sort
+                    // column; every other plan keeps the query-wide residual and
+                    // the Fix-9 per-RG projection.
+                    let (rg_predicate, rg_projection) = match plan {
+                        super::row_group_plan::RowGroupPlan::TimestampStripped => {
+                            self.stripped_rg_inputs(required_predicate_columns.as_deref())
+                        }
+                        _ => (
+                            self.predicate.clone(),
+                            self.projection_for_rg(required_predicate_columns.as_deref()),
+                        ),
+                    };
+                    match self.create_row_selection_stream(
+                        &rg,
+                        selection,
+                        push,
+                        rg_projection,
+                        rg_predicate,
+                    ) {
                         Ok((stream, plan)) => {
                             if let Some(ref timer) = self.metrics.parquet_time {
                                 timer.add_duration(t_plan.elapsed());
@@ -1355,6 +1657,7 @@ mod tests {
             None,
             None,
             None,
+            Arc::new(std::collections::HashSet::new()),
         );
 
         // Poll the reader — should complete with an error within the timeout.
@@ -1478,6 +1781,7 @@ mod tests {
             None,
             None,
             Some(token.clone()),
+            Arc::new(std::collections::HashSet::new()),
         );
 
         // Drive the reader exactly like IndexedStream does. Records whether the

@@ -126,6 +126,8 @@ async fn run_constant_residual(residual: Arc<dyn PhysicalExpr>) -> usize {
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
 
     let ctx = SessionContext::new();

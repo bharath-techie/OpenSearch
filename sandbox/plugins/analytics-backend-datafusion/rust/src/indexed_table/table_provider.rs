@@ -219,6 +219,20 @@ pub struct IndexedTableConfig {
     /// down to `IndexReader` so the scan cooperatively stops when the query task
     /// is cancelled. `None` for untracked queries (`context_id == 0`) and tests.
     pub cancellation_token: Option<tokio_util::sync::CancellationToken>,
+    /// Per-segment fast-path plan, keyed by `SegmentFileInfo::writer_generation`.
+    /// `plans[rg.index]` is the [`RowGroupPlan`] for that row group. Built once
+    /// per query in `execute_indexed_with_context_inner` from the planner's
+    /// `FastPathHints` + footer stats. An absent segment / RG defaults to
+    /// [`RowGroupPlan::Full`] (see `IndexedStream::plan_for`). PR2 plumbing only:
+    /// consulted for metrics, but every RG still takes the Full decode path
+    /// (Stage C3 adds the count/strip match arms).
+    pub row_group_plans: Arc<
+        std::collections::HashMap<i64, Vec<crate::indexed_table::row_group_plan::RowGroupPlan>>,
+    >,
+    /// Leading `index.sort.field` column name (the column the fast-path range is
+    /// on), or `None` when the index has no sort field. Carried alongside
+    /// `row_group_plans` for the `TimestampStripped` rewrite in Stage C3.
+    pub sort_column: Option<String>,
 }
 
 /// Table provider. Returns a `QueryShardExec` that fans out across chunks.
@@ -755,6 +769,9 @@ impl ExecutionPlan for QueryShardExec {
                 dynamic_filter: dynamic_filter.clone(),
                 cancellation_token: self.config.cancellation_token.clone(),
                 seg_arrow_schema: segment.arrow_schema.clone(),
+                writer_generation: segment.writer_generation,
+                row_group_plans: Arc::clone(&self.config.row_group_plans),
+                sort_column: self.config.sort_column.clone(),
             };
             streams.push(exec.execute(0, Arc::clone(&context))?);
         }
@@ -880,6 +897,8 @@ mod tests {
             sort_fields: vec![],
             sort_orders: vec![],
             cancellation_token: None,
+            row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+            sort_column: None,
         }
     }
 

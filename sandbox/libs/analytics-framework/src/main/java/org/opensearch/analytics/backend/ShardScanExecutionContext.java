@@ -12,6 +12,7 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.lucene.search.QueryCache;
 import org.apache.lucene.search.QueryCachingPolicy;
 import org.opensearch.analytics.spi.CommonExecutionContext;
+import org.opensearch.analytics.spi.FastPathHintSpec;
 import org.opensearch.analytics.spi.ShuffleBufferRegistry;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.shard.ShardId;
@@ -214,5 +215,20 @@ public class ShardScanExecutionContext implements CommonExecutionContext {
 
     public void setHasDeletedDocs(boolean hasDeletedDocs) {
         this.hasDeletedDocs = hasDeletedDocs;
+    }
+
+    /**
+     * Planner fast-path hints for this fragment, stamped from the {@code FAST_PATH_HINTS} instruction
+     * by {@code AnalyticsSearchService} (mirrors {@link #hasPartialAggregate()}). Defaults to
+     * {@link FastPathHintSpec#NONE} when the fragment has no fast path. Read by the shard-scan handler.
+     */
+    private FastPathHintSpec fastPathHints = FastPathHintSpec.NONE;
+
+    public FastPathHintSpec getFastPathHints() {
+        return fastPathHints;
+    }
+
+    public void setFastPathHints(FastPathHintSpec fastPathHints) {
+        this.fastPathHints = fastPathHints != null ? fastPathHints : FastPathHintSpec.NONE;
     }
 }

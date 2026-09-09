@@ -37,6 +37,7 @@ import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
 import org.opensearch.analytics.spi.DelegatedExpression;
 import org.opensearch.analytics.spi.DelegatedPredicateSerializer;
 import org.opensearch.analytics.spi.DelegationPossibleFunction;
+import org.opensearch.analytics.spi.FastPathHintSpec;
 import org.opensearch.analytics.spi.FieldStorageInfo;
 import org.opensearch.analytics.spi.FilterTreeShape;
 import org.opensearch.analytics.spi.FragmentConvertor;
@@ -84,7 +85,17 @@ public class FragmentConversionDriver {
      * {@link StagePlan#convertedBytes()} on each plan.
      */
     public static void convertAll(QueryDAG dag, CapabilityRegistry registry) {
-        convertStage(dag.rootStage(), registry);
+        convertAll(dag, registry, name -> null);
+    }
+
+    /**
+     * As {@link #convertAll(QueryDAG, CapabilityRegistry)} but with a resolver that maps a fragment's
+     * logical table name to its leading {@code index.sort.field} (or {@code null} when the index has
+     * no sort / is ambiguous across an alias). Used by {@link FastPathHintExtractor} to decide the
+     * per-fragment fast-path shape. The no-resolver overload disables the fast path (fails closed).
+     */
+    public static void convertAll(QueryDAG dag, CapabilityRegistry registry, Function<String, String> leadingSortFieldResolver) {
+        convertStage(dag.rootStage(), registry, leadingSortFieldResolver);
         // Root stage executes locally at coordinator — store factory for instruction dispatch.
         Stage root = dag.rootStage();
         if (root.getExchangeSinkProvider() != null && !root.getPlanAlternatives().isEmpty()) {
@@ -93,9 +104,9 @@ public class FragmentConversionDriver {
         }
     }
 
-    private static void convertStage(Stage stage, CapabilityRegistry registry) {
+    private static void convertStage(Stage stage, CapabilityRegistry registry, Function<String, String> leadingSortFieldResolver) {
         for (Stage child : stage.getChildStages()) {
-            convertStage(child, registry);
+            convertStage(child, registry, leadingSortFieldResolver);
         }
         // After children are converted, surface any decorator-induced schema delta as
         // postDecorationSchemaBytes on the child plans. The reduce sink consults this when
@@ -130,7 +141,7 @@ public class FragmentConversionDriver {
 
             // Assemble instruction list
             List<DelegatedExpression> delegated = delegationBytes.getResult();
-            List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
+            List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes, leadingSortFieldResolver);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
             LOGGER.debug(
@@ -239,7 +250,8 @@ public class FragmentConversionDriver {
         AnalyticsSearchBackendPlugin backend,
         StagePlan plan,
         FilterTreeShape treeShape,
-        IntraOperatorDelegationBytes delegationBytes
+        IntraOperatorDelegationBytes delegationBytes,
+        Function<String, String> leadingSortFieldResolver
     ) {
         FragmentInstructionHandlerFactory factory = backend.getInstructionHandlerFactory();
         LinkedList<InstructionNode> instructions = new LinkedList<>();
@@ -255,12 +267,22 @@ public class FragmentConversionDriver {
             // QTF narrows the Scan to [belowAnchorPhysicalFields..., __row_id__]; signal that to the
             // backend so it picks the row-id-aware table provider regardless of delegation.
             boolean requestsRowIds = tableScan.getRowType().getFieldNames().contains(OpenSearchLateMaterialization.ROW_ID_FIELD);
+            // Fast-path hints: decided once here from the leading index-sort field + this fragment's
+            // shape. Fails closed to NONE when the resolver has no sort field for this table.
+            FastPathHintSpec hints = extractFastPathHints(resolvedFragment, tableScan, plan.backendId(), leadingSortFieldResolver);
             List<DelegatedExpression> delegated = delegationBytes.getResult();
             if (!delegated.isEmpty()) {
                 factory.createShardScanWithDelegationNode(treeShape, delegated.size(), requestsRowIds, logicalTableName)
                     .ifPresent(instructions::add);
             } else {
                 factory.createShardScanNode(requestsRowIds, logicalTableName).ifPresent(instructions::add);
+            }
+            // Fast-path hints ride as their own instruction (mirrors SETUP_PARTIAL_AGGREGATE): the data
+            // node stamps them onto the execution context. Emitted only when the hint is non-NONE and
+            // only for backends that consume it — createFastPathHintsNode is Optional.empty() by default
+            // and overridden only by the datafusion backend.
+            if (!hints.isNone()) {
+                factory.createFastPathHintsNode(hints).ifPresent(instructions::add);
             }
             if (containsPartialAggregate(resolvedFragment)) {
                 factory.createPartialAggregateNode().ifPresent(instructions::add);
@@ -269,6 +291,32 @@ public class FragmentConversionDriver {
             factory.createFinalAggregateNode().ifPresent(instructions::add);
         }
         return instructions;
+    }
+
+    /**
+     * Resolves the leading {@code index.sort.field} for the fragment's table and its declared mapping
+     * type, then delegates to {@link FastPathHintExtractor}. Returns {@link FastPathHintSpec#NONE}
+     * whenever the sort field is unknown — the fast path is opt-in and fails closed.
+     */
+    private static FastPathHintSpec extractFastPathHints(
+        RelNode resolvedFragment,
+        OpenSearchTableScan tableScan,
+        String drivingBackend,
+        Function<String, String> leadingSortFieldResolver
+    ) {
+        String logicalTableName = tableScan.getTable().getQualifiedName().getLast();
+        String leadingSortField = leadingSortFieldResolver.apply(logicalTableName);
+        if (leadingSortField == null) {
+            return FastPathHintSpec.NONE;
+        }
+        String mappingType = null;
+        for (FieldStorageInfo info : tableScan.getOutputFieldStorage()) {
+            if (leadingSortField.equals(info.getFieldName())) {
+                mappingType = info.getMappingType();
+                break;
+            }
+        }
+        return FastPathHintExtractor.extract(resolvedFragment, leadingSortField, mappingType, drivingBackend);
     }
 
     // TODO: consolidate with isAggregatePath / findBuriedPartialAggregate into a shared utility

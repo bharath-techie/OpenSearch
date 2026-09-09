@@ -16,6 +16,8 @@ import org.opensearch.analytics.spi.DelegatedExpression;
 import org.opensearch.analytics.spi.DelegatedPredicateSerializer;
 import org.opensearch.analytics.spi.DelegationType;
 import org.opensearch.analytics.spi.EngineCapability;
+import org.opensearch.analytics.spi.FastPathHintSpec;
+import org.opensearch.analytics.spi.FastPathHintsInstructionNode;
 import org.opensearch.analytics.spi.FilterCapability;
 import org.opensearch.analytics.spi.FilterDelegationInstructionNode;
 import org.opensearch.analytics.spi.FilterTreeShape;
@@ -206,6 +208,11 @@ abstract class MockBackend implements AnalyticsSearchBackendPlugin {
             @Override
             public Optional<InstructionNode> createPartialAggregateNode() {
                 return Optional.of(new PartialAggregateInstructionNode());
+            }
+
+            @Override
+            public Optional<InstructionNode> createFastPathHintsNode(FastPathHintSpec hints) {
+                return Optional.of(new FastPathHintsInstructionNode(hints));
             }
 
             @Override

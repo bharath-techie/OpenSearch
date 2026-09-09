@@ -118,6 +118,26 @@ pub trait RowGroupBitsetSource: Send + Sync {
         max_doc: i32,
     ) -> Result<Option<PrefetchedRg>, String>;
 
+    /// Exact match count over `[min_doc, max_doc)` for a row group the planner
+    /// proved tautological (`RowGroupPlan::CountFromIndex`), WITHOUT
+    /// materializing the candidate bitmap. This is the seam for the
+    /// Weight#count / docFreq short-circuit (Fix 2/3): a backend that can
+    /// answer the count directly (Lucene `count()`, footer `num_rows`) skips
+    /// the `prefetch_rg` bitset expansion entirely.
+    ///
+    /// `Ok(Some(n))` = exact count for this RG. `Ok(None)` = decline (the
+    /// caller falls back to `prefetch_rg` and counts the candidate set). The
+    /// default declines so evaluators that can't count soundly are unaffected.
+    fn count_rg(
+        &self,
+        rg: &RowGroupInfo,
+        min_doc: i32,
+        max_doc: i32,
+    ) -> Result<Option<u64>, String> {
+        let _ = (rg, min_doc, max_doc);
+        Ok(None)
+    }
+
     /// Produce exact per-batch `BooleanArray` mask for refinement-stage [post-scan]
     /// filtering.
     ///

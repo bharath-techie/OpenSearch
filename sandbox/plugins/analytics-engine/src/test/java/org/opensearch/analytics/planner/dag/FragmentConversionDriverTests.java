@@ -199,6 +199,51 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         return current;
     }
 
+    // ---- Fast-path hints instruction (Stage B2) ----
+
+    /**
+     * A non-NONE fast-path hint (here: a leading-sort range on {@code ts}) appends a FAST_PATH_HINTS
+     * instruction after the shard scan; a NONE hint (no sort field resolvable) appends none. Mirrors
+     * SETUP_PARTIAL_AGGREGATE — the data node stamps the spec onto the execution context.
+     */
+    public void testFastPathHintsInstructionEmittedOnlyWhenHintsPresent() {
+        QueryDAG withHints = buildRangeFilterDagWithResolver(name -> "ts");
+        StagePlan leafPlan = dataNodeStage(withHints).getPlanAlternatives().getFirst();
+        assertEquals("shard scan stays first", InstructionType.SETUP_SHARD_SCAN, leafPlan.instructions().getFirst().type());
+        assertTrue(
+            "a non-NONE hint must append a FAST_PATH_HINTS instruction",
+            leafPlan.instructions().stream().anyMatch(n -> n.type() == InstructionType.FAST_PATH_HINTS)
+        );
+
+        QueryDAG noHints = buildRangeFilterDagWithResolver(name -> null);
+        StagePlan leafPlan2 = dataNodeStage(noHints).getPlanAlternatives().getFirst();
+        assertFalse(
+            "a NONE hint must not append a FAST_PATH_HINTS instruction",
+            leafPlan2.instructions().stream().anyMatch(n -> n.type() == InstructionType.FAST_PATH_HINTS)
+        );
+    }
+
+    private QueryDAG buildRangeFilterDagWithResolver(java.util.function.Function<String, String> resolver) {
+        RecordingConvertor convertor = new RecordingConvertor();
+        var df = dfWithConvertor(convertor);
+        Map<String, Map<String, Object>> fields = Map.of("ts", Map.of("type", "long"), "host", Map.of("type", "keyword"));
+        var context = buildContext("parquet", 1, fields, List.of(df));
+        RelNode scan = stubScan(
+            mockTable("test_index", new String[] { "ts", "host" }, new SqlTypeName[] { SqlTypeName.BIGINT, SqlTypeName.VARCHAR })
+        );
+        RexNode tsRange = rexBuilder.makeCall(
+            SqlStdOperatorTable.GREATER_THAN_OR_EQUAL,
+            rexBuilder.makeInputRef(scan.getRowType().getFieldList().get(0).getType(), 0),
+            rexBuilder.makeLiteral(1000L, typeFactory.createSqlType(SqlTypeName.BIGINT), true)
+        );
+        RelNode logical = LogicalFilter.create(scan, tsRange);
+        RelNode cboOutput = runPlanner(logical, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService(), TEST_RESOLVER);
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry(), resolver);
+        return dag;
+    }
+
     // ---- Composed pipeline shapes ----
 
     /** Aggregate(Filter(Scan)) — most common OLAP shape. */

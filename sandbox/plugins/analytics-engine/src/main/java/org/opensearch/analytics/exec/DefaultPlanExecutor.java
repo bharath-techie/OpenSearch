@@ -23,6 +23,7 @@ import org.opensearch.ExceptionsHelper;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.HandledTransportAction;
+import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.TimeoutTaskCancellationUtility;
 import org.opensearch.analytics.AnalyticsPlugin;
 import org.opensearch.analytics.AnalyticsSettings;
@@ -63,6 +64,7 @@ import org.opensearch.analytics.spi.BroadcastSizeExceededException;
 import org.opensearch.analytics.stats.AnalyticsStatsCollector;
 import org.opensearch.arrow.allocator.AllocationRejection;
 import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
@@ -73,6 +75,7 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.rest.RestStatus;
 import org.opensearch.core.tasks.TaskId;
+import org.opensearch.index.IndexSortConfig;
 import org.opensearch.search.SearchService;
 import org.opensearch.tasks.Task;
 import org.opensearch.threadpool.ThreadPool;
@@ -201,6 +204,52 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         );
         this.indexNameExpressionResolver = indexNameExpressionResolver;
         this.analyticsSearchSlowLog = analyticsSearchSlowLog;
+    }
+
+    /**
+     * Resolves the leading {@code index.sort.field} for a fragment's logical table, for
+     * {@code FastPathHintExtractor}. Returns {@code null} — disabling the fast path, fail-closed —
+     * when the table has no sort, resolves to multiple indices that disagree on the leading sort
+     * field, or anything about the resolution is uncertain. Only an unambiguous single leading sort
+     * field shared by every backing index is trusted, because the native fast path checks the range
+     * against the footer stats of exactly that column.
+     */
+    private String resolveLeadingSortField(String logicalTableName) {
+        if (logicalTableName == null) {
+            return null;
+        }
+        try {
+            ClusterState state = clusterService.state();
+            String[] concreteIndices = indexNameExpressionResolver.concreteIndexNames(
+                state,
+                IndicesOptions.lenientExpandOpen(),
+                logicalTableName
+            );
+            if (concreteIndices == null || concreteIndices.length == 0) {
+                return null;
+            }
+            String common = null;
+            for (String indexName : concreteIndices) {
+                IndexMetadata meta = state.metadata().index(indexName);
+                if (meta == null) {
+                    return null;
+                }
+                List<String> sortFields = IndexSortConfig.INDEX_SORT_FIELD_SETTING.get(meta.getSettings());
+                if (sortFields.isEmpty()) {
+                    return null;
+                }
+                String leading = sortFields.get(0);
+                if (common == null) {
+                    common = leading;
+                } else if (common.equals(leading) == false) {
+                    return null; // alias/pattern spans indices with different sort fields — decline
+                }
+            }
+            return common;
+        } catch (RuntimeException e) {
+            logger.debug("[DefaultPlanExecutor] leading sort field resolution failed for [{}]: {}", logicalTableName, e.getMessage());
+            return null;
+        }
     }
 
     /** Visible for testing: the live per-node concurrent-shard-request limit (reflects dynamic updates). */
@@ -481,7 +530,7 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         // Collapse multi-backend stages to a single chosen alternative before conversion
         // so the convertor runs once per stage and the wire request carries one PlanAlternative.
         PlanAlternativeSelector.selectAll(dag, capabilityRegistry, preferMetadataDriver);
-        FragmentConversionDriver.convertAll(dag, capabilityRegistry);
+        FragmentConversionDriver.convertAll(dag, capabilityRegistry, this::resolveLeadingSortField);
         final long planningTimeNanos = System.nanoTime() - planStartNanos;
         final long planningTimeMs = TimeUnit.NANOSECONDS.toMillis(planningTimeNanos);
         logger.debug("[DefaultPlanExecutor] QueryDAG:\n{}", dag);

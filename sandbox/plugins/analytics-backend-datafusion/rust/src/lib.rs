@@ -28,6 +28,7 @@ pub mod cancellation;
 pub mod cross_rt_stream;
 pub mod datafusion_query_config;
 pub mod executor;
+pub mod fast_path_hints;
 pub mod ffm;
 pub mod helper;
 pub mod indexed_executor;

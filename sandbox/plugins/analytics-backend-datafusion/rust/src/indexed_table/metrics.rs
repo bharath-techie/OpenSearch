@@ -119,6 +119,18 @@ pub struct StreamMetrics {
     /// RGs that became prunable only after the filter tightened further between
     /// prefetch (which runs ~1 RG ahead) and processing.
     pub dynamic_filter_rg_pruned_at_poll: Option<Count>,
+    /// RGs answered entirely from the index (countDocs upcall / footer num_rows),
+    /// no Parquet decode. Populated by the `CountFromIndex` RowGroupPlan (PR2 section D).
+    pub rg_count_from_index: Option<Count>,
+    /// Subset of `rg_count_from_index`: RGs answered by the Weight#count / docFreq
+    /// short-circuit (`count_rg`) — the count arrived WITHOUT materializing the
+    /// candidate bitmap (Fix 2/3). The complement is the candidates-based fallback.
+    pub rg_count_from_docfreq: Option<Count>,
+    /// RGs where the sort-range conjunct was stripped and the sort column dropped
+    /// from projection (`TimestampStripped` RowGroupPlan).
+    pub rg_timestamp_stripped: Option<Count>,
+    /// RGs that took the full decode path (`Full` RowGroupPlan).
+    pub rg_full: Option<Count>,
     /// Object-store read wall-time accumulator, shared across all RG readers
     /// within this partition.
     pub io_stats: Option<Arc<ReadIoStats>>,
@@ -167,6 +179,10 @@ impl StreamMetrics {
             init_prefetch_time: None,
             dynamic_filter_rg_pruned_at_prefetch: None,
             dynamic_filter_rg_pruned_at_poll: None,
+            rg_count_from_index: None,
+            rg_count_from_docfreq: None,
+            rg_timestamp_stripped: None,
+            rg_full: None,
             io_stats: None,
             inner_parquet_metrics: None,
         }
@@ -211,6 +227,10 @@ pub struct PartitionMetrics {
     pub init_prefetch_time: Time,
     pub dynamic_filter_rg_pruned_at_prefetch: Count,
     pub dynamic_filter_rg_pruned_at_poll: Count,
+    pub rg_count_from_index: Count,
+    pub rg_count_from_docfreq: Count,
+    pub rg_timestamp_stripped: Count,
+    pub rg_full: Count,
 }
 
 impl PartitionMetrics {
@@ -260,6 +280,10 @@ impl PartitionMetrics {
                 .subset_time("init_prefetch_time", partition),
             dynamic_filter_rg_pruned_at_prefetch: counter("dynamic_filter_rg_pruned_at_prefetch"),
             dynamic_filter_rg_pruned_at_poll: counter("dynamic_filter_rg_pruned_at_poll"),
+            rg_count_from_index: counter("rg_count_from_index"),
+            rg_count_from_docfreq: counter("rg_count_from_docfreq"),
+            rg_timestamp_stripped: counter("rg_timestamp_stripped"),
+            rg_full: counter("rg_full"),
         }
     }
 
@@ -305,6 +329,10 @@ impl PartitionMetrics {
             init_prefetch_time: Some(self.init_prefetch_time),
             dynamic_filter_rg_pruned_at_prefetch: Some(self.dynamic_filter_rg_pruned_at_prefetch),
             dynamic_filter_rg_pruned_at_poll: Some(self.dynamic_filter_rg_pruned_at_poll),
+            rg_count_from_index: Some(self.rg_count_from_index),
+            rg_count_from_docfreq: Some(self.rg_count_from_docfreq),
+            rg_timestamp_stripped: Some(self.rg_timestamp_stripped),
+            rg_full: Some(self.rg_full),
             io_stats: Some(Arc::new(ReadIoStats::default())),
             inner_parquet_metrics,
         }

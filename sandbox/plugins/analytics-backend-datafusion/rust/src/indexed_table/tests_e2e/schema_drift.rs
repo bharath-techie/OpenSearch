@@ -151,6 +151,8 @@ async fn run_missing_col_tree(tree_bool: BoolNode) -> usize {
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();
@@ -467,6 +469,8 @@ async fn query_with_mismatched_schema(
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();

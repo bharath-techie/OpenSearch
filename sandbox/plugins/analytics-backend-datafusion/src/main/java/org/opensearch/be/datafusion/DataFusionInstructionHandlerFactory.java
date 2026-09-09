@@ -10,6 +10,8 @@ package org.opensearch.be.datafusion;
 
 import org.opensearch.analytics.spi.BroadcastInjectionInstructionNode;
 import org.opensearch.analytics.spi.DelegatedExpression;
+import org.opensearch.analytics.spi.FastPathHintSpec;
+import org.opensearch.analytics.spi.FastPathHintsInstructionNode;
 import org.opensearch.analytics.spi.FilterDelegationInstructionNode;
 import org.opensearch.analytics.spi.FilterTreeShape;
 import org.opensearch.analytics.spi.FinalAggregateInstructionNode;
@@ -74,6 +76,11 @@ public class DataFusionInstructionHandlerFactory implements FragmentInstructionH
     }
 
     @Override
+    public Optional<InstructionNode> createFastPathHintsNode(FastPathHintSpec hints) {
+        return Optional.of(new FastPathHintsInstructionNode(hints));
+    }
+
+    @Override
     public Optional<InstructionNode> createFinalAggregateNode() {
         return Optional.of(new FinalAggregateInstructionNode());
     }
@@ -124,6 +131,9 @@ public class DataFusionInstructionHandlerFactory implements FragmentInstructionH
         }
         if (node instanceof PartialAggregateInstructionNode) {
             return new PartialAggregateInstructionHandler();
+        }
+        if (node instanceof FastPathHintsInstructionNode) {
+            return new FastPathHintsInstructionHandler();
         }
         if (node instanceof FinalAggregateInstructionNode) {
             DataFusionService svc = plugin.getDataFusionService();

@@ -219,7 +219,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             // (all-ones when the segment has no deletions) — so skip scorer creation entirely.
             Scorer scorer = emitLiveDocs ? null : weight.scorer(leaf);
             int collectorKey = nextCollectorKey.getAndIncrement();
-            scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, minDoc, maxDoc, liveDocs, emitLiveDocs));
+            scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, weight, leaf, minDoc, maxDoc, liveDocs, emitLiveDocs));
             LOGGER.debug(
                 "[scf] createCollector providerKey={} writerGeneration={} range=[{},{}) → collectorKey={}",
                 providerKey,
@@ -335,6 +335,74 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             );
         }
         return ((long) nextDoc << 32) | (wordCount & 0xFFFFFFFFL);
+    }
+
+    @Override
+    public long countDocs(int collectorKey, int minDoc, int maxDoc) {
+        ScorerHandle handle = scorersByCollectorKey.get(collectorKey);
+        if (handle == null) {
+            return -1;
+        }
+        if (maxDoc <= minDoc) {
+            return 0;
+        }
+        // Belt to Rust's shard-level brace: never count a leaf that has deletions. Both
+        // Weight#count and the scorer cursor ignore liveDocs (Lucene applies them as
+        // acceptDocs in BulkScorer, which this path bypasses), so a count would include
+        // deleted docs. Return -1 → caller falls back to collectDocs, which drops deleted docs.
+        if (handle.leaf.reader().hasDeletions()) {
+            return -1;
+        }
+        int scanFrom = Math.max(minDoc, handle.partitionMinDoc);
+        int scanTo = Math.min(maxDoc, handle.partitionMaxDoc);
+        if (scanFrom >= scanTo) {
+            return 0;
+        }
+
+        // O(1) fast path: the requested range covers the WHOLE leaf, so Weight#count may
+        // answer from index metadata (e.g. TermQuery → docFreq). Returns -1 when not cheaply
+        // countable — fall through to cursor counting. Only valid for whole-leaf coverage
+        // (Weight#count ignores doc ranges); the cursor is untouched, which is safe because
+        // whole-leaf coverage means no later range can follow on this collector.
+        if (scanFrom == 0 && scanTo == handle.leaf.reader().maxDoc() && handle.currentDoc == -1) {
+            try {
+                int count = handle.weight.count(handle.leaf);
+                if (count >= 0) {
+                    LOGGER.debug("[scf] countDocs collectorKey={} whole-leaf Weight#count={}", collectorKey, count);
+                    return count;
+                }
+            } catch (IOException exception) {
+                LOGGER.warn("Weight#count failed; falling back to cursor count", exception);
+            }
+        }
+
+        // Fallback: forward cursor count — same iterator/cursor discipline as collectDocs,
+        // but no bitset allocation or copy.
+        if (handle.scorer == null) {
+            return 0;
+        }
+        long count = 0;
+        try {
+            DocIdSetIterator iterator = handle.scorer.iterator();
+            int docId = handle.currentDoc;
+            if (docId != DocIdSetIterator.NO_MORE_DOCS) {
+                if (docId < scanFrom) {
+                    docId = iterator.advance(scanFrom);
+                }
+                while (docId != DocIdSetIterator.NO_MORE_DOCS && docId < scanTo) {
+                    count++;
+                    docId = iterator.nextDoc();
+                }
+                handle.currentDoc = docId;
+            }
+        } catch (IOException exception) {
+            LOGGER.warn("IOException during countDocs; returning -1 so the caller falls back", exception);
+            return -1;
+        }
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("[scf] countDocs collectorKey={} range=[{},{}) → count={}", collectorKey, minDoc, maxDoc, count);
+        }
+        return count;
     }
 
     @Override
@@ -460,6 +528,9 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     private static final class ScorerHandle {
         final Scorer scorer;
+        /** Weight + leaf captured for the count-only fast path (Weight#count whole-leaf). */
+        final Weight weight;
+        final LeafReaderContext leaf;
         final int partitionMinDoc;
         final int partitionMaxDoc;
         /** Segment live docs at collector creation ({@code null} = no deletions in the segment). */
@@ -471,8 +542,18 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         final boolean emitLiveDocs;
         int currentDoc = -1;
 
-        ScorerHandle(Scorer scorer, int partitionMinDoc, int partitionMaxDoc, org.apache.lucene.util.Bits liveDocs, boolean emitLiveDocs) {
+        ScorerHandle(
+            Scorer scorer,
+            Weight weight,
+            LeafReaderContext leaf,
+            int partitionMinDoc,
+            int partitionMaxDoc,
+            org.apache.lucene.util.Bits liveDocs,
+            boolean emitLiveDocs
+        ) {
             this.scorer = scorer;
+            this.weight = weight;
+            this.leaf = leaf;
             this.partitionMinDoc = partitionMinDoc;
             this.partitionMaxDoc = partitionMaxDoc;
             this.liveDocs = liveDocs;

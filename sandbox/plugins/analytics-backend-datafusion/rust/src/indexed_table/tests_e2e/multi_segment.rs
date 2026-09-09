@@ -202,6 +202,8 @@ async fn run_two_segment_query(
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
 
     let ctx = SessionContext::new();
@@ -421,6 +423,8 @@ async fn run_two_segment_query_witness(
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
 
     let ctx = SessionContext::new();
@@ -636,6 +640,8 @@ async fn run_segments(specs: Vec<SegSpec>, num_partitions: usize) -> Vec<(i32, S
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
 
     let ctx = SessionContext::new();
@@ -1151,6 +1157,8 @@ async fn run_wide_segments(
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
 
     let ctx = SessionContext::new();
@@ -1523,6 +1531,8 @@ async fn run_wide_segments_with_stats_pruning(
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
 
     let ctx = SessionContext::new();

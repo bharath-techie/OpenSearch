@@ -75,6 +75,26 @@ public interface FilterDelegationHandle extends Closeable {
     long collectDocs(int collectorKey, int minDoc, int maxDoc, MemorySegment out);
 
     /**
+     * Count matching docs in {@code [minDoc, maxDoc)} for the given collector
+     * WITHOUT materializing a bitset. Used by count-only fast paths where the
+     * caller needs only the cardinality.
+     *
+     * <p>Shares the same forward-only cursor contract as
+     * {@link #collectDocs(int, int, int, MemorySegment)}: successive calls on
+     * one collector must use non-decreasing, non-overlapping ranges, and the
+     * two methods may be interleaved under that same invariant.
+     *
+     * @param collectorKey key returned by {@link #createCollector(int, long, int, int)}
+     * @param minDoc inclusive lower bound
+     * @param maxDoc exclusive upper bound
+     * @return the count {@code >= 0}, or {@code -1} when unsupported or on error
+     *         (callers must fall back to {@code collectDocs})
+     */
+    default long countDocs(int collectorKey, int minDoc, int maxDoc) {
+        return -1;
+    }
+
+    /**
      * Release resources for a collector.
      */
     void releaseCollector(int collectorKey);

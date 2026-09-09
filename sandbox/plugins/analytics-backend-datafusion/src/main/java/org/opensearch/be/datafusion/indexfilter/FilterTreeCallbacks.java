@@ -172,6 +172,18 @@ public final class FilterTreeCallbacks {
         }
 
         /**
+         * Delegate a count-only call; refuses (-1) when cancelled. Operates on an
+         * already-created collector (no reference-count change), matching
+         * {@link #collectDocs}. {@code -1} tells the native side to fall back.
+         */
+        long countDocs(int collectorKey, int minDoc, int maxDoc) {
+            if (handle.isCancelled()) {
+                return -1L;
+            }
+            return handle.countDocs(collectorKey, minDoc, maxDoc);
+        }
+
+        /**
          * Drop the query's own reference (at most once). The binding closes — and the
          * delegation handle with it — when the last native handle's reference drops.
          */
@@ -390,6 +402,41 @@ public final class FilterTreeCallbacks {
             LOGGER.error(
                 new ParameterizedMessage(
                     "collectDocs(contextId={}, collectorKey={}, [{}, {})) failed",
+                    contextId,
+                    collectorKey,
+                    minDoc,
+                    maxDoc
+                ),
+                throwable
+            );
+            return -1L;
+        } finally {
+            trackEnd(contextId, tid);
+        }
+    }
+
+    /**
+     * {@code countDocs(contextId, collectorKey, minDoc, maxDoc) -> count|-1}.
+     *
+     * <p>Count-only fast path: returns the number of matching docs in
+     * {@code [minDoc, maxDoc)} without materializing or transferring a bitset.
+     * {@code -1} tells the native side to fall back to {@code collectDocs}.
+     */
+    public static long countDocs(long contextId, int collectorKey, int minDoc, int maxDoc) {
+        long tid = trackStart(contextId);
+        try {
+            QueryBinding binding = BINDINGS.get(contextId);
+            assertBindingExists(binding, "countDocs", contextId);
+            if (binding == null) {
+                return -1L;
+            }
+            return binding.countDocs(collectorKey, minDoc, maxDoc);
+        } catch (AssertionError e) {
+            throw e;
+        } catch (Throwable throwable) {
+            LOGGER.error(
+                new ParameterizedMessage(
+                    "countDocs(contextId={}, collectorKey={}, [{}, {})) failed",
                     contextId,
                     collectorKey,
                     minDoc,

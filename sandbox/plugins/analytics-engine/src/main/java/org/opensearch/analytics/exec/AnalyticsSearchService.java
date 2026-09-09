@@ -35,6 +35,8 @@ import org.opensearch.analytics.spi.DelegationDescriptor;
 import org.opensearch.analytics.spi.DelegationThreadTracker;
 import org.opensearch.analytics.spi.ExchangeSink;
 import org.opensearch.analytics.spi.ExchangeSinkContext;
+import org.opensearch.analytics.spi.FastPathHintSpec;
+import org.opensearch.analytics.spi.FastPathHintsInstructionNode;
 import org.opensearch.analytics.spi.FilterDelegationHandle;
 import org.opensearch.analytics.spi.FragmentInstructionHandler;
 import org.opensearch.analytics.spi.FragmentInstructionHandlerFactory;
@@ -841,6 +843,7 @@ public class AnalyticsSearchService implements AutoCloseable {
                     .stream()
                     .anyMatch(n -> n.type() == org.opensearch.analytics.spi.InstructionType.SETUP_PARTIAL_AGGREGATE)
             );
+            ctx.setFastPathHints(firstFastPathHints(resolved.plan.getInstructions()));
             AnalyticsSearchBackendPlugin backend = backends.get(resolved.plan.getBackendId());
 
             // Lucene backend both (a) sources the shard's hasDeletions signal (probed just below so
@@ -1075,6 +1078,20 @@ public class AnalyticsSearchService implements AutoCloseable {
             }
         }
         return false;
+    }
+
+    /**
+     * The first {@link FastPathHintsInstructionNode}'s spec in the list, or {@link FastPathHintSpec#NONE}
+     * when the fragment carries none. Mirrors the {@code SETUP_PARTIAL_AGGREGATE} stamping — the
+     * planner emits the hint node next to the shard scan, and the data node reads it here.
+     */
+    private static FastPathHintSpec firstFastPathHints(List<InstructionNode> instructions) {
+        for (InstructionNode node : instructions) {
+            if (node instanceof FastPathHintsInstructionNode hintsNode) {
+                return hintsNode.getHints();
+            }
+        }
+        return FastPathHintSpec.NONE;
     }
 
     private static BackendExecutionContext applyInstructionHandlers(

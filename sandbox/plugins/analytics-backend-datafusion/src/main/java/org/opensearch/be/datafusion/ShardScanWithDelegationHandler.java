@@ -14,6 +14,7 @@ import org.opensearch.analytics.spi.CommonExecutionContext;
 import org.opensearch.analytics.spi.FilterTreeShape;
 import org.opensearch.analytics.spi.FragmentInstructionHandler;
 import org.opensearch.analytics.spi.ShardScanWithDelegationInstructionNode;
+import org.opensearch.be.datafusion.nativelib.FastPathHints;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 import org.opensearch.be.datafusion.nativelib.SessionContextHandle;
 import org.opensearch.index.engine.dataformat.DataFormatRegistry;
@@ -68,6 +69,9 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
             snapshot.writeTo(segment);
+            // Planner fast-path hints, stamped onto the context from the FAST_PATH_HINTS instruction.
+            MemorySegment hintsSegment = arena.allocate(FastPathHints.BYTE_SIZE);
+            FastPathHints.fromSpec(context.getFastPathHints()).writeTo(hintsSegment);
             SessionContextHandle sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
                 readerPtr,
                 runtimePtr,
@@ -85,7 +89,8 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
                 context.hasDeletedDocs(),
                 context.hasPartialAggregate(),
                 segment.address(),
-                context.getFragmentBytes()
+                context.getFragmentBytes(),
+                hintsSegment.address()
             );
             return new DataFusionSessionState(sessionCtxHandle);
         }

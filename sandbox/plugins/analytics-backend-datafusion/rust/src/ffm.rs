@@ -1280,6 +1280,7 @@ pub unsafe extern "C" fn df_create_session_context_indexed(
     query_config_ptr: i64,
     plan_ptr: *const u8,
     plan_len: i64,
+    hints_ptr: i64,
 ) -> i64 {
     match tree_shape {
         1 => crate::search_stats::inc_single_collector_scan(),
@@ -1290,6 +1291,8 @@ pub unsafe extern "C" fn df_create_session_context_indexed(
         .map_err(|e| format!("df_create_session_context_indexed: {}", e))?;
     let query_config =
         crate::datafusion_query_config::DatafusionQueryConfig::from_ffm_ptr(query_config_ptr);
+    // A null/absent pointer decodes to FastPathHints::default() (the NONE fragment).
+    let fast_path_hints = crate::fast_path_hints::FastPathHints::from_ffm_ptr(hints_ptr);
     let plan_bytes: &[u8] = if plan_len > 0 {
         slice::from_raw_parts(plan_ptr, plan_len as usize)
     } else {
@@ -1310,6 +1313,7 @@ pub unsafe extern "C" fn df_create_session_context_indexed(
                 has_partial_aggregate != 0,
                 query_config,
                 plan_bytes,
+                fast_path_hints,
             ),
         ))
         .map_err(|e| e.to_string())

@@ -66,6 +66,16 @@ public interface FragmentInstructionHandlerFactory {
     /** Creates a partial aggregate instruction node. */
     Optional<InstructionNode> createPartialAggregateNode();
 
+    /**
+     * Creates a fast-path hints instruction node carrying the planner's {@link FastPathHintSpec}
+     * (mirrors {@link #createPartialAggregateNode()}). Backends that don't consume fast-path hints
+     * return {@link Optional#empty()} — the default — so the node is only emitted for backends that
+     * stamp and act on it (the datafusion backend).
+     */
+    default Optional<InstructionNode> createFastPathHintsNode(FastPathHintSpec hints) {
+        return Optional.empty();
+    }
+
     /** Creates a final aggregate instruction node for coordinator reduce. */
     Optional<InstructionNode> createFinalAggregateNode();
 

@@ -476,11 +476,12 @@ public final class NativeBridge {
         REGISTER_FILTER_TREE_CALLBACKS = linker.downcallHandle(
             lib.find("df_register_filter_tree_callbacks").orElseThrow(),
             FunctionDescriptor.ofVoid(
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS
+                ValueLayout.ADDRESS,   // createProvider
+                ValueLayout.ADDRESS,   // releaseProvider
+                ValueLayout.ADDRESS,   // createCollector
+                ValueLayout.ADDRESS,   // collectDocs
+                ValueLayout.ADDRESS,   // countDocs
+                ValueLayout.ADDRESS    // releaseCollector
             )
         );
 
@@ -542,7 +543,8 @@ public final class NativeBridge {
                 ValueLayout.JAVA_BYTE,   // hasPartialAggregate (0/1)
                 ValueLayout.JAVA_LONG,   // queryConfigPtr
                 ValueLayout.ADDRESS,     // planBytes (multi-index schema widening)
-                ValueLayout.JAVA_LONG    // planLen
+                ValueLayout.JAVA_LONG,   // planLen
+                ValueLayout.ADDRESS      // hintsPtr — FastPathHints wire struct (NULL = NONE)
             )
         );
 
@@ -797,6 +799,11 @@ public final class NativeBridge {
                     long.class
                 )
             );
+            MethodHandle countDocs = lookup.findStatic(
+                cb,
+                "countDocs",
+                java.lang.invoke.MethodType.methodType(long.class, long.class, int.class, int.class, int.class)
+            );
             MethodHandle releaseCollector = lookup.findStatic(
                 cb,
                 "releaseCollector",
@@ -838,6 +845,17 @@ public final class NativeBridge {
                 ),
                 arena
             );
+            java.lang.foreign.MemorySegment countDocsStub = linker.upcallStub(
+                countDocs,
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_INT
+                ),
+                arena
+            );
             java.lang.foreign.MemorySegment releaseCollectorStub = linker.upcallStub(
                 releaseCollector,
                 FunctionDescriptor.ofVoid(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT),
@@ -849,6 +867,7 @@ public final class NativeBridge {
                 releaseProviderStub,
                 createCollectorStub,
                 collectDocsStub,
+                countDocsStub,
                 releaseCollectorStub
             );
         } catch (Throwable t) {
@@ -1780,7 +1799,8 @@ public final class NativeBridge {
         boolean deletedDocFilteringRequired,
         boolean hasPartialAggregate,
         long queryConfigPtr,
-        byte[] planBytes
+        byte[] planBytes,
+        long hintsPtr
     ) {
         NativeHandle.validatePointer(readerPtr, "reader");
         NativeHandle.validatePointer(runtimePtr, "runtime");
@@ -1803,7 +1823,8 @@ public final class NativeBridge {
                 (byte) (hasPartialAggregate ? 1 : 0),
                 queryConfigPtr,
                 planSegment,
-                planLen
+                planLen,
+                MemorySegment.ofAddress(hintsPtr)
             );
             return new SessionContextHandle(ptr);
         }

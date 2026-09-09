@@ -329,6 +329,8 @@ pub(in crate::indexed_table::tests_e2e) async fn execute_tree_with_plan_pushdown
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
 
     let ctx = SessionContext::new();
@@ -537,6 +539,8 @@ async fn run_single_collector_query(
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();
@@ -754,6 +758,8 @@ async fn run_with_factory_plan(
         sort_fields: vec![],
         sort_orders: vec![],
         cancellation_token: None,
+        row_group_plans: std::sync::Arc::new(std::collections::HashMap::new()),
+        sort_column: None,
     }));
     let ctx = SessionContext::new();
     ctx.register_table("t", provider).unwrap();

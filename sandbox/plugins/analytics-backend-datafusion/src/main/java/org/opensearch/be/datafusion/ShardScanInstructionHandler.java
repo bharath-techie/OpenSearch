@@ -11,9 +11,11 @@ package org.opensearch.be.datafusion;
 import org.opensearch.analytics.backend.ShardScanExecutionContext;
 import org.opensearch.analytics.spi.BackendExecutionContext;
 import org.opensearch.analytics.spi.CommonExecutionContext;
+import org.opensearch.analytics.spi.FastPathHintSpec;
 import org.opensearch.analytics.spi.FilterTreeShape;
 import org.opensearch.analytics.spi.FragmentInstructionHandler;
 import org.opensearch.analytics.spi.ShardScanInstructionNode;
+import org.opensearch.be.datafusion.nativelib.FastPathHints;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 import org.opensearch.be.datafusion.nativelib.SessionContextHandle;
 import org.opensearch.index.engine.dataformat.DataFormatRegistry;
@@ -64,26 +66,20 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
             snapshot.writeTo(segment);
-            // Per-shard hasDeletions signal, stamped by AnalyticsSearchService from the Lucene backend's
-            // hasDeletedDocs probe. When true and the query has no delegation, route the pure-DF scan
-            // through the indexed SingleCollector path (CONJUNCTIVE): the native executor ANDs a
-            // synthetic match-all Collector (reserved annotation id, resolved by the Lucene handle to
-            // the segment's liveDocs) into the decoded filter tree, so deleted rows are excluded via
-            // the ordinary collector machinery. When false, the vanilla ListingTable path runs with
-            // zero extra work.
+            // Planner fast-path hints, stamped onto the context from the FAST_PATH_HINTS instruction.
+            MemorySegment hintsSegment = arena.allocate(FastPathHints.BYTE_SIZE);
+            FastPathHints.fromSpec(context.getFastPathHints()).writeTo(hintsSegment);
+
+            // Per-shard hasDeletions signal (#22910): when set, the pure-DF scan routes through the
+            // indexed SingleCollector path so the injected match-all Collector excludes deleted rows.
             boolean deletedDocFilteringRequired = context.hasDeletedDocs();
+
             SessionContextHandle sessionCtxHandle;
-            if (node.requestsRowIds()) {
-                // QTF query phase — narrowed scan emits __row_id__. Use the indexed session
-                // context so the IndexedTableProvider injects shard-global row ids during scan.
-                // No delegated predicates here (delegation goes through ShardScanWithDelegationHandler),
-                // so delegatedPredicateCount=0. When the shard has deletions, route through
-                // SingleCollector (CONJUNCTIVE) so the injected match-all Collector excludes deleted
-                // docs from candidates before the row-ids are emitted. Otherwise NO_DELEGATION →
-                // PredicateOnlyEvaluator (no liveDocs work). Row-ids stay correct: they index into
-                // the Collector's live-only candidate bitmap, so deleted docs get no row-id.
-                // hasPartialAggregate is orthogonal (aggregate-mode stripping) and forwarded as-is.
-                int rowIdTreeShape = deletedDocFilteringRequired
+            if (route(context, node.requestsRowIds()) == ScanRoute.INDEXED) {
+                // One indexed path serves three orthogonal reasons to leave the vanilla ListingTable:
+                // QTF row-ids, delete filtering (#22910 — deletions force CONJUNCTIVE), and a planner
+                // fast-path shape. No delegated predicates flow through this handler, so count = 0.
+                int treeShape = deletedDocFilteringRequired
                     ? FilterTreeShape.CONJUNCTIVE.ordinal()
                     : FilterTreeShape.NO_DELEGATION.ordinal();
                 sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
@@ -91,31 +87,14 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     runtimePtr,
                     tableName,
                     contextId,
-                    rowIdTreeShape,
+                    treeShape,
                     0,
-                    true,
+                    node.requestsRowIds(),
                     deletedDocFilteringRequired,
                     context.hasPartialAggregate(),
                     segment.address(),
-                    context.getFragmentBytes()
-                );
-            } else if (deletedDocFilteringRequired) {
-                // Pure-DF query on a shard with deletions: force the indexed SingleCollector path
-                // (CONJUNCTIVE, 0 delegated, no row-ids). The native executor injects the match-all
-                // Collector into the decoded tree, so per-RG candidates are exactly the live docs
-                // (optionally intersected with the query's own predicates as residual).
-                sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
-                    readerPtr,
-                    runtimePtr,
-                    tableName,
-                    contextId,
-                    FilterTreeShape.CONJUNCTIVE.ordinal(),
-                    0,
-                    false,
-                    true,
-                    context.hasPartialAggregate(),
-                    segment.address(),
-                    context.getFragmentBytes()
+                    context.getFragmentBytes(),
+                    hintsSegment.address()
                 );
             } else {
                 // Plan bytes let Rust widen the schema for multi-index queries (null-fill missing columns).
@@ -132,5 +111,25 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
             }
             return new DataFusionSessionState(sessionCtxHandle);
         }
+    }
+
+    /** Where a base shard scan runs: the vanilla ListingTable, or the indexed SingleCollector path. */
+    enum ScanRoute {
+        LISTING,
+        INDEXED
+    }
+
+    /**
+     * Folds the three reasons a base shard scan needs the indexed path into one decision: QTF row-id
+     * emission, per-shard delete filtering (#22910), or a planner fast-path shape (read from the
+     * context, where {@code AnalyticsSearchService} stamped it). Any one routes {@link ScanRoute#INDEXED};
+     * otherwise the vanilla {@link ScanRoute#LISTING} path runs with zero extra work.
+     */
+    static ScanRoute route(ShardScanExecutionContext context, boolean requestsRowIds) {
+        boolean fastPath = context.getFastPathHints().shape() != FastPathHintSpec.Shape.NONE;
+        if (requestsRowIds || context.hasDeletedDocs() || fastPath) {
+            return ScanRoute.INDEXED;
+        }
+        return ScanRoute.LISTING;
     }
 }

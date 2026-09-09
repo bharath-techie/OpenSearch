@@ -139,6 +139,7 @@ pub async fn execute_indexed_query(
         ),
         table_name: table_name.clone(),
         deleted_doc_filtering_required: false,
+        fast_path_hints: crate::fast_path_hints::FastPathHints::default(),
         indexed_config: None, // derive classification from tree
         query_config: Arc::unwrap_or_clone(query_config),
         io_handle: tokio::runtime::Handle::current(),
@@ -1156,6 +1157,9 @@ async unsafe fn execute_indexed_with_context_inner(
     let writer_generations = handle.writer_generations;
     let sort_fields = handle.sort_fields;
     let sort_orders = handle.sort_orders;
+    // Planner fast-path hints (Stage A). Copy — read here so later partial moves
+    // of `handle` don't matter. Drives the per-RG RowGroupPlan classification below.
+    let fast_path_hints = handle.fast_path_hints;
     let query_context = handle.query_context;
     let io_handle = handle.io_handle;
     // Extract context_id early so it can be captured by the per-segment closures
@@ -1680,6 +1684,62 @@ async unsafe fn execute_indexed_with_context_inner(
         .map_err(|e| DataFusionError::Execution(format!("parse table_path URL: {}", e)))?;
     let store_url = ObjectStoreUrl::parse(format!("{}://{}", parsed.scheme(), parsed.authority()))?;
 
+    // PR2 (Stage C2): build the per-segment RowGroupPlan map once per query from
+    // the planner's FastPathHints + parquet footer stats. Resolve the leading
+    // sort column, coerce the declared range into the column's physical unit,
+    // then classify every RG per segment. Behaviour-preserving plumbing — the
+    // stream consults these plans for metrics but every RG still takes the Full
+    // decode path (Stage C3 wires the count/strip arms).
+    let sort_column: Option<String> = sort_fields.first().cloned();
+    let (sort_col_idx, physical_range) = match sort_column.as_deref() {
+        Some(name) => {
+            let idx = schema.index_of(name).ok();
+            // Physical unit of the sort column: an arrow Timestamp carries it
+            // directly; a plain Int64 stores raw ticks in the DECLARED unit
+            // (identity coercion). Anything else declines the fast path.
+            let physical_unit = idx.and_then(|i| match schema.field(i).data_type() {
+                datafusion::arrow::datatypes::DataType::Timestamp(u, _) => Some(*u),
+                datafusion::arrow::datatypes::DataType::Int64 => match fast_path_hints.range_unit {
+                    crate::fast_path_hints::RangeUnit::Seconds => {
+                        Some(datafusion::arrow::datatypes::TimeUnit::Second)
+                    }
+                    crate::fast_path_hints::RangeUnit::Millis => {
+                        Some(datafusion::arrow::datatypes::TimeUnit::Millisecond)
+                    }
+                    crate::fast_path_hints::RangeUnit::Micros => {
+                        Some(datafusion::arrow::datatypes::TimeUnit::Microsecond)
+                    }
+                    crate::fast_path_hints::RangeUnit::Nanos => {
+                        Some(datafusion::arrow::datatypes::TimeUnit::Nanosecond)
+                    }
+                    crate::fast_path_hints::RangeUnit::None => None,
+                },
+                _ => None,
+            });
+            let range = physical_unit.and_then(|u| {
+                crate::fast_path_hints::sort_range_in_physical_unit(&fast_path_hints, u)
+            });
+            (idx, range)
+        }
+        None => (None, None),
+    };
+    let row_group_plans = {
+        let mut m = std::collections::HashMap::with_capacity(segments.len());
+        for seg in &segments {
+            m.insert(
+                seg.writer_generation,
+                crate::indexed_table::row_group_plan::plan_row_groups(
+                    &seg.metadata,
+                    sort_col_idx,
+                    &fast_path_hints,
+                    physical_range.as_ref(),
+                    deleted_doc_filtering_required,
+                ),
+            );
+        }
+        Arc::new(m)
+    };
+
     let provider = Arc::new(IndexedTableProvider::new(IndexedTableConfig {
         schema: schema.clone(),
         segments,
@@ -1694,6 +1754,8 @@ async unsafe fn execute_indexed_with_context_inner(
         sort_fields: sort_fields.clone(),
         sort_orders: sort_orders.clone(),
         cancellation_token: crate::query_tracker::get_cancellation_token(context_id),
+        row_group_plans,
+        sort_column,
     }));
     ctx.register_table(&register_name, provider)?;
 

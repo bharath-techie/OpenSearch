@@ -341,6 +341,79 @@ fn elect_leaf_owner(
 }
 
 impl RowGroupBitsetSource for SingleCollectorEvaluator {
+    /// Exact match count for a `CountFromIndex` RG without materializing the
+    /// bitmap. Sound only because this is invoked ONLY for RGs the planner
+    /// proved tautological (WITHIN, delete-free): every native residual on the
+    /// RG is satisfied by all rows, so the collector's docfreq (or the row
+    /// span) is the exact answer.
+    ///
+    /// ONE match over `(correctness collector, performance leaves)`:
+    ///  * stats-pruned RG → `Some(0)` (nothing matches);
+    ///  * `(Some(collector), no perf leaves)` → the collector's `count_docs`
+    ///    (PR1's plan-time AND merge already folded every Lucene MUST leaf into
+    ///    it — Fix 2);
+    ///  * `(None, exactly one perf leaf)` → that leaf's peer provider collector
+    ///    `count_docs` (Fix 3) — the peer's docfreq is exact regardless of which
+    ///    side would own the leaf for filtering;
+    ///  * `(None, zero leaves)` → the whole RG span (universe; footer proved
+    ///    WITHIN);
+    ///  * else → `None` (a per-RG owner election could leave a DataFusion
+    ///    residual that can't be counted without a decode; fall back to
+    ///    `prefetch_rg` + candidate count).
+    fn count_rg(
+        &self,
+        rg: &RowGroupInfo,
+        min_doc: i32,
+        max_doc: i32,
+    ) -> Result<Option<u64>, String> {
+        // RG-level early-exit from column stats → exact zero.
+        if let Some(ref spt) = self.stats_prune_tree {
+            if let Some(&pos) = self.rg_index_to_pos.get(&rg.index) {
+                if let Some(&false) = spt.rg_can_match.get(pos) {
+                    return Ok(Some(0));
+                }
+            }
+        }
+
+        match (self.collector.as_ref(), self.performance_leaves.as_slice()) {
+            // Correctness collector, no dual-viable performance leaves.
+            (Some(collector), []) => collector.count_docs(min_doc, max_doc),
+            // Performance-only query with exactly one dual-viable leaf: count via
+            // its peer provider collector.
+            (None, [leaf]) => {
+                let lock = self
+                    .performance_provider_locks
+                    .get(&leaf.annotation_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "performance leaf annotation_id {} has no provider lock",
+                            leaf.annotation_id
+                        )
+                    })?;
+                let context_id = self.context_id;
+                let annotation_id = leaf.annotation_id;
+                let provider = lock.get_or_init(|| {
+                    create_provider(context_id, annotation_id)
+                        .expect("create_provider FFM upcall failed")
+                });
+                let collector = self
+                    .delegated_backend_collector_factory
+                    .create(context_id, provider.key(), self.writer_generation, min_doc, max_doc)
+                    .map_err(|e| {
+                        format!(
+                            "DelegatedBackendCollectorFactory::create(context_id={}, provider={}, writer_generation={}, doc_range=[{},{})): {}",
+                            context_id, provider.key(), self.writer_generation, min_doc, max_doc, e
+                        )
+                    })?;
+                collector.count_docs(min_doc, max_doc)
+            }
+            // No collector and no leaves: the candidate universe is the whole RG.
+            (None, []) => Ok(Some((max_doc - min_doc) as u64)),
+            // Collector + perf leaves, or more than one perf leaf → decline.
+            _ => Ok(None),
+        }
+    }
+
     fn prefetch_rg(
         &self,
         rg: &RowGroupInfo,
@@ -542,7 +615,8 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         let mut perf_residual: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>> = None;
         // Fix 9: full-schema columns DataFusion still owns for THIS RG. Unioned with the always-
         // native residual columns below to narrow the per-RG parquet projection.
-        let mut df_owned_columns: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut df_owned_columns: std::collections::BTreeSet<usize> =
+            std::collections::BTreeSet::new();
         for leaf in &self.performance_leaves {
             match elect_leaf_owner(
                 leaf,
@@ -567,15 +641,15 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                     });
                 }
                 LeafOwner::Lucene => {
-                    let lock =
-                        self.performance_provider_locks
-                            .get(&leaf.annotation_id)
-                            .ok_or_else(|| {
-                                format!(
-                                    "performance leaf annotation_id {} has no provider lock",
-                                    leaf.annotation_id
-                                )
-                            })?;
+                    let lock = self
+                        .performance_provider_locks
+                        .get(&leaf.annotation_id)
+                        .ok_or_else(|| {
+                            format!(
+                                "performance leaf annotation_id {} has no provider lock",
+                                leaf.annotation_id
+                            )
+                        })?;
                     let context_id = self.context_id;
                     let annotation_id = leaf.annotation_id;
                     let mut just_initialized = false;
@@ -711,13 +785,13 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 (None, None) => return Ok(None),
                 (Some(r), None) => Some(Arc::clone(r)),
                 (None, Some(p)) => Some(Arc::clone(p)),
-                (Some(r), Some(p)) => {
-                    Some(Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+                (Some(r), Some(p)) => Some(Arc::new(
+                    datafusion::physical_expr::expressions::BinaryExpr::new(
                         Arc::clone(r),
                         datafusion::logical_expr::Operator::And,
                         Arc::clone(p),
-                    )))
-                }
+                    ),
+                )),
             };
         let residual = effective_residual
             .as_ref()
