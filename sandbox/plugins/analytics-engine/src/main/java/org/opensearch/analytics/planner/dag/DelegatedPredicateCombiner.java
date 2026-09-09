@@ -25,7 +25,9 @@ import org.opensearch.analytics.spi.FieldStorageInfo;
 import org.opensearch.analytics.spi.ScalarFunction;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -121,28 +123,52 @@ final class DelegatedPredicateCombiner {
         String commonBackend = null;
         boolean multiBackend = false;
 
+        // Phase 1: route each Delegated child through the OR/NOT perf→correctness demotion, keeping
+        // kid order. Track which backends carry a (mandatory) correctness child on this node.
+        List<Object> routed = new ArrayList<>(kids.size());
+        Set<String> correctnessBackends = new HashSet<>();
         for (Classified c : kids) {
-            if (c instanceof Delegated == false) {
-                ordered.add(((Resolved) c).node());
-                continue;
-            }
-            Delegated d = (Delegated) c;
-
-            // Under OR/NOT a perf child is reclassified to correctness (ships to the peer, fusing
-            // with same-backend correctness siblings); under AND it stays performance.
-            Delegated routed = (isOrNot && d.performanceDelegation())
-                ? new Delegated(d.backend(), d.subtree(), d.firstAnnotationId(), false)
-                : d;
-            if (routed.performanceDelegation()) {
-                performanceChildren.add(routed);
+            if (c instanceof Delegated d) {
+                Delegated r = (isOrNot && d.performanceDelegation())
+                    ? new Delegated(d.backend(), d.subtree(), d.firstAnnotationId(), false)
+                    : d;
+                routed.add(r);
+                if (!r.performanceDelegation()) {
+                    correctnessBackends.add(r.backend());
+                }
             } else {
-                correctnessChildren.add(routed);
+                routed.add(((Resolved) c).node());
             }
-            ordered.add(routed);
-            if (commonBackend == null) {
-                commonBackend = routed.backend();
-            } else if (!commonBackend.equals(routed.backend())) {
-                multiBackend = true;
+        }
+
+        // Phase 2 (AND only): plan-time conjunction merge. A dual-viable MUST leaf with a same-backend
+        // correctness sibling is reclassified to correctness, so all of them serialize into ONE
+        // BoolQueryBuilder and Lucene's conjunction scorer leapfrogs. Without such a sibling the
+        // leaf stays dual-viable for per-RG owner election on the data node.
+        if (!isOrNot && !correctnessBackends.isEmpty()) {
+            for (int i = 0; i < routed.size(); i++) {
+                if (routed.get(i) instanceof Delegated d && d.performanceDelegation() && correctnessBackends.contains(d.backend())) {
+                    routed.set(i, new Delegated(d.backend(), d.subtree(), d.firstAnnotationId(), false));
+                }
+            }
+        }
+
+        // Phase 3: bucket the (post-fold) children and derive the common backend.
+        for (Object item : routed) {
+            if (item instanceof Delegated d) {
+                if (d.performanceDelegation()) {
+                    performanceChildren.add(d);
+                } else {
+                    correctnessChildren.add(d);
+                }
+                ordered.add(d);
+                if (commonBackend == null) {
+                    commonBackend = d.backend();
+                } else if (!commonBackend.equals(d.backend())) {
+                    multiBackend = true;
+                }
+            } else {
+                ordered.add(item);
             }
         }
 

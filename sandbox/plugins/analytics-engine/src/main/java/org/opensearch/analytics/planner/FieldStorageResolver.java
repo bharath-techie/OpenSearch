@@ -162,8 +162,43 @@ public class FieldStorageResolver {
             indexFormats,
             storedFieldFormats,
             false,
-            exactMatchSubfieldOf(fieldType, fieldProps)
+            exactMatchSubfieldOf(fieldType, fieldProps),
+            isExactTermDelegatable(fieldType, fieldProps)
         );
+    }
+
+    /**
+     * Decides whether a doc-value (columnar) backend's raw equality on this field is semantically
+     * identical to the index (Lucene) term query — i.e. whether an exact-match (term) predicate on
+     * this field may be dual-viable (performance-delegated) rather than Lucene-only correctness
+     * delegation. See {@link FieldStorageInfo#isExactTermDelegatable()}.
+     *
+     * <p>Conservative: only single, full-value, untransformed stored terms are eligible —
+     * keyword/constant_keyword WITHOUT a normalizer, numeric, date/date_nanos, boolean, ip.
+     * Tokenized text/match_only_text, normalized/transformed keyword, wildcard, and unknown types
+     * are Lucene-only.
+     */
+    private static boolean isExactTermDelegatable(String mappingType, Map<String, Object> fieldProps) {
+        FieldType type = FieldType.fromMappingType(mappingType);
+        if (type == null) {
+            // Unknown/unmapped type — DataFusion cannot be assumed to reproduce the term semantics.
+            return false;
+        }
+        // Tokenizing text: term match needs the analyzer's token index → Lucene-only. Deliberate
+        // minimal policy: ALL text/match_only_text stay Lucene-only (correctness-safe).
+        if (FieldType.text().contains(type)) {
+            return false;
+        }
+        // Keyword family: exact full-value term ONLY when no normalizer transforms the stored value.
+        // Wildcard stores an ngram-transformed representation, so it is never exact-term delegatable.
+        if (type == FieldType.KEYWORD || type == FieldType.CONSTANT_KEYWORD) {
+            return fieldProps.get("normalizer") == null;
+        }
+        if (type == FieldType.WILDCARD_FIELD) {
+            return false;
+        }
+        // Numeric, date, boolean, ip: columnar equality is exact and matches the indexed term.
+        return FieldType.numeric().contains(type) || FieldType.date().contains(type) || type == FieldType.BOOLEAN || type == FieldType.IP;
     }
 
     /**

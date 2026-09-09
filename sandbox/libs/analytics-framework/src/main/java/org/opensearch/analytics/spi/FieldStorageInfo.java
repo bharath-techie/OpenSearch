@@ -36,6 +36,18 @@ public class FieldStorageInfo {
      */
     private final String exactMatchSubfield;
 
+    /**
+     * True when a doc-value (columnar) backend's raw equality on this field is semantically
+     * identical to the index (Lucene) term query — i.e. the field stores a single, full-value,
+     * untransformed term (keyword/constant_keyword with no normalizer, numeric, date, boolean, ip).
+     * False for tokenized (text/match_only_text), normalized/transformed (keyword+normalizer,
+     * wildcard) and unknown mappings. Gates dual-viability of exact-match (term) predicates in
+     * {@code OpenSearchFilterRule}. Defaults to {@code false} (conservative) for constructors that
+     * don't set it, forcing Lucene-only correctness delegation rather than an unsound dual-viable
+     * performance leaf; the real per-mapping value is set by {@code FieldStorageResolver}.
+     */
+    private final boolean exactTermDelegatable;
+
     public FieldStorageInfo(
         String fieldName,
         String mappingType,
@@ -98,6 +110,61 @@ public class FieldStorageInfo {
         LinkedHashSet<String> dependsOnPhysicalCols,
         String exactMatchSubfield
     ) {
+        // Conservative default: an un-asserted mapping is NOT term-delegatable, forcing Lucene-only
+        // correctness delegation in the worst case rather than an unsound dual-viable performance leaf.
+        this(
+            fieldName,
+            mappingType,
+            fieldType,
+            docValueFormats,
+            indexFormats,
+            storedFieldFormats,
+            derived,
+            dependsOnPhysicalCols,
+            exactMatchSubfield,
+            false
+        );
+    }
+
+    /** Physical-field ctor carrying the exact-match subfield AND the term-equivalence flag. */
+    public FieldStorageInfo(
+        String fieldName,
+        String mappingType,
+        FieldType fieldType,
+        List<String> docValueFormats,
+        List<String> indexFormats,
+        List<String> storedFieldFormats,
+        boolean derived,
+        String exactMatchSubfield,
+        boolean exactTermDelegatable
+    ) {
+        this(
+            fieldName,
+            mappingType,
+            fieldType,
+            docValueFormats,
+            indexFormats,
+            storedFieldFormats,
+            derived,
+            new LinkedHashSet<>(),
+            exactMatchSubfield,
+            exactTermDelegatable
+        );
+    }
+
+    /** Canonical constructor. */
+    public FieldStorageInfo(
+        String fieldName,
+        String mappingType,
+        FieldType fieldType,
+        List<String> docValueFormats,
+        List<String> indexFormats,
+        List<String> storedFieldFormats,
+        boolean derived,
+        LinkedHashSet<String> dependsOnPhysicalCols,
+        String exactMatchSubfield,
+        boolean exactTermDelegatable
+    ) {
         this.fieldName = fieldName;
         this.mappingType = mappingType;
         this.fieldType = fieldType;
@@ -107,6 +174,7 @@ public class FieldStorageInfo {
         this.derived = derived;
         this.dependsOnPhysicalCols = dependsOnPhysicalCols;
         this.exactMatchSubfield = exactMatchSubfield;
+        this.exactTermDelegatable = exactTermDelegatable;
     }
 
     /** Creates a derived column (agg result, expression) with no physical storage and no deps.
@@ -141,6 +209,16 @@ public class FieldStorageInfo {
      *  multifield — or {@code null} when the field is queried directly. */
     public String getExactMatchSubfield() {
         return exactMatchSubfield;
+    }
+
+    /**
+     * True when a doc-value (columnar) backend's raw equality on this field is semantically
+     * identical to the index (Lucene) term query — see {@link #exactTermDelegatable}. Consulted by
+     * the filter rule to decide whether an exact-match (term) predicate may be dual-viable
+     * (performance-delegated) or must be routed to Lucene-only correctness delegation.
+     */
+    public boolean isExactTermDelegatable() {
+        return exactTermDelegatable;
     }
 
     public String getMappingType() {

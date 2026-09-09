@@ -1442,6 +1442,27 @@ async unsafe fn execute_indexed_with_context_inner(
                 .as_ref()
                 .and_then(|expr| build_pruning_predicate(expr, Arc::clone(&schema_for_pruner)));
 
+            // Performance-delegated (dual-viable) leaves: each carries its native DataFusion expr
+            // plus a per-leaf `PruningPredicate` used at runtime to elect the DataFusion-XOR-Lucene
+            // owner per row group (see `SingleCollectorEvaluator`). Correctness Collectors and the
+            // always-native residual are handled separately.
+            let performance_leaves: Vec<
+                crate::indexed_table::eval::single_collector::PerformanceLeaf,
+            > = extraction
+                .tree
+                .delegation_possible_leaves()
+                .into_iter()
+                .map(|(annotation_id, expr)| {
+                    let pruning_predicate =
+                        build_pruning_predicate(&expr, Arc::clone(&schema_for_pruner));
+                    crate::indexed_table::eval::single_collector::PerformanceLeaf {
+                        annotation_id,
+                        expr,
+                        pruning_predicate,
+                    }
+                })
+                .collect();
+
             let call_strategy = CollectorCallStrategy::PageRangeSplit;
             let bloom_store = Arc::clone(&store);
             let bloom_schema = schema.clone();
@@ -1510,6 +1531,7 @@ async unsafe fn execute_indexed_with_context_inner(
                             bloom_config,
                             stats_prune_tree.cloned(),
                             chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
+                            performance_leaves.clone(),
                         ));
                         Ok(eval)
                     },

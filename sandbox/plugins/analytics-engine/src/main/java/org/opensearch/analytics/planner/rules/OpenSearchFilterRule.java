@@ -56,6 +56,16 @@ public class OpenSearchFilterRule extends RelOptRule {
 
     private static final Logger LOGGER = LogManager.getLogger(OpenSearchFilterRule.class);
 
+    /**
+     * Exact-match (term) filter operators. For these, a doc-value backend's equality is
+     * semantically identical to the index term query ONLY when the field is exact-term delegatable
+     * (see {@link FieldStorageInfo#isExactTermDelegatable()}); otherwise they are restricted to
+     * Lucene-only correctness delegation by the term-equivalence gate in
+     * {@link #resolveViableBackends}. NOT_EQUALS and IN are the negation / set forms of the same
+     * term equivalence, so they gate identically.
+     */
+    private static final Set<ScalarFunction> TERM_FUNCTIONS = Set.of(ScalarFunction.EQUALS, ScalarFunction.NOT_EQUALS, ScalarFunction.IN);
+
     private final PlannerContext context;
 
     public OpenSearchFilterRule(PlannerContext context) {
@@ -271,6 +281,17 @@ public class OpenSearchFilterRule extends RelOptRule {
                 // field only when the field has indexFormats=[lucene] set in the mapping).
                 // TODO: for FULL_TEXT operators, extract required params from RexCall
                 fieldViable = new HashSet<>(registry.filterBackendsForField(function, storageInfo));
+
+                // Term-equivalence gate: when columnar equality and the Lucene term query can differ
+                // (analyzed text, normalized keyword, wildcard, unknown), a term predicate must not be
+                // dual-viable — keep it Lucene-only. If no index-backed backend is viable there is
+                // nothing to disagree with, so the set is left alone rather than emptied.
+                if (TERM_FUNCTIONS.contains(function) && !storageInfo.isExactTermDelegatable()) {
+                    Set<String> indexBacked = new HashSet<>(registry.filterBackendsForFieldIndexOnly(function, storageInfo));
+                    if (!indexBacked.isEmpty()) {
+                        fieldViable.retainAll(indexBacked);
+                    }
+                }
             }
 
             viableSet.retainAll(fieldViable);
